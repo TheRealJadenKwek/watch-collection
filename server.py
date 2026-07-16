@@ -24,7 +24,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote_plus, unquote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
-from export_sheet import next_move_suggestions, score_wishlist
+from export_sheet import headline_stats, next_move_suggestions, score_wishlist
 
 
 HOST = "0.0.0.0"  # gated by ALLOWED_CLIENT_NETS below — loopback + Tailscale only
@@ -83,6 +83,17 @@ class ApiError(Exception):
 def read_data() -> dict:
     with DATA_FILE.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def read_data_with_stats() -> dict:
+    with DATA_LOCK:
+        data = read_data()
+        watches = data.get("watches", [])
+        data["headlineStats"] = {
+            "owned": headline_stats([watch for watch in watches if watch.get("status") == "owned"]),
+            "all": headline_stats(watches),
+        }
+        return data
 
 
 def atomic_write_data(data: dict) -> None:
@@ -423,7 +434,7 @@ class WatchHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
         path, parts = self._path_parts()
         if path == "/api/data":
-            self._dispatch_errors(lambda: self.send_json(HTTPStatus.OK, read_data()))
+            self._dispatch_errors(lambda: self.send_json(HTTPStatus.OK, read_data_with_stats()))
             return
         if path == "/api/wishlist/scores":
             def send_scores() -> None:

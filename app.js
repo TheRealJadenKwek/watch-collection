@@ -209,7 +209,7 @@ function counter(items, getter) {
 
 function barRows(entries, formatter = value => value) {
   const max = Math.max(1, ...entries.map(([, value]) => Number(value)));
-  return `<div class="bar-list">${entries.map(([label, value, suffix = ""]) => `<div class="bar-row"><span>${esc(label)}</span><span class="bar-track"><span class="bar-fill" style="width:${Math.max(1.5, Number(value) / max * 100)}%"></span></span><strong>${esc(formatter(value))}${esc(suffix)}</strong></div>`).join("")}</div>`;
+  return `<div class="bar-list">${entries.map(([label, value, suffix = ""]) => `<div class="bar-row"><span>${esc(label)}</span><span class="bar-track"><span class="bar-fill" style="width:${Number(value) === 0 ? 0 : Math.max(1.5, Number(value) / max * 100)}%"></span></span><strong>${esc(formatter(value))}${esc(suffix)}</strong></div>`).join("")}</div>`;
 }
 
 function histogram(items, field) {
@@ -258,6 +258,7 @@ function renderStats() {
   const owned = all.filter(watch => watch.status === "owned");
   const scope = state.statsScope === "owned" ? owned : all;
   const stats = statsFor(scope);
+  const iqr = state.data.headlineStats?.[state.statsScope]?.iqr ?? 0;
   const wrist = state.data.settings.wrist;
   const measuredOwned = owned.filter(watch => watch.diameter != null);
   const sweetCount = measuredOwned.filter(watch => watch.diameter >= wrist.sweetSpotMin && watch.diameter <= wrist.sweetSpotMax).length;
@@ -265,6 +266,7 @@ function renderStats() {
   const pcts = [10, 25, 50, 75, 80, 90, 95];
   const diamHist = histogram(scope, "diameter");
   const lugHist = histogram(scope, "lugToLug");
+  const costHist = PRICE_TIERS.map(tier => [tier.label, scope.filter(watch => priceTier(watch.price)?.label === tier.label).length]);
   const yearly = [...counter(scope.filter(w => w.purchased), watch => watch.purchased.slice(0, 4))];
   const yearSpend = [...new Set(scope.filter(w => w.purchased).map(w => w.purchased.slice(0, 4)))].sort().map(year => [year, sum(scope.filter(w => w.purchased?.startsWith(year)).map(w => w.price))]);
   const brandCounts = [...counter(scope, watchBrand)].sort((a, b) => b[1] - a[1]);
@@ -295,12 +297,14 @@ function renderStats() {
     <div class="stat-grid">
       ${[
         ["Count", stats.count], ["Total spent", money(stats.total)], ["Mean", money(stats.mean)], ["Median", money(stats.median)],
-        ["Minimum", money(stats.min)], ["Maximum", money(stats.max)], ["Std dev (sample)", money(stats.std)], ["Skewness", stats.skew.toFixed(3)],
+        ["IQR", money(iqr)], ["Minimum", money(stats.min)], ["Maximum", money(stats.max)], ["Std dev (sample)", money(stats.std)], ["Skewness", stats.skew.toFixed(3)],
         ["Owned in sweet spot", `${sweetPercent.toFixed(0)}%`],
       ].map(([label, value]) => `<div class="stat-tile"><span>${label}</span><strong>${value}</strong></div>`).join("")}
     </div>
     <div class="stats-layout">
       <section class="panel wide"><div class="panel-heading"><div><p class="eyebrow">Distribution</p><h3>Percentiles</h3></div><small>Linear interpolation</small></div><div class="chip-cloud">${pcts.map(percent => `<span class="chip">P${percent} <strong>${money(percentile(scope.map(w => w.price), percent))}</strong></span>`).join("")}</div></section>
+
+      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">Price tiers</p><h3>Cost histogram</h3></div><small>Every tier in this ${state.statsScope === "owned" ? "current" : "all-time"} scope</small></div>${barRows(costHist)}</section>
 
       <section class="panel"><div class="panel-heading"><div><p class="eyebrow">Diameter</p><h3>Size distribution</h3></div><small>${wrist.sweetSpotMin}–${wrist.sweetSpotMax}mm sweet · ${wrist.perfect}mm perfect</small></div>
         ${diamHist.length ? barRows(diamHist.map(([lower, count]) => [`${lower}–${(lower + 1.9).toFixed(1)}mm`, count])) : `<p class="form-note">No diameter data.</p>`}

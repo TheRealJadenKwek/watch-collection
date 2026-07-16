@@ -8,6 +8,11 @@ struct CollectionData: Codable, Sendable {
     var brandWatchlist: [BrandRadarItem]
     var dialColors: [String]
     var materials: [String]
+    var headlineStats: [String: HeadlineStatsPayload]?
+}
+
+struct HeadlineStatsPayload: Codable, Sendable {
+    var iqr: Double
 }
 
 struct CollectionSettings: Codable, Sendable {

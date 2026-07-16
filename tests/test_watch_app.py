@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Offline end-to-end verification for the v1.12 local app."""
+"""Offline end-to-end verification for the v1.13 local app."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import concurrent.futures
 import csv
 import http.client
 import json
+import math
 import shutil
 import subprocess
 import tempfile
@@ -125,6 +126,31 @@ class WatchAppTests(unittest.TestCase):
         self.assertAlmostEqual(sheet_stats["total"], 10356.63, delta=.01)
         self.assertEqual(round(sheet_stats["mean"], 2), 167.04)
         self.assertEqual(round(sheet_stats["skewness"], 3), 1.768)
+
+    def test_03_headline_stats_iqr(self):
+        api_stats = self.get_data()["headlineStats"]
+        for scope, watches in (
+            ("all", self.seed["watches"]),
+            ("owned", [watch for watch in self.seed["watches"] if watch["status"] == "owned"]),
+        ):
+            prices = sorted(
+                float(watch["price"])
+                for watch in watches
+                if isinstance(watch.get("price"), (int, float)) and not isinstance(watch.get("price"), bool)
+            )
+
+            def independently_interpolated(percent: int) -> float:
+                if not prices:
+                    return 0.0
+                position = (len(prices) - 1) * percent / 100
+                lower, upper = math.floor(position), math.ceil(position)
+                if lower == upper:
+                    return prices[lower]
+                return prices[lower] + (prices[upper] - prices[lower]) * (position - lower)
+
+            expected = independently_interpolated(75) - independently_interpolated(25)
+            self.assertAlmostEqual(export_sheet.headline_stats(watches)["iqr"], expected)
+            self.assertAlmostEqual(api_stats[scope]["iqr"], expected)
 
     def test_04_atomic_merge_and_concurrent_writes(self):
         watch_id = self.seed_watch_id()
@@ -332,8 +358,12 @@ class WatchAppTests(unittest.TestCase):
         with csv_path.open(encoding="utf-8") as handle:
             rows = list(csv.reader(handle))
         flat = "\n".join(",".join(row) for row in rows)
-        for label in ("HEADLINE STATISTICS", "PRICE PERCENTILES", "SIZE HISTOGRAM", "sweet spot", "LUG-TO-LUG", "SPEND BY PURCHASE YEAR", "BRANDS + BRAND BREADTH", "RADAR:", "CATEGORIES", "PRICE TIERS", "Originals-only", "DIAL COLOURS", "MATERIALS", "NEXT MOVE SUGGESTIONS", "WISHLIST", "categoryScore", "materialScore", "basis"):
+        for label in ("HEADLINE STATISTICS", "PRICE PERCENTILES", "COST HISTOGRAM", "SIZE HISTOGRAM", "sweet spot", "LUG-TO-LUG", "SPEND BY PURCHASE YEAR", "BRANDS + BRAND BREADTH", "RADAR:", "CATEGORIES", "PRICE TIERS", "Originals-only", "DIAL COLOURS", "MATERIALS", "NEXT MOVE SUGGESTIONS", "WISHLIST", "categoryScore", "materialScore", "basis"):
             self.assertIn(label, flat)
+        cost_section = rows.index(["COST HISTOGRAM (PRICE TIERS)"])
+        cost_rows = rows[cost_section + 2:cost_section + 2 + 2 * len(export_sheet.PRICE_TIERS)]
+        self.assertEqual(len(cost_rows), 2 * len(export_sheet.PRICE_TIERS))
+        self.assertEqual({row[0] for row in cost_rows}, {"Current collection", "All-time"})
         suggestions_header = next(row for row in rows if row and row[0] == "headline" and "matches" in row)
         self.assertIn("brands", suggestions_header)
         self.assertIn("[radar]", flat)
@@ -345,7 +375,7 @@ class WatchAppTests(unittest.TestCase):
         js = (ROOT / "app.js").read_text(encoding="utf-8")
         for panel in ("collection", "past", "stats", "wishlist"):
             self.assertIn(f'data-panel="{panel}"', html)
-        for marker in ("searchInput", "categoryFilter", "completeDataNudge", "suggestionsPanel", "suggestExclude", 'addEventListener("paste"', "dragover", "data-manage", "categories", "dialcolors", "materials", "WISHLIST_WEIGHTS"):
+        for marker in ("searchInput", "categoryFilter", "completeDataNudge", "suggestionsPanel", "suggestExclude", 'addEventListener("paste"', "dragover", "data-manage", "categories", "dialcolors", "materials", "WISHLIST_WEIGHTS", "headlineStats", '"IQR"', "Cost histogram"):
             self.assertIn(marker, html + js)
         for normalized_brand in ("Christopher Ward", "D1 Milano", "Henry Archer", "Furlan Marri", "Dan Henry"):
             self.assertIn(normalized_brand, js)

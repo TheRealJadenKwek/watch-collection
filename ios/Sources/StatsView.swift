@@ -8,6 +8,7 @@ struct StatsScreen: View {
     @State private var originalsOnly = true
     @State private var selectedWatch: Watch?
     @State private var completionQueue: [Watch] = []
+    @State private var selectedCostTier: String?
     @State private var selectedSizeX: Double?
     @State private var selectedSpendYear: String?
     @State private var selectedLugWatchID: String?
@@ -30,6 +31,7 @@ struct StatsScreen: View {
                         .pickerStyle(.segmented)
                         .padding(.horizontal, 2)
                         headlineTiles
+                        costChart
                         priceLedger
                         sizeChart
                         spendChart
@@ -57,6 +59,7 @@ struct StatsScreen: View {
                 WatchDetailScreen(store: store, watch: watch)
             }
             .onChange(of: scope) { _, _ in
+                selectedCostTier = nil
                 selectedSizeX = nil
                 selectedSpendYear = nil
                 selectedLugWatchID = nil
@@ -67,6 +70,7 @@ struct StatsScreen: View {
 
     private var headlineTiles: some View {
         let stats = headline(scoped)
+        let iqr = store.data?.headlineStats?[scope]?.iqr ?? 0
         let measured = owned.filter { $0.diameter != nil }
         let inRange = measured.filter { watch in
             guard let diameter = watch.diameter else { return false }
@@ -78,6 +82,7 @@ struct StatsScreen: View {
             ("Total spent", cad(stats.total)),
             ("Mean", cad(stats.mean)),
             ("Median", cad(stats.median)),
+            ("IQR", cad(iqr)),
             ("Minimum", cad(stats.minimum)),
             ("Maximum", cad(stats.maximum)),
             ("Std dev", cad(stats.standardDeviation)),
@@ -98,6 +103,42 @@ struct StatsScreen: View {
                 .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
                 .padding(13)
                 .watchCard()
+            }
+        }
+    }
+
+    private var costChart: some View {
+        let bins = costHistogram(scoped)
+        return SectionCard(eyebrow: "Price tiers", title: "Cost histogram") {
+            Chart(bins) { bin in
+                BarMark(
+                    x: .value("Watches", Double(bin.count)),
+                    y: .value("Tier", bin.label)
+                )
+                .foregroundStyle(selectedCostTier == bin.id ? WatchTheme.gold.gradient : WatchTheme.green.gradient)
+                .opacity(selectedCostTier == nil || selectedCostTier == bin.id ? 1 : 0.42)
+                .cornerRadius(3)
+                .accessibilityLabel(bin.label)
+                .accessibilityValue("\(bin.count) \(bin.count == 1 ? "watch" : "watches")")
+                .annotation(position: .trailing) {
+                    if selectedCostTier == bin.id {
+                        ChartAnnotationBubble(text: "\(bin.label) — \(bin.count) \(bin.count == 1 ? "watch" : "watches")")
+                    }
+                }
+            }
+            .frame(height: 270)
+            .chartXAxisLabel("watches")
+            .chartYSelection(value: $selectedCostTier)
+            .chartOverlay { proxy in
+                GeometryReader { geometry in
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .highPriorityGesture(
+                            SpatialTapGesture().onEnded { tap in
+                                selectCostBar(at: tap.location, proxy: proxy, geometry: geometry, bins: bins)
+                            }
+                        )
+                }
             }
         }
     }
@@ -432,6 +473,30 @@ struct StatsScreen: View {
         selectedWatch = completionQueue.removeFirst()
     }
 
+    private func selectCostBar(at location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy, bins: [CostBin]) {
+        guard let plotAnchor = proxy.plotFrame else {
+            selectedCostTier = nil
+            return
+        }
+        let plotFrame = geometry[plotAnchor]
+        guard plotFrame.contains(location) else {
+            selectedCostTier = nil
+            return
+        }
+        let plotX = location.x - plotFrame.minX
+        let plotY = location.y - plotFrame.minY
+        guard let tier = proxy.value(atY: plotY, as: String.self),
+              let bin = bins.first(where: { $0.id == tier }),
+              let rawX = proxy.value(atX: plotX, as: Double.self),
+              rawX >= 0,
+              rawX <= Double(bin.count)
+        else {
+            selectedCostTier = nil
+            return
+        }
+        selectedCostTier = selectedCostTier == bin.id ? nil : bin.id
+    }
+
     private func selectSizeBar(at location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy, bins: [MetricBin]) {
         guard let plotAnchor = proxy.plotFrame else {
             selectedSizeX = nil
@@ -544,6 +609,19 @@ private struct MetricBin: Identifiable {
 private func histogram(_ watches: [Watch], keyPath: KeyPath<Watch, Double?>) -> [MetricBin] {
     let grouped = Dictionary(grouping: watches.compactMap { $0[keyPath: keyPath] }) { floor($0 / 2) * 2 }
     return grouped.map { MetricBin(lower: $0.key, count: $0.value.count) }.sorted { $0.lower < $1.lower }
+}
+
+private struct CostBin: Identifiable {
+    var id: String { tier.id }
+    var tier: PriceTier
+    var count: Int
+    var label: String { tier.label }
+}
+
+private func costHistogram(_ watches: [Watch]) -> [CostBin] {
+    PriceTier.all.map { tier in
+        CostBin(tier: tier, count: watches.filter { tier.contains($0.price) }.count)
+    }
 }
 
 private struct YearSpend: Identifiable {

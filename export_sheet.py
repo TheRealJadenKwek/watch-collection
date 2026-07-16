@@ -91,7 +91,7 @@ def percentile(values: list[float], percent: int) -> float:
 def headline_stats(watches: list[dict]) -> dict[str, float]:
     prices = [float(watch["price"]) for watch in watches if isinstance(watch.get("price"), (int, float)) and not isinstance(watch.get("price"), bool)]
     if not prices:
-        return {key: 0.0 for key in ("count", "total", "mean", "median", "min", "max", "stdDev", "skewness")}
+        return {key: 0.0 for key in ("count", "total", "mean", "median", "iqr", "min", "max", "stdDev", "skewness")}
     total = sum(prices)
     n = len(prices)
     mean = total / n
@@ -104,7 +104,8 @@ def headline_stats(watches: list[dict]) -> dict[str, float]:
     )
     return {
         "count": float(len(prices)), "total": total, "mean": mean,
-        "median": percentile(prices, 50), "min": min(prices), "max": max(prices),
+        "median": percentile(prices, 50), "iqr": percentile(prices, 75) - percentile(prices, 25),
+        "min": min(prices), "max": max(prices),
         "stdDev": deviation, "skewness": skewness,
     }
 
@@ -154,6 +155,17 @@ def price_tier(value: float | int | None) -> str | None:
         if lower <= float(value) < upper:
             return label
     return None
+
+
+def cost_histogram(watches: list[dict]) -> dict[str, int]:
+    counts = {label: 0 for label, _lower, _upper in PRICE_TIERS}
+    for watch in watches:
+        value = watch.get("price")
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            tier = price_tier(value)
+            if tier is not None:
+                counts[tier] += 1
+    return counts
 
 
 def originals_only(watches: list[dict]) -> list[dict]:
@@ -469,7 +481,7 @@ def write_scope_sections(writer: csv.writer, scopes: dict[str, list[dict]], wris
     section(writer, "HEADLINE STATISTICS", ["Metric", *scopes.keys()])
     labels = {
         "count": "Count", "total": "Total spent (CAD)", "mean": "Mean price (CAD)",
-        "median": "Median price (CAD)", "min": "Minimum price (CAD)",
+        "median": "Median price (CAD)", "iqr": "Interquartile range (CAD)", "min": "Minimum price (CAD)",
         "max": "Maximum price (CAD)", "stdDev": "Standard deviation (sample)",
         "skewness": "Skewness (sample)",
     }
@@ -490,6 +502,11 @@ def write_scope_sections(writer: csv.writer, scopes: dict[str, list[dict]], wris
         for watches in scopes.values():
             row.append(money(percentile([float(watch["price"]) for watch in watches], percent)))
         writer.writerow(row)
+
+    section(writer, "COST HISTOGRAM (PRICE TIERS)", ["Scope", "Tier", "Count"])
+    for scope, watches in scopes.items():
+        for tier, count in cost_histogram(watches).items():
+            writer.writerow([scope, tier, count])
 
     section(writer, "SIZE HISTOGRAM (2 MM BUCKETS)", ["Scope", "Diameter range (mm)", "Count", "Wrist guidance"])
     for scope, watches in scopes.items():
