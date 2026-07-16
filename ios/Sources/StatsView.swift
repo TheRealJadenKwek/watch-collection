@@ -69,9 +69,8 @@ struct StatsScreen: View {
     }
 
     private var headlineTiles: some View {
-        let stats = headline(scoped)
-        let headline = store.data?.headlineStats?[scope]
-        let iqrRange = "\(cad(headline?.q1 ?? 0)) – \(cad(headline?.q3 ?? 0))"
+        let stats = store.data?.headlineStats?[scope]
+        let iqrRange = "\(cad(stats?.q1 ?? 0)) – \(cad(stats?.q3 ?? 0))"
         let measured = owned.filter { $0.diameter != nil }
         let inRange = measured.filter { watch in
             guard let diameter = watch.diameter else { return false }
@@ -79,14 +78,14 @@ struct StatsScreen: View {
         }.count
         let percent = measured.isEmpty ? 0 : Double(inRange) / Double(measured.count) * 100
         let values: [(String, String)] = [
-            ("Count", "\(stats.count)"),
-            ("Total spent", cad(stats.total)),
-            ("Mean", cad(stats.mean)),
-            ("Median", cad(stats.median)),
+            ("Count", "\(Int(stats?.count ?? 0))"),
+            ("Total spent", cad(stats?.total ?? 0)),
+            ("Mean", cad(stats?.mean ?? 0)),
+            ("Median", cad(stats?.median ?? 0)),
             ("IQR (P25–P75)", iqrRange),
-            ("Minimum", cad(stats.minimum)),
-            ("Maximum", cad(stats.maximum)),
-            ("Std dev", cad(stats.standardDeviation)),
+            ("Minimum", cad(stats?.min ?? 0)),
+            ("Maximum", cad(stats?.max ?? 0)),
+            ("Std dev", cad(stats?.stdDev ?? 0)),
             ("Sweet spot", "\(Int(percent.rounded()))%"),
         ]
         return LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
@@ -110,26 +109,86 @@ struct StatsScreen: View {
 
     private var costChart: some View {
         let bins = costHistogram(scoped)
+        let headline = store.data?.headlineStats?[scope]
+        let medianX = headline.map { costReferencePosition($0.median, maximumPrice: $0.max) }
+        let meanX = headline.map { costReferencePosition($0.mean, maximumPrice: $0.max) }
         return SectionCard(eyebrow: "Price tiers", title: "Cost histogram") {
-            Chart(bins) { bin in
-                BarMark(
-                    x: .value("Watches", Double(bin.count)),
-                    y: .value("Tier", bin.label)
-                )
-                .foregroundStyle(selectedCostTier == bin.id ? WatchTheme.gold.gradient : WatchTheme.green.gradient)
-                .opacity(selectedCostTier == nil || selectedCostTier == bin.id ? 1 : 0.42)
-                .cornerRadius(3)
-                .accessibilityLabel(bin.label)
-                .accessibilityValue("\(bin.count) \(bin.count == 1 ? "watch" : "watches")")
-                .annotation(position: .trailing) {
-                    if selectedCostTier == bin.id {
-                        ChartAnnotationBubble(text: "\(bin.label) — \(bin.count) \(bin.count == 1 ? "watch" : "watches")")
+            HStack(spacing: 6) {
+                Capsule()
+                    .fill(WatchTheme.gold.opacity(0.68))
+                    .frame(width: 25, height: 2)
+                Text("shape")
+                    .font(.caption2)
+                    .foregroundStyle(WatchTheme.secondary)
+            }
+            .frame(maxWidth: .infinity, alignment: .trailing)
+            Chart {
+                ForEach(bins) { bin in
+                    BarMark(
+                        x: .value("Tier", bin.position),
+                        y: .value("Watches", bin.count),
+                        width: .ratio(0.68)
+                    )
+                    .foregroundStyle(selectedCostTier == bin.id ? WatchTheme.gold.gradient : WatchTheme.green.gradient)
+                    .opacity(selectedCostTier == nil || selectedCostTier == bin.id ? 1 : 0.42)
+                    .cornerRadius(3)
+                    .accessibilityLabel(bin.label)
+                    .accessibilityValue("\(bin.count) \(bin.count == 1 ? "watch" : "watches")")
+                    .annotation(position: .top) {
+                        if selectedCostTier == bin.id {
+                            ChartAnnotationBubble(text: "\(bin.label) — \(bin.count) \(bin.count == 1 ? "watch" : "watches")")
+                        }
+                    }
+                }
+                ForEach(bins) { bin in
+                    LineMark(
+                        x: .value("Tier", bin.position),
+                        y: .value("Shape", bin.count)
+                    )
+                    .interpolationMethod(.monotone)
+                    .foregroundStyle(WatchTheme.gold.opacity(0.68))
+                    .lineStyle(StrokeStyle(lineWidth: 2))
+                }
+                if let medianX, let headline {
+                    RuleMark(x: .value("Median", medianX))
+                        .foregroundStyle(Color(red: 0.93, green: 0.90, blue: 0.82))
+                        .lineStyle(StrokeStyle(lineWidth: 1.4))
+                        .annotation(position: .top, alignment: .leading) {
+                            Text("median \(cad(headline.median))")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(Color(red: 0.93, green: 0.90, blue: 0.82))
+                                .fixedSize()
+                        }
+                }
+                if let meanX, let headline {
+                    RuleMark(x: .value("Mean", meanX))
+                        .foregroundStyle(WatchTheme.gold)
+                        .lineStyle(StrokeStyle(lineWidth: 1.4, dash: [6, 5]))
+                        .annotation(position: .top, alignment: .leading) {
+                            Text("mean \(cad(headline.mean))")
+                                .font(.caption2.weight(.bold))
+                                .foregroundStyle(WatchTheme.gold)
+                                .fixedSize()
+                                .offset(y: 15)
+                        }
+                }
+            }
+            .frame(height: 285)
+            .chartXScale(domain: 0...Double(bins.count))
+            .chartXAxis {
+                AxisMarks(values: bins.map(\.position)) { value in
+                    AxisGridLine().foregroundStyle(Color.white.opacity(0.05))
+                    AxisTick().foregroundStyle(Color.white.opacity(0.14))
+                    AxisValueLabel {
+                        if let position = value.as(Double.self),
+                           let bin = bins.min(by: { abs($0.position - position) < abs($1.position - position) }) {
+                            Text(bin.axisLabel)
+                                .font(.system(size: 8))
+                        }
                     }
                 }
             }
-            .frame(height: 270)
-            .chartXAxisLabel("watches")
-            .chartYSelection(value: $selectedCostTier)
+            .chartYAxisLabel("watches")
             .chartOverlay { proxy in
                 GeometryReader { geometry in
                     Color.clear
@@ -140,6 +199,12 @@ struct StatsScreen: View {
                             }
                         )
                 }
+            }
+            if let headline {
+                Text("Mean \(cad(headline.mean)) vs median \(cad(headline.median)) — \(skewShape(headline.skewness)) (skew \(headline.skewness.formatted(.number.precision(.fractionLength(3)))))")
+                    .font(.caption)
+                    .foregroundStyle(WatchTheme.secondary)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -486,11 +551,12 @@ struct StatsScreen: View {
         }
         let plotX = location.x - plotFrame.minX
         let plotY = location.y - plotFrame.minY
-        guard let tier = proxy.value(atY: plotY, as: String.self),
-              let bin = bins.first(where: { $0.id == tier }),
-              let rawX = proxy.value(atX: plotX, as: Double.self),
-              rawX >= 0,
-              rawX <= Double(bin.count)
+        guard let rawX = proxy.value(atX: plotX, as: Double.self),
+              let rawY = proxy.value(atY: plotY, as: Double.self),
+              let bin = bins.min(by: { abs($0.position - rawX) < abs($1.position - rawX) }),
+              abs(bin.position - rawX) <= 0.34,
+              rawY >= 0,
+              rawY <= Double(bin.count)
         else {
             selectedCostTier = nil
             return
@@ -578,27 +644,6 @@ struct StatsScreen: View {
     }
 }
 
-private struct HeadlineStats {
-    var count: Int
-    var total: Double
-    var mean: Double
-    var median: Double
-    var minimum: Double
-    var maximum: Double
-    var standardDeviation: Double
-}
-
-private func headline(_ watches: [Watch]) -> HeadlineStats {
-    let prices = watches.map(\.price).sorted()
-    guard !prices.isEmpty else { return HeadlineStats(count: 0, total: 0, mean: 0, median: 0, minimum: 0, maximum: 0, standardDeviation: 0) }
-    let total = Double(watches.reduce(0) { $0 + Int($1.price * 100) }) / 100
-    let mean = total / Double(prices.count)
-    let middle = prices.count / 2
-    let median = prices.count.isMultiple(of: 2) ? (prices[middle - 1] + prices[middle]) / 2 : prices[middle]
-    let variance = prices.count > 1 ? prices.reduce(0) { $0 + pow($1 - mean, 2) } / Double(prices.count - 1) : 0
-    return HeadlineStats(count: prices.count, total: total, mean: mean, median: median, minimum: prices.first!, maximum: prices.last!, standardDeviation: sqrt(variance))
-}
-
 private struct MetricBin: Identifiable {
     var id: Double { lower }
     var lower: Double
@@ -617,12 +662,41 @@ private struct CostBin: Identifiable {
     var tier: PriceTier
     var count: Int
     var label: String { tier.label }
+    var index: Int
+    var position: Double { Double(index) + 0.5 }
+    var axisLabel: String {
+        switch index {
+        case 0: "<$50"
+        case 1: "$50"
+        case 2: "$100"
+        case 3: "$200"
+        case 4: "$300"
+        case 5: "$500"
+        case 6: "$750"
+        case 7: "$1k"
+        default: "$2.5k+"
+        }
+    }
 }
 
 private func costHistogram(_ watches: [Watch]) -> [CostBin] {
-    PriceTier.all.map { tier in
-        CostBin(tier: tier, count: watches.filter { tier.contains($0.price) }.count)
+    PriceTier.all.enumerated().map { index, tier in
+        CostBin(tier: tier, count: watches.filter { tier.contains($0.price) }.count, index: index)
     }
+}
+
+private func costReferencePosition(_ value: Double, maximumPrice: Double) -> Double {
+    guard let index = PriceTier.all.firstIndex(where: { $0.contains(value) }) else { return 0.5 }
+    let tier = PriceTier.all[index]
+    let upper = tier.maximum ?? max(maximumPrice, tier.minimum + 1)
+    let proportion = min(0.96, max(0.04, (value - tier.minimum) / (upper - tier.minimum)))
+    return Double(index) + proportion
+}
+
+private func skewShape(_ skewness: Double) -> String {
+    if skewness > 0.3 { return "right-skewed" }
+    if skewness < -0.3 { return "left-skewed" }
+    return "roughly symmetric"
 }
 
 private struct YearSpend: Identifiable {

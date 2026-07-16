@@ -12,9 +12,17 @@ struct CollectionData: Codable, Sendable {
 }
 
 struct HeadlineStatsPayload: Codable, Sendable {
+    var count: Double
+    var total: Double
+    var mean: Double
+    var median: Double
     var iqr: Double
     var q1: Double?
     var q3: Double?
+    var min: Double
+    var max: Double
+    var stdDev: Double
+    var skewness: Double
 }
 
 struct CollectionSettings: Codable, Sendable {

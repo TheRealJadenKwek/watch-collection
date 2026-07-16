@@ -95,6 +95,22 @@ main { max-width: 1440px; margin: 0 auto; padding: 1.7rem 3rem 5rem; }
 .bar-row { display: grid; grid-template-columns: minmax(100px, 1.1fr) 2fr auto; align-items: center; gap: .7rem; color: var(--muted); font-size: .76rem; }
 .bar-track { overflow: hidden; height: .42rem; border-radius: 999px; background: var(--surface-3); }
 .bar-fill { height: 100%; min-width: 2px; border-radius: inherit; background: linear-gradient(90deg, #94763c, var(--gold)); }
+.cost-histogram { position: relative; }
+.cost-histogram svg { display: block; width: 100%; height: auto; overflow: visible; }
+.cost-chart-legend { position: absolute; top: .1rem; right: .15rem; display: flex; align-items: center; gap: .35rem; color: var(--muted); font-size: .68rem; text-transform: lowercase; }
+.cost-chart-legend span { width: 1.45rem; height: 2px; border-radius: 999px; background: rgba(201,167,96,.68); }
+.cost-hist-axis { stroke: rgba(255,255,255,.13); stroke-width: 1; }
+.cost-hist-bar { fill: var(--green); opacity: .62; }
+.cost-hist-count { fill: var(--ink); font-size: 12px; font-weight: 700; }
+.cost-hist-label { fill: var(--muted); font-size: 11px; }
+.cost-shape-curve { fill: none; stroke: rgba(201,167,96,.72); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.cost-reference { stroke-width: 1.4; }
+.cost-reference.median { stroke: #eee5d2; }
+.cost-reference.mean { stroke: var(--gold); stroke-dasharray: 6 5; }
+.cost-reference-label { font-size: 11px; font-weight: 700; }
+.cost-reference-label.median { fill: #eee5d2; }
+.cost-reference-label.mean { fill: var(--gold-soft); }
+.skew-sentence { margin: .2rem 0 0; color: var(--muted); font-size: .78rem; line-height: 1.45; }
 .coverage-grid, .tier-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: .55rem; }
 .coverage-item { padding: .7rem; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.015); }
 .coverage-item strong { display: block; margin-bottom: .3rem; font-family: Palatino, Georgia, serif; font-weight: 500; }

@@ -191,16 +191,6 @@ function percentile(values, percent) {
   return lower === upper ? sorted[lower] : sorted[lower] + (sorted[upper] - sorted[lower]) * (position - lower);
 }
 
-function statsFor(watches) {
-  const prices = watches.map(watch => Number(watch.price));
-  if (!prices.length) return { count: 0, total: 0, mean: 0, median: 0, min: 0, max: 0, std: 0, skew: 0 };
-  const total = sum(prices), mean = total / prices.length, n = prices.length;
-  // Sample (n−1) std dev + Sheets/Excel SKEW, matching common spreadsheet formulas
-  const std = n > 1 ? Math.sqrt(sum(prices.map(price => (price - mean) ** 2)) / (n - 1)) : 0;
-  const skew = n > 2 && std ? (n / ((n - 1) * (n - 2))) * sum(prices.map(price => ((price - mean) / std) ** 3)) : 0;
-  return { count: prices.length, total, mean, median: percentile(prices, 50), min: Math.min(...prices), max: Math.max(...prices), std, skew };
-}
-
 function counter(items, getter) {
   const counts = new Map();
   items.forEach(item => { const key = getter(item); counts.set(key, (counts.get(key) || 0) + 1); });
@@ -210,6 +200,84 @@ function counter(items, getter) {
 function barRows(entries, formatter = value => value) {
   const max = Math.max(1, ...entries.map(([, value]) => Number(value)));
   return `<div class="bar-list">${entries.map(([label, value, suffix = ""]) => `<div class="bar-row"><span>${esc(label)}</span><span class="bar-track"><span class="bar-fill" style="width:${Number(value) === 0 ? 0 : Math.max(1.5, Number(value) / max * 100)}%"></span></span><strong>${esc(formatter(value))}${esc(suffix)}</strong></div>`).join("")}</div>`;
+}
+
+function monotoneCubicPath(points) {
+  if (!points.length) return "";
+  if (points.length === 1) return `M ${points[0].x} ${points[0].y}`;
+  const slopes = points.slice(1).map((point, index) => (point.y - points[index].y) / (point.x - points[index].x));
+  const tangents = points.map((point, index) => {
+    if (index === 0) return slopes[0];
+    if (index === points.length - 1) return slopes[slopes.length - 1];
+    const before = slopes[index - 1], after = slopes[index];
+    return before * after <= 0 ? 0 : 2 * before * after / (before + after);
+  });
+  slopes.forEach((slope, index) => {
+    if (slope === 0) {
+      tangents[index] = 0;
+      tangents[index + 1] = 0;
+      return;
+    }
+    const before = tangents[index] / slope, after = tangents[index + 1] / slope;
+    const magnitude = Math.hypot(before, after);
+    if (magnitude > 3) {
+      const scale = 3 / magnitude;
+      tangents[index] = scale * before * slope;
+      tangents[index + 1] = scale * after * slope;
+    }
+  });
+  return points.slice(1).reduce((path, point, index) => {
+    const previous = points[index], width = point.x - previous.x;
+    return `${path} C ${previous.x + width / 3} ${previous.y + tangents[index] * width / 3}, ${point.x - width / 3} ${point.y - tangents[index + 1] * width / 3}, ${point.x} ${point.y}`;
+  }, `M ${points[0].x} ${points[0].y}`);
+}
+
+function costReferenceX(value, headline, left, bucketWidth) {
+  const tierIndex = Math.max(0, PRICE_TIERS.findIndex(tier => Number(value) >= tier.min && Number(value) < tier.max));
+  const tier = PRICE_TIERS[tierIndex];
+  const upper = Number.isFinite(tier.max) ? tier.max : Math.max(Number(headline.max) || tier.min + 1, tier.min + 1);
+  const proportion = Math.min(.96, Math.max(.04, (Number(value) - tier.min) / (upper - tier.min)));
+  return left + (tierIndex + proportion) * bucketWidth;
+}
+
+function skewShape(skew) {
+  if (Number(skew) > .3) return "right-skewed";
+  if (Number(skew) < -.3) return "left-skewed";
+  return "roughly symmetric";
+}
+
+function costHistogramChart(entries, headline) {
+  const width = 900, height = 286, left = 42, right = 12, top = 45, bottom = 222;
+  const bucketWidth = (width - left - right) / entries.length;
+  const maxCount = Math.max(1, ...entries.map(([, count]) => Number(count)));
+  const chartHeight = bottom - top;
+  const points = entries.map(([, count], index) => ({
+    x: left + (index + .5) * bucketWidth,
+    y: bottom - Number(count) / maxCount * chartHeight,
+  }));
+  const median = Number(headline.median ?? 0), mean = Number(headline.mean ?? 0), skew = Number(headline.skewness ?? 0);
+  const medianX = costReferenceX(median, headline, left, bucketWidth);
+  const meanX = costReferenceX(mean, headline, left, bucketWidth);
+  const bars = entries.map(([label, count], index) => {
+    const barWidth = bucketWidth * .68, x = left + index * bucketWidth + bucketWidth * .16;
+    const y = bottom - Number(count) / maxCount * chartHeight;
+    return `<g><rect class="cost-hist-bar" x="${x}" y="${y}" width="${barWidth}" height="${bottom - y}" rx="4"></rect><text class="cost-hist-count" x="${x + barWidth / 2}" y="${Math.max(top + 11, y - 7)}" text-anchor="middle">${Number(count)}</text><text class="cost-hist-label" x="${x + barWidth / 2}" y="247" text-anchor="middle">${esc(label)}</text></g>`;
+  }).join("");
+  const medianAnchor = medianX > width - 80 ? "end" : "start";
+  const meanAnchor = meanX > width - 80 ? "end" : "start";
+  return `<div class="cost-histogram">
+    <div class="cost-chart-legend"><span></span>shape</div>
+    <svg viewBox="0 0 ${width} ${height}" role="img" aria-label="Cost histogram with shape curve, median ${esc(money(median))}, and mean ${esc(money(mean))}">
+      <line class="cost-hist-axis" x1="${left}" y1="${bottom}" x2="${width - right}" y2="${bottom}"></line>
+      ${bars}
+      <path class="cost-shape-curve" d="${monotoneCubicPath(points)}"></path>
+      <line class="cost-reference median" x1="${medianX}" y1="${top}" x2="${medianX}" y2="${bottom}"></line>
+      <text class="cost-reference-label median" x="${medianX + (medianAnchor === "end" ? -4 : 4)}" y="16" text-anchor="${medianAnchor}">median ${esc(money(median))}</text>
+      <line class="cost-reference mean" x1="${meanX}" y1="${top}" x2="${meanX}" y2="${bottom}"></line>
+      <text class="cost-reference-label mean" x="${meanX + (meanAnchor === "end" ? -4 : 4)}" y="34" text-anchor="${meanAnchor}">mean ${esc(money(mean))}</text>
+    </svg>
+    <p class="skew-sentence">Mean ${esc(money(mean))} vs median ${esc(money(median))} — ${skewShape(skew)} (skew ${skew.toFixed(3)})</p>
+  </div>`;
 }
 
 function histogram(items, field) {
@@ -257,7 +325,6 @@ function renderStats() {
   const all = state.data.watches;
   const owned = all.filter(watch => watch.status === "owned");
   const scope = state.statsScope === "owned" ? owned : all;
-  const stats = statsFor(scope);
   const hl = state.data.headlineStats?.[state.statsScope] ?? {};
   const iqrRange = `${money(hl.q1 ?? 0)} – ${money(hl.q3 ?? 0)}`;
   const wrist = state.data.settings.wrist;
@@ -297,15 +364,15 @@ function renderStats() {
   $("#statsContent").innerHTML = `
     <div class="stat-grid">
       ${[
-        ["Count", stats.count], ["Total spent", money(stats.total)], ["Mean", money(stats.mean)], ["Median", money(stats.median)],
-        ["IQR (P25–P75)", iqrRange], ["Minimum", money(stats.min)], ["Maximum", money(stats.max)], ["Std dev (sample)", money(stats.std)], ["Skewness", stats.skew.toFixed(3)],
+        ["Count", Number(hl.count ?? 0)], ["Total spent", money(hl.total ?? 0)], ["Mean", money(hl.mean ?? 0)], ["Median", money(hl.median ?? 0)],
+        ["IQR (P25–P75)", iqrRange], ["Minimum", money(hl.min ?? 0)], ["Maximum", money(hl.max ?? 0)], ["Std dev (sample)", money(hl.stdDev ?? 0)], ["Skewness", Number(hl.skewness ?? 0).toFixed(3)],
         ["Owned in sweet spot", `${sweetPercent.toFixed(0)}%`],
       ].map(([label, value]) => `<div class="stat-tile"><span>${label}</span><strong>${value}</strong></div>`).join("")}
     </div>
     <div class="stats-layout">
       <section class="panel wide"><div class="panel-heading"><div><p class="eyebrow">Distribution</p><h3>Percentiles</h3></div><small>Linear interpolation</small></div><div class="chip-cloud">${pcts.map(percent => `<span class="chip">P${percent} <strong>${money(percentile(scope.map(w => w.price), percent))}</strong></span>`).join("")}</div></section>
 
-      <section class="panel"><div class="panel-heading"><div><p class="eyebrow">Price tiers</p><h3>Cost histogram</h3></div><small>Every tier in this ${state.statsScope === "owned" ? "current" : "all-time"} scope</small></div>${barRows(costHist)}</section>
+      <section class="panel wide"><div class="panel-heading"><div><p class="eyebrow">Price tiers</p><h3>Cost histogram</h3></div><small>Every tier in this ${state.statsScope === "owned" ? "current" : "all-time"} scope</small></div>${costHistogramChart(costHist, hl)}</section>
 
       <section class="panel"><div class="panel-heading"><div><p class="eyebrow">Diameter</p><h3>Size distribution</h3></div><small>${wrist.sweetSpotMin}–${wrist.sweetSpotMax}mm sweet · ${wrist.perfect}mm perfect</small></div>
         ${diamHist.length ? barRows(diamHist.map(([lower, count]) => [`${lower}–${(lower + 1.9).toFixed(1)}mm`, count])) : `<p class="form-note">No diameter data.</p>`}
