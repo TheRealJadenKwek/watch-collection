@@ -258,7 +258,8 @@ function renderStats() {
   const owned = all.filter(watch => watch.status === "owned");
   const scope = state.statsScope === "owned" ? owned : all;
   const stats = statsFor(scope);
-  const iqr = state.data.headlineStats?.[state.statsScope]?.iqr ?? 0;
+  const hl = state.data.headlineStats?.[state.statsScope] ?? {};
+  const iqrRange = `${money(hl.q1 ?? 0)} – ${money(hl.q3 ?? 0)}`;
   const wrist = state.data.settings.wrist;
   const measuredOwned = owned.filter(watch => watch.diameter != null);
   const sweetCount = measuredOwned.filter(watch => watch.diameter >= wrist.sweetSpotMin && watch.diameter <= wrist.sweetSpotMax).length;
@@ -297,7 +298,7 @@ function renderStats() {
     <div class="stat-grid">
       ${[
         ["Count", stats.count], ["Total spent", money(stats.total)], ["Mean", money(stats.mean)], ["Median", money(stats.median)],
-        ["IQR", money(iqr)], ["Minimum", money(stats.min)], ["Maximum", money(stats.max)], ["Std dev (sample)", money(stats.std)], ["Skewness", stats.skew.toFixed(3)],
+        ["IQR (P25–P75)", iqrRange], ["Minimum", money(stats.min)], ["Maximum", money(stats.max)], ["Std dev (sample)", money(stats.std)], ["Skewness", stats.skew.toFixed(3)],
         ["Owned in sweet spot", `${sweetPercent.toFixed(0)}%`],
       ].map(([label, value]) => `<div class="stat-tile"><span>${label}</span><strong>${value}</strong></div>`).join("")}
     </div>

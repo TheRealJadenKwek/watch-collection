@@ -13,6 +13,8 @@ struct CollectionData: Codable, Sendable {
 
 struct HeadlineStatsPayload: Codable, Sendable {
     var iqr: Double
+    var q1: Double?
+    var q3: Double?
 }
 
 struct CollectionSettings: Codable, Sendable {

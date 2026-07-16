@@ -70,7 +70,8 @@ struct StatsScreen: View {
 
     private var headlineTiles: some View {
         let stats = headline(scoped)
-        let iqr = store.data?.headlineStats?[scope]?.iqr ?? 0
+        let headline = store.data?.headlineStats?[scope]
+        let iqrRange = "\(cad(headline?.q1 ?? 0)) – \(cad(headline?.q3 ?? 0))"
         let measured = owned.filter { $0.diameter != nil }
         let inRange = measured.filter { watch in
             guard let diameter = watch.diameter else { return false }
@@ -82,7 +83,7 @@ struct StatsScreen: View {
             ("Total spent", cad(stats.total)),
             ("Mean", cad(stats.mean)),
             ("Median", cad(stats.median)),
-            ("IQR", cad(iqr)),
+            ("IQR (P25–P75)", iqrRange),
             ("Minimum", cad(stats.minimum)),
             ("Maximum", cad(stats.maximum)),
             ("Std dev", cad(stats.standardDeviation)),

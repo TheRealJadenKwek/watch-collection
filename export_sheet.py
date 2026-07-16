@@ -91,7 +91,7 @@ def percentile(values: list[float], percent: int) -> float:
 def headline_stats(watches: list[dict]) -> dict[str, float]:
     prices = [float(watch["price"]) for watch in watches if isinstance(watch.get("price"), (int, float)) and not isinstance(watch.get("price"), bool)]
     if not prices:
-        return {key: 0.0 for key in ("count", "total", "mean", "median", "iqr", "min", "max", "stdDev", "skewness")}
+        return {key: 0.0 for key in ("count", "total", "mean", "median", "iqr", "q1", "q3", "min", "max", "stdDev", "skewness")}
     total = sum(prices)
     n = len(prices)
     mean = total / n
@@ -105,6 +105,7 @@ def headline_stats(watches: list[dict]) -> dict[str, float]:
     return {
         "count": float(len(prices)), "total": total, "mean": mean,
         "median": percentile(prices, 50), "iqr": percentile(prices, 75) - percentile(prices, 25),
+        "q1": percentile(prices, 25), "q3": percentile(prices, 75),
         "min": min(prices), "max": max(prices),
         "stdDev": deviation, "skewness": skewness,
     }
@@ -481,7 +482,7 @@ def write_scope_sections(writer: csv.writer, scopes: dict[str, list[dict]], wris
     section(writer, "HEADLINE STATISTICS", ["Metric", *scopes.keys()])
     labels = {
         "count": "Count", "total": "Total spent (CAD)", "mean": "Mean price (CAD)",
-        "median": "Median price (CAD)", "iqr": "Interquartile range (CAD)", "min": "Minimum price (CAD)",
+        "median": "Median price (CAD)", "iqr": "Interquartile range (CAD)", "q1": "First quartile (CAD)", "q3": "Third quartile (CAD)", "min": "Minimum price (CAD)",
         "max": "Maximum price (CAD)", "stdDev": "Standard deviation (sample)",
         "skewness": "Skewness (sample)",
     }

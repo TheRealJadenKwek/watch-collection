@@ -375,7 +375,7 @@ class WatchAppTests(unittest.TestCase):
         js = (ROOT / "app.js").read_text(encoding="utf-8")
         for panel in ("collection", "past", "stats", "wishlist"):
             self.assertIn(f'data-panel="{panel}"', html)
-        for marker in ("searchInput", "categoryFilter", "completeDataNudge", "suggestionsPanel", "suggestExclude", 'addEventListener("paste"', "dragover", "data-manage", "categories", "dialcolors", "materials", "WISHLIST_WEIGHTS", "headlineStats", '"IQR"', "Cost histogram"):
+        for marker in ("searchInput", "categoryFilter", "completeDataNudge", "suggestionsPanel", "suggestExclude", 'addEventListener("paste"', "dragover", "data-manage", "categories", "dialcolors", "materials", "WISHLIST_WEIGHTS", "headlineStats", '"IQR (P25–P75)"', "Cost histogram"):
             self.assertIn(marker, html + js)
         for normalized_brand in ("Christopher Ward", "D1 Milano", "Henry Archer", "Furlan Marri", "Dan Henry"):
             self.assertIn(normalized_brand, js)
