@@ -2,6 +2,7 @@ import SwiftUI
 
 struct OfflineBanner: View {
     let message: String
+    var onFixServer: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 8) {
@@ -9,9 +10,23 @@ struct OfflineBanner: View {
             Text(message)
                 .font(.caption.weight(.semibold))
             Spacer()
-            Text("Read-only")
-                .font(.caption2.weight(.bold))
-                .foregroundStyle(WatchTheme.gold)
+            // Settings must stay reachable precisely when the Mac is not —
+            // a wrong server URL can only be fixed from here.
+            if let onFixServer {
+                Button(action: onFixServer) {
+                    Text("Fix server")
+                        .font(.caption2.weight(.bold))
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(WatchTheme.gold.opacity(0.18))
+                        .foregroundStyle(WatchTheme.gold)
+                        .clipShape(Capsule())
+                }
+            } else {
+                Text("Read-only")
+                    .font(.caption2.weight(.bold))
+                    .foregroundStyle(WatchTheme.gold)
+            }
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)

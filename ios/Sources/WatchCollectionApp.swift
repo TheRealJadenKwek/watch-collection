@@ -52,7 +52,7 @@ struct RootView: View {
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             if store.isOffline {
-                OfflineBanner(message: "Mac unreachable · showing cached collection")
+                OfflineBanner(message: "Mac unreachable · showing cached collection") { showSettings = true }
             }
         }
         .sheet(isPresented: $showSettings) {
