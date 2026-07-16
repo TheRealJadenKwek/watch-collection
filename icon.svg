@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#201d18"/>
+      <stop offset="1" stop-color="#12100d"/>
+    </linearGradient>
+    <linearGradient id="gold" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#d9bc7a"/>
+      <stop offset="1" stop-color="#b08d4f"/>
+    </linearGradient>
+    <radialGradient id="dial" cx="0.38" cy="0.32" r="1">
+      <stop offset="0" stop-color="#2b2620"/>
+      <stop offset="1" stop-color="#1a1712"/>
+    </radialGradient>
+  </defs>
+
+  <!-- macOS-style rounded square -->
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="url(#bg)"/>
+  <rect x="64" y="64" width="896" height="896" rx="200" fill="none" stroke="#3a342a" stroke-width="4"/>
+
+  <!-- strap hints -->
+  <path d="M400 64 h224 v96 c0 18-14 32-32 32 h-160 c-18 0-32-14-32-32 z" fill="#2a251d"/>
+  <path d="M400 960 h224 v-96 c0-18-14-32-32-32 h-160 c-18 0-32 14-32 32 z" fill="#2a251d"/>
+
+  <!-- crown -->
+  <rect x="812" y="484" width="52" height="56" rx="14" fill="url(#gold)"/>
+
+  <!-- case + bezel -->
+  <circle cx="512" cy="512" r="312" fill="url(#gold)"/>
+  <circle cx="512" cy="512" r="284" fill="#12100d"/>
+  <circle cx="512" cy="512" r="264" fill="url(#dial)"/>
+
+  <!-- hour markers -->
+  <g stroke="#d9bc7a" stroke-width="14" stroke-linecap="round">
+    <line x1="512" y1="286" x2="512" y2="330"/>
+    <line x1="512" y1="694" x2="512" y2="738"/>
+    <line x1="286" y1="512" x2="330" y2="512"/>
+    <line x1="694" y1="512" x2="738" y2="512"/>
+  </g>
+  <g stroke="#8d7a55" stroke-width="8" stroke-linecap="round">
+    <line x1="625" y1="316.3" x2="603" y2="354.4"/>
+    <line x1="707.7" y1="399" x2="669.6" y2="421"/>
+    <line x1="707.7" y1="625" x2="669.6" y2="603"/>
+    <line x1="625" y1="707.7" x2="603" y2="669.6"/>
+    <line x1="399" y1="707.7" x2="421" y2="669.6"/>
+    <line x1="316.3" y1="625" x2="354.4" y2="603"/>
+    <line x1="316.3" y1="399" x2="354.4" y2="421"/>
+    <line x1="399" y1="316.3" x2="421" y2="354.4"/>
+  </g>
+
+  <!-- hands at 10:08 -->
+  <g stroke-linecap="round">
+    <line x1="512" y1="512" x2="404" y2="404" stroke="#efe6d4" stroke-width="30"/>
+    <line x1="512" y1="512" x2="678" y2="430" stroke="#efe6d4" stroke-width="22"/>
+    <line x1="512" y1="512" x2="480" y2="678" stroke="#c9a35c" stroke-width="10"/>
+  </g>
+  <circle cx="512" cy="512" r="22" fill="url(#gold)"/>
+  <circle cx="512" cy="512" r="9" fill="#12100d"/>
+</svg>

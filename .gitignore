@@ -1,0 +1,17 @@
+# Personal data — the whole point of keeping this app local.
+# Copy data.sample/watches.json to data/watches.json to get started.
+data/
+exports/
+
+# Logs & OS noise
+*.log
+.DS_Store
+
+# Xcode / build artifacts (regenerate with `xcodegen generate` in ios/)
+ios/WatchCollection.xcodeproj/
+ios/build/
+DerivedData/
+
+# Local design notes (not shipped)
+SPEC.md
+SPEC-IOS.md

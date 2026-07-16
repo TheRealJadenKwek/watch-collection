@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>Watch Collection</title>
+  <meta name="theme-color" content="#12100d">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Watches">
+  <link rel="manifest" href="/static/manifest.webmanifest">
+  <link rel="icon" type="image/svg+xml" href="/icon.svg">
+  <link rel="icon" type="image/png" sizes="32x32" href="/static/favicon-32.png">
+  <link rel="apple-touch-icon" href="/static/apple-touch-icon.png">
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand-lockup">
+      <span class="brand-kicker">The collection</span>
+      <h1 id="owner-title">Watch Collection</h1>
+    </div>
+    <div class="header-actions">
+      <button class="button ghost" id="settingsButton" type="button">Settings</button>
+      <button class="button accent" id="addWatchButton" type="button">Add watch</button>
+    </div>
+  </header>
+
+  <nav class="tabs" aria-label="Collection views">
+    <button class="tab active" type="button" data-tab="collection">Collection <span id="collectionCount"></span></button>
+    <button class="tab" type="button" data-tab="past">Past <span id="pastCount"></span></button>
+    <button class="tab" type="button" data-tab="stats">Stats</button>
+    <button class="tab" type="button" data-tab="wishlist">Wishlist <span id="wishlistCount"></span></button>
+  </nav>
+
+  <section class="toolbar" id="collectionToolbar">
+    <label class="search-wrap">
+      <span class="sr-only">Search watches</span>
+      <svg aria-hidden="true" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"></circle><path d="m20 20-4-4"></path></svg>
+      <input id="searchInput" type="search" placeholder="Search names and stories  /" autocomplete="off">
+    </label>
+    <label>
+      <span class="sr-only">Filter by category</span>
+      <select id="categoryFilter"><option value="">All categories</option></select>
+    </label>
+    <button class="text-button" type="button" data-manage="categories">Manage categories</button>
+  </section>
+
+  <main>
+    <section class="tab-panel active" id="collectionPanel" data-panel="collection">
+      <div class="section-heading"><div><p class="eyebrow">On the wrist</p><h2>Current collection</h2></div><p id="collectionSummary"></p></div>
+      <div class="watch-grid" id="collectionGrid"></div>
+    </section>
+
+    <section class="tab-panel" id="pastPanel" data-panel="past">
+      <div class="section-heading"><div><p class="eyebrow">The archive</p><h2>Past watches</h2></div>
+        <label><span class="sr-only">Past status</span><select id="statusFilter"><option value="">All outcomes</option></select></label>
+      </div>
+      <div class="watch-grid" id="pastGrid"></div>
+    </section>
+
+    <section class="tab-panel" id="statsPanel" data-panel="stats">
+      <div class="section-heading stats-heading"><div><p class="eyebrow">The shape of the collection</p><h2>Stats & buying guide</h2></div>
+        <div class="segmented" id="scopeToggle"><button class="active" data-scope="owned" type="button">Current collection</button><button data-scope="all" type="button">All-time</button></div>
+      </div>
+      <div id="completeDataNudge"></div>
+      <div id="statsContent"></div>
+    </section>
+
+    <section class="tab-panel" id="wishlistPanel" data-panel="wishlist">
+      <div class="section-heading"><div><p class="eyebrow">What earns the next slot?</p><h2>Wishlist</h2></div><button class="button accent" id="addCandidateButton" type="button">Add candidate</button></div>
+      <p class="explainer">Ranked across six live lenses: category, brand, price tier, dial colour, wrist fit, and material. The weights live in one constant and total 14 points.</p>
+      <section class="panel next-move-panel" id="suggestionsPanel">
+        <div class="panel-heading"><div><p class="eyebrow">Collection gaps</p><h3>Next move</h3></div><span class="chip gold">up to 9 points</span></div>
+        <p class="saturation-strip" id="saturationStrip"></p>
+        <div class="suggestion-grid" id="suggestionCards"></div>
+      </section>
+      <section class="panel radar-panel"><div class="panel-heading"><div><p class="eyebrow">Brands on the radar</p><h3>Explore before repeating</h3></div><form id="radarForm" class="inline-form"><input name="brand" placeholder="Add brand" required><button class="button small" type="submit">Add</button></form></div><div class="chip-cloud" id="radarChips"></div></section>
+      <div class="wishlist-list" id="wishlistList"></div>
+    </section>
+  </main>
+
+  <dialog id="itemDialog" class="modal item-modal">
+    <button class="modal-close" type="button" data-close="itemDialog" aria-label="Close">×</button>
+    <div id="itemDialogContent"></div>
+  </dialog>
+
+  <dialog id="taxonomyDialog" class="modal compact-modal">
+    <button class="modal-close" type="button" data-close="taxonomyDialog" aria-label="Close">×</button>
+    <div class="modal-title"><p class="eyebrow">Single source of truth</p><h2 id="taxonomyTitle">Manage</h2></div>
+    <form id="taxonomyAddForm" class="inline-form taxonomy-add"><input id="taxonomyAddInput" required><button class="button accent" type="submit">Add</button></form>
+    <div id="taxonomyList" class="taxonomy-list"></div>
+  </dialog>
+
+  <dialog id="settingsDialog" class="modal compact-modal">
+    <button class="modal-close" type="button" data-close="settingsDialog" aria-label="Close">×</button>
+    <div class="modal-title"><p class="eyebrow">Local controls</p><h2>Settings & backup</h2></div>
+    <form id="settingsForm" class="form-grid">
+      <label class="toggle-row wide"><span><strong>Automatic daily backup</strong><small>Used by the launchd export template</small></span><input name="autoBackup" type="checkbox"></label>
+      <label class="toggle-row wide"><span><strong>Find wishlist images automatically</strong><small>Best effort; manual paste always works</small></span><input name="autoImage" type="checkbox"></label>
+      <div class="field-heading wide"><span>Suggestions may propose…</span><small>Tap a category to include or exclude it</small></div>
+      <div class="chip-cloud suggestion-settings wide" id="suggestCategoryChips"></div>
+      <div class="field-heading wide"><span>Wrist profile</span><small>Fit guidance, in millimetres</small></div>
+      <label>Wrist inches<input name="inches" type="number" min="1" step="0.1"></label>
+      <label>Sweet spot min<input name="sweetSpotMin" type="number" min="1" step="0.1"></label>
+      <label>Sweet spot max<input name="sweetSpotMax" type="number" min="1" step="0.1"></label>
+      <label>Perfect diameter<input name="perfect" type="number" min="1" step="0.1"></label>
+      <label>Lug-to-lug ceiling<input name="lugMax" type="number" min="1" step="0.1"></label>
+      <div class="form-actions wide"><button class="button accent" type="submit">Save settings</button><button class="button" id="backupNowButton" type="button">Back up now</button></div>
+      <p class="form-note wide" id="backupStatus">Destination: gdrive:WatchCollection/</p>
+    </form>
+  </dialog>
+
+  <dialog id="boughtDialog" class="modal compact-modal">
+    <button class="modal-close" type="button" data-close="boughtDialog" aria-label="Close">×</button>
+    <div class="modal-title"><p class="eyebrow">Move into the collection</p><h2>Mark bought</h2></div>
+    <form id="boughtForm" class="form-grid">
+      <input name="id" type="hidden">
+      <label>Final price paid (CAD)<input name="price" type="number" min="0" step="0.01" required></label>
+      <label>Purchase month<input name="purchased" type="month" required></label>
+      <div class="form-actions wide"><button class="button accent" type="submit">Add to collection</button></div>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <script src="/app.js" defer></script>
+</body>
+</html>

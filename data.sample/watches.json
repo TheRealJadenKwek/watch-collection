@@ -1,0 +1,33 @@
+{
+  "settings": {
+    "ownerName": null,
+    "autoBackup": false,
+    "backupRemote": "gdrive:WatchCollection",
+    "lastBackup": null,
+    "autoImage": true,
+    "suggestExclude": ["Smartwatch", "Other", "Iced Out", "Novelty", "Fashion/Minimalist"],
+    "wrist": { "inches": 6.75, "sweetSpotMin": 36, "sweetSpotMax": 41, "perfect": 39, "lugMax": 49 }
+  },
+  "categories": ["Dive", "Dress", "Field", "Pilot", "GMT", "Chronograph", "Integrated Bracelet", "G-Shock/Digital", "Smartwatch", "Iced Out", "Fashion/Minimalist", "Casual", "Novelty", "Other"],
+  "dialColors": ["Black", "White", "Silver", "Blue", "Green", "Grey", "Gold/Champagne", "Cream", "Orange", "Red", "Brown", "Skeleton", "Multi/Novelty", "Screen", "Other"],
+  "materials": ["Stainless Steel", "Titanium", "Gold-plated/PVD", "Two-tone", "Bronze", "Ceramic", "Bioceramic", "Plastic/Resin", "Carbon", "Aluminum", "Wood", "Other"],
+  "watches": [
+    { "id": "seiko-skx007", "name": "Seiko SKX007", "brand": "Seiko", "story": "The gateway drug", "purchased": "2019-04", "purchasedText": "April 2019", "diameter": 42.5, "lugToLug": 46, "price": 280.00, "original": true, "status": "owned", "statusNote": "", "photos": [], "category": "Dive", "dialColor": "Black", "material": "Stainless Steel" },
+    { "id": "hamilton-khaki-field", "name": "Hamilton Khaki Field Mechanical", "brand": "Hamilton", "story": "Birthday watch", "purchased": "2021-08", "purchasedText": "August 2021", "diameter": 38, "lugToLug": 47, "price": 650.00, "original": true, "status": "owned", "statusNote": "", "photos": [], "category": "Field", "dialColor": "Green", "material": "Stainless Steel" },
+    { "id": "casio-a168", "name": "Casio A168", "brand": "Casio", "story": "Beater", "purchased": "2020-01", "purchasedText": "January 2020", "diameter": 36, "lugToLug": 43, "price": 25.00, "original": true, "status": "owned", "statusNote": "", "photos": [], "category": "G-Shock/Digital", "dialColor": "Screen", "material": "Stainless Steel" },
+    { "id": "tissot-prx-blue", "name": "Tissot PRX Powermatic 80", "brand": "Tissot", "story": "The hype got me", "purchased": "2023-06", "purchasedText": "June 2023", "diameter": 40, "lugToLug": 44.6, "price": 900.00, "original": true, "status": "owned", "statusNote": "", "photos": [], "category": "Integrated Bracelet", "dialColor": "Blue", "material": "Stainless Steel" },
+    { "id": "orient-bambino", "name": "Orient Bambino 38", "brand": "Orient", "story": "", "purchased": "2022-11", "purchasedText": "November 2022", "diameter": 38, "lugToLug": 45.4, "price": 220.00, "original": true, "status": "owned", "statusNote": "", "photos": [], "category": "Dress", "dialColor": "Cream", "material": "Stainless Steel" },
+    { "id": "invicta-pro-diver-8926", "name": "Invicta Pro Diver 8926OB", "brand": "Invicta", "story": "First automatic", "purchased": "2018-05", "purchasedText": "May 2018", "diameter": 40, "lugToLug": 47.5, "price": 90.00, "original": false, "status": "sold", "statusNote": "to a coworker", "photos": [], "category": "Dive", "dialColor": "Black", "material": "Stainless Steel" },
+    { "id": "vostok-amphibia", "name": "Vostok Amphibia 420", "brand": "Vostok", "story": "Weird and wonderful", "purchased": "2020-09", "purchasedText": "September 2020", "diameter": 39, "lugToLug": 45, "price": 95.00, "original": true, "status": "given_away", "statusNote": "to my brother", "photos": [], "category": "Dive", "dialColor": "Blue", "material": "Stainless Steel" },
+    { "id": "swatch-sistem51", "name": "Swatch Sistem51", "brand": "Swatch", "story": "", "purchased": "2019-12", "purchasedText": "December 2019", "diameter": 42, "lugToLug": 49, "price": 150.00, "original": true, "status": "broken", "statusNote": "", "photos": [], "category": "Casual", "dialColor": "Red", "material": "Plastic/Resin" }
+  ],
+  "wishlist": [
+    { "id": "baltic-aquascaphe-gmt", "name": "Baltic Aquascaphe GMT", "brand": "Baltic", "category": "GMT", "priceExpected": 1450, "priceNote": "~$1,450", "notes": "", "status": "considering", "added": "2024-01", "dialColor": "Orange", "diameter": 39, "lugToLug": 47, "material": "Stainless Steel", "photos": [] },
+    { "id": "lorier-falcon", "name": "Lorier Falcon Series III", "brand": "Lorier", "category": "Field", "priceExpected": 500, "priceNote": "$499", "notes": "", "status": "considering", "added": "2024-02", "dialColor": "White", "diameter": 36, "lugToLug": 44, "material": "Stainless Steel", "photos": [] }
+  ],
+  "brandWatchlist": [
+    { "brand": "Baltic", "notes": "", "added": "2024-01" },
+    { "brand": "Serica", "notes": "", "added": "2024-01" },
+    { "brand": "Furlan Marri", "notes": "", "added": "2024-02" }
+  ]
+}
