@@ -173,7 +173,7 @@ actor APIClient {
         try await sendVoid("/api/brandwatchlist/\(segment(brand))", method: "DELETE", object: nil)
     }
 
-    func uploadPhoto(data: Data, filename: String, mimeType: String, itemID: String, wishlist: Bool) async throws {
+    func uploadPhoto(data: Data, filename: String, mimeType: String, itemID: String, wishlist: Bool) async throws -> String {
         let boundary = "WatchCollection-\(UUID().uuidString)"
         var body = Data()
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
@@ -185,7 +185,9 @@ actor APIClient {
         var request = try request(path: "/api/\(kind)/\(segment(itemID))/photos", method: "POST")
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
-        _ = try await responseData(for: request)
+        let data = try await responseData(for: request)
+        let response = try decode(PhotoUploadResponse.self, from: data)
+        return response.filename
     }
 
     func setPhotoCover(itemID: String, filename: String, wishlist: Bool) async throws {

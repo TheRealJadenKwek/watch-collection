@@ -268,14 +268,14 @@ struct WishlistCard: View {
     let findImage: () -> Void
 
     private let lensOrder = ["category", "brand", "price", "dial", "size", "material"]
-    private var imageURL: URL? {
-        item.photos.first.flatMap { store.imageURL(itemID: item.id, filename: $0, wishlist: true) }
+    private var imageAsset: PhotoAsset? {
+        item.photos.first.flatMap { store.photoAsset(itemID: item.id, filename: $0, wishlist: true) }
     }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .top, spacing: 12) {
-                RemoteWatchImage(url: imageURL)
+                RemoteWatchImage(asset: imageAsset, allowsRemoteFetch: !store.isOffline)
                     .frame(width: 104, height: 112)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                 VStack(alignment: .leading, spacing: 7) {
@@ -450,7 +450,10 @@ struct WishlistDetailScreen: View {
             } else {
                 TabView(selection: $selectedPhotoIndex) {
                     ForEach(Array(draft.photos.enumerated()), id: \.offset) { index, filename in
-                        RemoteWatchImage(url: store.imageURL(itemID: draft.id, filename: filename, wishlist: true))
+                        RemoteWatchImage(
+                            asset: store.photoAsset(itemID: draft.id, filename: filename, wishlist: true),
+                            allowsRemoteFetch: !store.isOffline
+                        )
                             .frame(height: 230)
                             .clipShape(RoundedRectangle(cornerRadius: 14))
                             .tag(index)

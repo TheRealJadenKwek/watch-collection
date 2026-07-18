@@ -1,4 +1,5 @@
 import SwiftUI
+import UIKit
 
 struct OfflineBanner: View {
     let message: String
@@ -56,29 +57,47 @@ struct WatchPlaceholder: View {
 }
 
 struct RemoteWatchImage: View {
-    let url: URL?
+    let asset: PhotoAsset?
+    let allowsRemoteFetch: Bool
+    @State private var image: UIImage?
+    @State private var isLoading = false
+
+    private var loadID: LoadID {
+        LoadID(asset: asset, allowsRemoteFetch: allowsRemoteFetch)
+    }
 
     var body: some View {
-        Group {
-            if let url {
-                AsyncImage(url: url, transaction: Transaction(animation: .easeInOut)) { phase in
-                    switch phase {
-                    case let .success(image):
-                        image.resizable().scaledToFill()
-                    case .failure:
-                        WatchPlaceholder()
-                    default:
-                        ZStack {
-                            WatchPlaceholder()
-                            ProgressView().tint(WatchTheme.gold)
-                        }
-                    }
-                }
+        ZStack {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .scaledToFill()
             } else {
                 WatchPlaceholder()
             }
+            if isLoading && image == nil {
+                ProgressView().tint(WatchTheme.gold)
+            }
         }
         .clipped()
+        .task(id: loadID) {
+            image = nil
+            guard let asset else {
+                isLoading = false
+                return
+            }
+            isLoading = true
+            let data = await PhotoStore.shared.load(asset, allowDownload: allowsRemoteFetch)
+            if !Task.isCancelled, let data {
+                image = UIImage(data: data)
+            }
+            isLoading = false
+        }
+    }
+
+    private struct LoadID: Hashable {
+        let asset: PhotoAsset?
+        let allowsRemoteFetch: Bool
     }
 }
 

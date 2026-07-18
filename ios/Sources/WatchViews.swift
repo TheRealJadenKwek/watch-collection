@@ -181,14 +181,14 @@ struct WatchCardView: View {
     let isPast: Bool
 
     private var wrist: WristProfile? { store.data?.settings.wrist }
-    private var coverURL: URL? {
-        watch.photos.first.flatMap { store.imageURL(itemID: watch.id, filename: $0, wishlist: false) }
+    private var coverAsset: PhotoAsset? {
+        watch.photos.first.flatMap { store.photoAsset(itemID: watch.id, filename: $0, wishlist: false) }
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .topLeading) {
-                RemoteWatchImage(url: coverURL)
+                RemoteWatchImage(asset: coverAsset, allowsRemoteFetch: !store.isOffline)
                     .frame(height: 142)
                 if isPast {
                     CapsuleChip(text: statusLabel(watch.status), color: WatchTheme.gold, filled: true)
@@ -308,7 +308,10 @@ struct WatchDetailScreen: View {
             } else {
                 TabView(selection: $selectedPhotoIndex) {
                     ForEach(Array(draft.photos.enumerated()), id: \.offset) { index, filename in
-                        RemoteWatchImage(url: store.imageURL(itemID: draft.id, filename: filename, wishlist: false))
+                        RemoteWatchImage(
+                            asset: store.photoAsset(itemID: draft.id, filename: filename, wishlist: false),
+                            allowsRemoteFetch: !store.isOffline
+                        )
                             .frame(height: 250)
                             .clipShape(RoundedRectangle(cornerRadius: 14))
                             .tag(index)

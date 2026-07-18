@@ -36,10 +36,14 @@ final class AppStore: ObservableObject {
         defer { isRefreshing = false }
         do {
             let client = try makeClient()
-            async let freshData = client.fetchData()
             async let freshScores = client.fetchScores()
             async let freshSuggestions = client.fetchSuggestions()
-            let (loadedData, loadedScores, loadedSuggestions) = try await (freshData, freshScores, freshSuggestions)
+            let loadedData = try await client.fetchData()
+            let photoAssets = PhotoStore.assets(in: loadedData, baseURL: serverURL)
+            Task.detached(priority: .utility) {
+                await PhotoStore.shared.sync(photoAssets)
+            }
+            let (loadedScores, loadedSuggestions) = try await (freshScores, freshSuggestions)
             data = loadedData
             scores = loadedScores.scores
             suggestions = loadedSuggestions
@@ -174,7 +178,17 @@ final class AppStore: ObservableObject {
     func uploadPhoto(data: Data, filename: String, mimeType: String, itemID: String, wishlist: Bool) async {
         await mutate {
             let client = try self.makeClient()
-            try await client.uploadPhoto(data: data, filename: filename, mimeType: mimeType, itemID: itemID, wishlist: wishlist)
+            let storedFilename = try await client.uploadPhoto(
+                data: data,
+                filename: filename,
+                mimeType: mimeType,
+                itemID: itemID,
+                wishlist: wishlist
+            )
+            guard let asset = self.photoAsset(itemID: itemID, filename: storedFilename, wishlist: wishlist) else {
+                throw CocoaError(.fileWriteInvalidFileName)
+            }
+            try await PhotoStore.shared.storeUploaded(data, as: asset)
             self.notice = "Photo uploaded."
         }
     }
@@ -193,11 +207,8 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func imageURL(itemID: String, filename: String, wishlist: Bool) -> URL? {
-        let directory = wishlist ? "wl-\(itemID)" : itemID
-        let id = directory.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? directory
-        let file = filename.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? filename
-        return URL(string: "\(serverURL.trimmingCharacters(in: CharacterSet(charactersIn: "/")))/photos/\(id)/\(file)")
+    func photoAsset(itemID: String, filename: String, wishlist: Bool) -> PhotoAsset? {
+        PhotoStore.asset(itemID: itemID, filename: filename, wishlist: wishlist, baseURL: serverURL)
     }
 
     var writable: Bool {

@@ -88,6 +88,10 @@ struct WishlistScoresResponse: Codable, Sendable {
     var scores: [String: WishlistScore]
 }
 
+struct PhotoUploadResponse: Codable, Sendable {
+    var filename: String
+}
+
 struct WishlistScore: Codable, Hashable, Sendable {
     var total: Int
     var max: Int
