@@ -152,6 +152,75 @@ struct SectionCard<Content: View>: View {
     }
 }
 
+struct MonthYearPicker: View {
+    @Binding var value: String?
+    var allowsUnknown = true
+
+    private let monthNames = Calendar.current.shortMonthSymbols
+    private var currentYear: Int { Calendar.current.component(.year, from: Date()) }
+    private var years: [Int] { Array((1950...(currentYear + 1)).reversed()) }
+
+    private var month: Binding<Int?> {
+        Binding(
+            get: { purchaseMonthParts(value)?.month },
+            set: { newMonth in
+                guard let newMonth else {
+                    value = nil
+                    return
+                }
+                value = purchaseMonthKey(
+                    year: purchaseMonthParts(value)?.year ?? currentYear,
+                    month: newMonth
+                )
+            }
+        )
+    }
+
+    private var year: Binding<Int?> {
+        Binding(
+            get: { purchaseMonthParts(value)?.year },
+            set: { newYear in
+                guard let newYear else {
+                    value = nil
+                    return
+                }
+                value = purchaseMonthKey(
+                    year: newYear,
+                    month: purchaseMonthParts(value)?.month ?? Calendar.current.component(.month, from: Date())
+                )
+            }
+        )
+    }
+
+    var body: some View {
+        HStack {
+            Picker("Purchase month", selection: month) {
+                if allowsUnknown { Text("Unknown").tag(nil as Int?) }
+                ForEach(1...12, id: \.self) { month in
+                    Text(monthNames[month - 1]).tag(Optional(month))
+                }
+            }
+            .pickerStyle(.menu)
+
+            Spacer()
+
+            Picker("Purchase year", selection: year) {
+                if allowsUnknown { Text("Unknown").tag(nil as Int?) }
+                ForEach(years, id: \.self) { year in
+                    Text(String(year)).tag(Optional(year))
+                }
+            }
+            .pickerStyle(.menu)
+        }
+        .onAppear {
+            if !allowsUnknown, purchaseMonthParts(value) == nil {
+                value = currentPurchaseMonth()
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+}
+
 struct EmptyCollectionView: View {
     let title: String
     let detail: String

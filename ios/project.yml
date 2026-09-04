@@ -12,8 +12,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jadenkwek.watchcollection
         DEVELOPMENT_TEAM: RLC58VS9R6
-        MARKETING_VERSION: "2.0"
-        CURRENT_PROJECT_VERSION: "2"
+        MARKETING_VERSION: "2.1"
+        CURRENT_PROJECT_VERSION: "3"
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -30,6 +30,22 @@ targets:
           - UIInterfaceOrientationPortrait
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
+        UTExportedTypeDeclarations:
+          - UTTypeIdentifier: com.jadenkwek.watchcollection.backup
+            UTTypeDescription: Watch Collection Backup
+            UTTypeConformsTo:
+              - com.apple.package
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - watchcollection
+              public.mime-type:
+                - application/x-watchcollection
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: Watch Collection Backup
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Owner
+            LSItemContentTypes:
+              - com.jadenkwek.watchcollection.backup
         ITSAppUsesNonExemptEncryption: false
         NSAppTransportSecurity:
           NSAllowsArbitraryLoads: true

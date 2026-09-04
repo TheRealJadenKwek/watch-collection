@@ -49,6 +49,33 @@ func compactNumber(_ value: Double) -> String {
     value.formatted(.number.precision(.fractionLength(value.rounded() == value ? 0 : 1)))
 }
 
+func purchaseMonthParts(_ value: String?) -> (year: Int, month: Int)? {
+    guard let value else { return nil }
+    let parts = value.split(separator: "-")
+    guard parts.count == 2,
+          let year = Int(parts[0]),
+          let month = Int(parts[1]),
+          (1...12).contains(month)
+    else { return nil }
+    return (year, month)
+}
+
+func purchaseMonthKey(year: Int, month: Int) -> String {
+    String(format: "%04d-%02d", year, month)
+}
+
+func currentPurchaseMonth() -> String {
+    let components = Calendar.current.dateComponents([.year, .month], from: Date())
+    return purchaseMonthKey(year: components.year ?? 2000, month: components.month ?? 1)
+}
+
+func purchaseMonthLabel(_ value: String?) -> String {
+    guard let parts = purchaseMonthParts(value),
+          let date = Calendar.current.date(from: DateComponents(year: parts.year, month: parts.month))
+    else { return "" }
+    return date.formatted(.dateTime.month(.wide).year())
+}
+
 func optionalNumberBinding(_ value: Binding<Double?>) -> Binding<String> {
     Binding(
         get: { value.wrappedValue.map(compactNumber) ?? "" },

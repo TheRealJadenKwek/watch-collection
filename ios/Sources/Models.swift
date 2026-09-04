@@ -138,6 +138,12 @@ struct BackupResponse: Codable, Sendable {
     var lastBackup: String?
 }
 
+struct LocalPhotoUpload: Sendable {
+    var data: Data
+    var filename: String
+    var mimeType: String
+}
+
 struct AutoImageResponse: Codable, Sendable {
     var ok: Bool
     var searchUrl: String?

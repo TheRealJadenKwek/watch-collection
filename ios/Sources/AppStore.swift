@@ -61,17 +61,18 @@ final class AppStore: ObservableObject {
         notice = "Collection refreshed."
     }
 
-    func saveWatch(_ watch: Watch, isNew: Bool = false) async -> Watch? {
+    func saveWatch(_ watch: Watch, isNew: Bool = false, initialPhotos: [LocalPhotoUpload] = []) async -> Watch? {
         do {
             var updated = try requireData()
             var saved = watch
+            saved.purchasedText = purchaseMonthLabel(saved.purchased)
             if isNew {
                 saved = Watch(
                     id: uniqueID(for: watch.name, existing: updated.watches.map(\.id)),
                     name: watch.name.trimmingCharacters(in: .whitespacesAndNewlines),
                     story: watch.story,
                     purchased: watch.purchased,
-                    purchasedText: watch.purchasedText,
+                    purchasedText: purchaseMonthLabel(watch.purchased),
                     diameter: watch.diameter,
                     price: watch.price,
                     original: watch.original,
@@ -84,6 +85,18 @@ final class AppStore: ObservableObject {
                     material: watch.material,
                     brand: watch.brand
                 )
+                for photo in initialPhotos {
+                    let extensionName = safePhotoExtension(filename: photo.filename, mimeType: photo.mimeType)
+                    let storedFilename = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased() + extensionName
+                    guard let asset = PhotoStore.asset(
+                        itemID: saved.id,
+                        filename: storedFilename,
+                        wishlist: false,
+                        baseURL: nil
+                    ) else { throw LocalStoreError.invalidOperation }
+                    try await PhotoStore.shared.storeUploaded(photo.data, as: asset)
+                    saved.photos.append(storedFilename)
+                }
                 updated.watches.append(saved)
             } else if let index = updated.watches.firstIndex(where: { $0.id == watch.id }) {
                 updated.watches[index] = saved
@@ -168,7 +181,7 @@ final class AppStore: ObservableObject {
                 name: item.name,
                 story: item.notes,
                 purchased: purchased,
-                purchasedText: purchased,
+                purchasedText: purchaseMonthLabel(purchased),
                 diameter: item.diameter,
                 price: price,
                 original: true,
@@ -222,6 +235,46 @@ final class AppStore: ObservableObject {
         } catch {
             surface(error)
             return error.localizedDescription
+        }
+    }
+
+    func prepareExport(includePhotos: Bool) async -> CollectionExportDocument? {
+        do {
+            let data = try requireData()
+            return try await Task.detached(priority: .userInitiated) {
+                try CollectionExportDocument(data: data, includePhotos: includePhotos)
+            }.value
+        } catch {
+            surface(error)
+            return nil
+        }
+    }
+
+    func inspectImport(from url: URL) async -> CollectionImport? {
+        do {
+            return try await Task.detached(priority: .userInitiated) {
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                return try CollectionBackupArchive.load(from: url)
+            }.value
+        } catch {
+            surface(error)
+            return nil
+        }
+    }
+
+    func restore(_ imported: CollectionImport) async -> Bool {
+        do {
+            try await PhotoStore.shared.restore(imported.photos)
+            await commit(imported.data)
+            let missing = PhotoStore.missingLocalCount(PhotoStore.assets(in: imported.data, baseURL: nil))
+            notice = missing == 0
+                ? "Collection restored with all photos."
+                : "Collection restored; \(missing) referenced photo(s) were not in the import."
+            return true
+        } catch {
+            surface(error)
+            return false
         }
     }
 

@@ -510,13 +510,13 @@ struct BoughtSheet: View {
     @ObservedObject var store: AppStore
     let item: WishlistItem
     @State private var price: Double
-    @State private var purchased: String
+    @State private var purchased: String?
 
     init(store: AppStore, item: WishlistItem) {
         self.store = store
         self.item = item
         _price = State(initialValue: item.priceExpected ?? 0)
-        _purchased = State(initialValue: String(Calendar.current.component(.year, from: Date())) + "-" + String(format: "%02d", Calendar.current.component(.month, from: Date())))
+        _purchased = State(initialValue: currentPurchaseMonth())
     }
 
     var body: some View {
@@ -524,7 +524,7 @@ struct BoughtSheet: View {
             Form {
                 Section(item.name) {
                     TextField("Final price paid (CAD)", value: $price, format: .number).keyboardType(.decimalPad)
-                    TextField("Purchase month (YYYY-MM)", text: $purchased)
+                    MonthYearPicker(value: $purchased, allowsUnknown: false)
                 }
             }
             .navigationTitle("Mark Bought")
@@ -533,9 +533,10 @@ struct BoughtSheet: View {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
                     Button("Add to Collection") {
+                        guard let purchased else { return }
                         Task { await store.markBought(id: item.id, price: price, purchased: purchased); dismiss() }
                     }
-                    .disabled(store.isOffline || price < 0 || purchased.count != 7)
+                    .disabled(store.isOffline || price < 0 || purchaseMonthParts(purchased) == nil)
                 }
             }
         }

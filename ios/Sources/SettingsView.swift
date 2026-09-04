@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
@@ -7,6 +8,13 @@ struct SettingsView: View {
     @State private var backupResult = ""
     @State private var saving = false
     @State private var backingUp = false
+    @State private var transferBusy = false
+    @State private var showingExporter = false
+    @State private var showingImporter = false
+    @State private var exportDocument: CollectionExportDocument?
+    @State private var exportContentType = UTType.watchCollectionBackup
+    @State private var exportFilename = "Watch Collection Backup"
+    @State private var pendingImport: CollectionImport?
 
     init(store: AppStore) {
         self.store = store
@@ -44,6 +52,36 @@ struct SettingsView: View {
             .alert("Watch Collection", isPresented: errorBinding) {
                 Button("OK", role: .cancel) { store.errorMessage = nil }
             } message: { Text(store.errorMessage ?? "Unknown error") }
+            .alert(item: $pendingImport) { imported in
+                Alert(
+                    title: Text("Replace current collection?"),
+                    message: Text("\(imported.sourceName) contains \(imported.summary) Your current on-phone collection will be replaced."),
+                    primaryButton: .destructive(Text("Restore")) {
+                        restore(imported)
+                    },
+                    secondaryButton: .cancel()
+                )
+            }
+            .fileExporter(
+                isPresented: $showingExporter,
+                document: exportDocument,
+                contentType: exportContentType,
+                defaultFilename: exportFilename
+            ) { result in
+                switch result {
+                case let .success(url):
+                    backupResult = "Exported \(url.lastPathComponent)."
+                case let .failure(error):
+                    store.errorMessage = error.localizedDescription
+                }
+                exportDocument = nil
+            }
+            .fileImporter(
+                isPresented: $showingImporter,
+                allowedContentTypes: [.watchCollectionBackup, .json]
+            ) { result in
+                inspectImport(result)
+            }
         }
     }
 
@@ -71,7 +109,7 @@ struct SettingsView: View {
     }
 
     private var automationSection: some View {
-        Section("Backup") {
+        Section("Backups & recovery") {
             Toggle("Keep JSON backup in Files", isOn: $draftSettings.autoBackup)
             LabeledContent("Destination", value: "On My iPhone / Watch Collection Backup")
             if let lastBackup = draftSettings.lastBackup {
@@ -89,13 +127,43 @@ struct SettingsView: View {
                 Label(backingUp ? "Backing up…" : "Back up data & photos now", systemImage: "externaldrive.badge.timemachine")
             }
             .disabled(backingUp)
+
+            Button {
+                prepareExport(includePhotos: true)
+            } label: {
+                Label("Export portable backup", systemImage: "shippingbox.and.arrow.backward")
+            }
+            .disabled(transferBusy)
+
+            Button {
+                prepareExport(includePhotos: false)
+            } label: {
+                Label("Export JSON only", systemImage: "doc.text")
+            }
+            .disabled(transferBusy)
+
+            Button {
+                showingImporter = true
+            } label: {
+                Label("Restore backup or JSON", systemImage: "arrow.clockwise.icloud")
+            }
+            .disabled(transferBusy)
+
+            if transferBusy {
+                HStack {
+                    ProgressView()
+                    Text("Preparing collection…")
+                }
+                .font(.caption)
+                .foregroundStyle(WatchTheme.secondary)
+            }
             if !backupResult.isEmpty {
                 Text(backupResult)
                     .font(.caption.monospaced())
                     .foregroundStyle(WatchTheme.secondary)
                     .textSelection(.enabled)
             }
-            Text("The automatic copy keeps watches.json current. A full backup also copies every stored photo into the Files app.")
+            Text("The portable backup includes your JSON and photos in one file. Save it to iCloud Drive for off-phone recovery. Restore always shows a summary and asks before replacing anything.")
                 .font(.caption)
                 .foregroundStyle(WatchTheme.secondary)
         }
@@ -172,6 +240,53 @@ struct SettingsView: View {
             saving = false
             if store.errorMessage == nil { dismiss() }
         }
+    }
+
+    private func prepareExport(includePhotos: Bool) {
+        transferBusy = true
+        Task {
+            let document = await store.prepareExport(includePhotos: includePhotos)
+            transferBusy = false
+            guard let document else { return }
+            exportDocument = document
+            exportContentType = includePhotos ? .watchCollectionBackup : .json
+            exportFilename = includePhotos
+                ? "Watch Collection Backup \(exportDateStamp)"
+                : "Watch Collection \(exportDateStamp)"
+            if document.missingPhotoCount > 0 {
+                backupResult = "Warning: \(document.missingPhotoCount) referenced photo(s) are missing from this phone."
+            }
+            showingExporter = true
+        }
+    }
+
+    private func inspectImport(_ result: Result<URL, Error>) {
+        switch result {
+        case let .failure(error):
+            store.errorMessage = error.localizedDescription
+        case let .success(url):
+            transferBusy = true
+            Task {
+                pendingImport = await store.inspectImport(from: url)
+                transferBusy = false
+            }
+        }
+    }
+
+    private func restore(_ imported: CollectionImport) {
+        transferBusy = true
+        Task {
+            let restored = await store.restore(imported)
+            transferBusy = false
+            if restored {
+                backupResult = store.notice ?? "Collection restored."
+                if let settings = store.data?.settings { draftSettings = settings }
+            }
+        }
+    }
+
+    private var exportDateStamp: String {
+        Date().formatted(.iso8601.year().month().day().dateSeparator(.dash))
     }
 
     private var errorBinding: Binding<Bool> {

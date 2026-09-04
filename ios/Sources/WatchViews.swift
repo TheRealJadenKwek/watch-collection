@@ -240,6 +240,7 @@ struct WatchDetailScreen: View {
     @State private var draft: Watch
     @State private var selectedPhotoIndex = 0
     @State private var photoItem: PhotosPickerItem?
+    @State private var pendingPhotos: [PendingWatchPhoto] = []
     @State private var showCamera = false
     @State private var isSaving = false
     @State private var confirmDelete = false
@@ -247,12 +248,30 @@ struct WatchDetailScreen: View {
     init(store: AppStore, watch: Watch, isNew: Bool = false) {
         self.store = store
         self.isNew = isNew
-        _draft = State(initialValue: watch)
+        var initial = watch
+        if isNew {
+            initial.purchased = initial.purchased ?? currentPurchaseMonth()
+            initial.purchasedText = purchaseMonthLabel(initial.purchased)
+            if let category = UserDefaults.standard.string(forKey: WatchEditorDefaults.category),
+               store.data?.categories.contains(category) == true {
+                initial.category = category
+            }
+            if let dialColor = UserDefaults.standard.string(forKey: WatchEditorDefaults.dialColor),
+               store.data?.dialColors.contains(dialColor) == true {
+                initial.dialColor = dialColor
+            }
+            if let material = UserDefaults.standard.string(forKey: WatchEditorDefaults.material),
+               store.data?.materials.contains(material) == true {
+                initial.material = material
+            }
+        }
+        _draft = State(initialValue: initial)
     }
 
     var body: some View {
         NavigationStack {
             Form {
+                if !validationIssues.isEmpty { validationSection }
                 photoSection
                 identitySection
                 sizingSection
@@ -269,12 +288,18 @@ struct WatchDetailScreen: View {
                 }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(isSaving ? "Saving…" : "Save") { save() }
-                        .disabled(store.isOffline || isSaving || draft.name.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(store.isOffline || isSaving || !validationIssues.isEmpty)
                 }
             }
             .onChange(of: photoItem) { _, item in
                 guard let item else { return }
                 Task { await importPhoto(item) }
+            }
+            .onChange(of: draft.status) { _, status in
+                if status == "owned", purchaseMonthParts(draft.purchased) == nil {
+                    draft.purchased = currentPurchaseMonth()
+                    draft.purchasedText = purchaseMonthLabel(draft.purchased)
+                }
             }
             .fullScreenCover(isPresented: $showCamera) {
                 CameraPicker { image in
@@ -297,17 +322,22 @@ struct WatchDetailScreen: View {
 
     private var photoSection: some View {
         Section("Gallery") {
-            if draft.photos.isEmpty {
+            if isNew, pendingPhotos.isEmpty {
                 WatchPlaceholder()
                     .frame(height: 230)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
-            } else {
+            } else if isNew {
                 TabView(selection: $selectedPhotoIndex) {
-                    ForEach(Array(draft.photos.enumerated()), id: \.offset) { index, filename in
-                        RemoteWatchImage(
-                            asset: store.photoAsset(itemID: draft.id, filename: filename, wishlist: false),
-                            allowsRemoteFetch: !store.isOffline
-                        )
+                    ForEach(Array(pendingPhotos.enumerated()), id: \.element.id) { index, pending in
+                        Group {
+                            if let image = UIImage(data: pending.data) {
+                                Image(uiImage: image)
+                                    .resizable()
+                                    .scaledToFill()
+                            } else {
+                                WatchPlaceholder()
+                            }
+                        }
                             .frame(height: 250)
                             .clipShape(RoundedRectangle(cornerRadius: 14))
                             .tag(index)
@@ -315,27 +345,26 @@ struct WatchDetailScreen: View {
                 }
                 .frame(height: 260)
                 .tabViewStyle(.page(indexDisplayMode: .automatic))
-                if draft.photos.indices.contains(selectedPhotoIndex) {
-                    let filename = draft.photos[selectedPhotoIndex]
+                if pendingPhotos.indices.contains(selectedPhotoIndex) {
                     HStack {
                         Button("Set cover") {
-                            Task {
-                                await store.setCover(itemID: draft.id, filename: filename, wishlist: false)
-                                reloadDraft()
-                                selectedPhotoIndex = 0
-                            }
+                            let photo = pendingPhotos.remove(at: selectedPhotoIndex)
+                            pendingPhotos.insert(photo, at: 0)
+                            selectedPhotoIndex = 0
                         }
                         Spacer()
                         Button("Delete photo", role: .destructive) {
-                            Task {
-                                await store.deletePhoto(itemID: draft.id, filename: filename, wishlist: false)
-                                reloadDraft()
-                                selectedPhotoIndex = 0
-                            }
+                            pendingPhotos.remove(at: selectedPhotoIndex)
+                            selectedPhotoIndex = min(selectedPhotoIndex, max(0, pendingPhotos.count - 1))
                         }
                     }
-                    .disabled(store.isOffline)
                 }
+            } else if draft.photos.isEmpty {
+                WatchPlaceholder()
+                    .frame(height: 230)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
+            } else {
+                existingPhotoGallery
             }
             HStack {
                 PhotosPicker(selection: $photoItem, matching: .images) {
@@ -347,18 +376,68 @@ struct WatchDetailScreen: View {
             // Borderless keeps each control its own tap target — otherwise the Form row
             // acts as one big button and every tap opens the camera.
             .buttonStyle(.borderless)
-            .disabled(store.isOffline || isNew)
+            .disabled(store.isOffline)
             if isNew {
-                Text("Save the watch first, then reopen it to add photos.")
+                Text(pendingPhotos.isEmpty
+                     ? "Add photos now; they will be saved with the new watch."
+                     : "\(pendingPhotos.count) photo\(pendingPhotos.count == 1 ? "" : "s") ready to save. The first photo is the cover.")
                     .font(.caption)
                     .foregroundStyle(WatchTheme.secondary)
             }
         }
     }
 
+    @ViewBuilder
+    private var existingPhotoGallery: some View {
+        TabView(selection: $selectedPhotoIndex) {
+            ForEach(Array(draft.photos.enumerated()), id: \.offset) { index, filename in
+                RemoteWatchImage(
+                    asset: store.photoAsset(itemID: draft.id, filename: filename, wishlist: false),
+                    allowsRemoteFetch: !store.isOffline
+                )
+                .frame(height: 250)
+                .clipShape(RoundedRectangle(cornerRadius: 14))
+                .tag(index)
+            }
+        }
+        .frame(height: 260)
+        .tabViewStyle(.page(indexDisplayMode: .automatic))
+        if draft.photos.indices.contains(selectedPhotoIndex) {
+            let filename = draft.photos[selectedPhotoIndex]
+            HStack {
+                Button("Set cover") {
+                    Task {
+                        await store.setCover(itemID: draft.id, filename: filename, wishlist: false)
+                        reloadDraft()
+                        selectedPhotoIndex = 0
+                    }
+                }
+                Spacer()
+                Button("Delete photo", role: .destructive) {
+                    Task {
+                        await store.deletePhoto(itemID: draft.id, filename: filename, wishlist: false)
+                        reloadDraft()
+                        selectedPhotoIndex = 0
+                    }
+                }
+            }
+            .disabled(store.isOffline)
+        }
+    }
+
+    private var validationSection: some View {
+        Section("Required before saving") {
+            ForEach(validationIssues, id: \.self) { issue in
+                Label(issue, systemImage: "exclamationmark.circle")
+                    .font(.caption)
+                    .foregroundStyle(WatchTheme.amber)
+            }
+        }
+    }
+
     private var identitySection: some View {
         Section("Identity") {
-            TextField("Name", text: $draft.name)
+            TextField("Name (required)", text: $draft.name)
             TextField("Brand", text: Binding(get: { draft.brand ?? "" }, set: { draft.brand = $0.isEmpty ? nil : $0 }))
             Picker("Category", selection: optionalSelectionBinding($draft.category)) {
                 Text("Unset").tag("")
@@ -392,8 +471,12 @@ struct WatchDetailScreen: View {
         Section("Purchase & status") {
             TextField("Price paid (CAD)", value: $draft.price, format: .number)
                 .keyboardType(.decimalPad)
-            TextField("Purchase month (YYYY-MM)", text: Binding(get: { draft.purchased ?? "" }, set: { draft.purchased = $0.isEmpty ? nil : $0 }))
-            TextField("Purchase date as written", text: $draft.purchasedText)
+            MonthYearPicker(value: $draft.purchased, allowsUnknown: draft.status != "owned")
+            if !purchaseMonthLabel(draft.purchased).isEmpty {
+                LabeledContent("Timeline date", value: purchaseMonthLabel(draft.purchased))
+                    .font(.caption)
+                    .foregroundStyle(WatchTheme.secondary)
+            }
             Picker("Original design", selection: Binding(
                 get: { draft.original.map { $0 ? "true" : "false" } ?? "" },
                 set: { draft.original = $0.isEmpty ? nil : $0 == "true" }
@@ -423,7 +506,15 @@ struct WatchDetailScreen: View {
     private func save() {
         isSaving = true
         Task {
-            if await store.saveWatch(draft, isNew: isNew) != nil { dismiss() }
+            var normalized = draft
+            normalized.purchasedText = purchaseMonthLabel(normalized.purchased)
+            let uploads = pendingPhotos.map {
+                LocalPhotoUpload(data: $0.data, filename: $0.filename, mimeType: $0.mimeType)
+            }
+            if let saved = await store.saveWatch(normalized, isNew: isNew, initialPhotos: uploads) {
+                rememberSelections(from: saved)
+                dismiss()
+            }
             isSaving = false
         }
     }
@@ -438,9 +529,33 @@ struct WatchDetailScreen: View {
     }
 
     private func upload(data: Data, filename: String, mimeType: String) async {
-        guard !isNew else { return }
+        if isNew {
+            pendingPhotos.append(PendingWatchPhoto(data: data, filename: filename, mimeType: mimeType))
+            selectedPhotoIndex = pendingPhotos.count - 1
+            return
+        }
         await store.uploadPhoto(data: data, filename: filename, mimeType: mimeType, itemID: draft.id, wishlist: false)
         reloadDraft()
+    }
+
+    private var validationIssues: [String] {
+        var issues: [String] = []
+        if draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            issues.append("Enter the watch name.")
+        }
+        if draft.status == "owned", purchaseMonthParts(draft.purchased) == nil {
+            issues.append("Choose the purchase month and year.")
+        }
+        if draft.price < 0 {
+            issues.append("Price paid cannot be negative.")
+        }
+        return issues
+    }
+
+    private func rememberSelections(from watch: Watch) {
+        if let category = watch.category { UserDefaults.standard.set(category, forKey: WatchEditorDefaults.category) }
+        if let dialColor = watch.dialColor { UserDefaults.standard.set(dialColor, forKey: WatchEditorDefaults.dialColor) }
+        if let material = watch.material { UserDefaults.standard.set(material, forKey: WatchEditorDefaults.material) }
     }
 
     private func reloadDraft() {
@@ -454,8 +569,8 @@ private extension Watch {
             id: "new",
             name: "",
             story: "",
-            purchased: nil,
-            purchasedText: "",
+            purchased: currentPurchaseMonth(),
+            purchasedText: purchaseMonthLabel(currentPurchaseMonth()),
             diameter: nil,
             price: 0,
             original: nil,
@@ -469,6 +584,19 @@ private extension Watch {
             brand: nil
         )
     }
+}
+
+private struct PendingWatchPhoto: Identifiable {
+    let id = UUID()
+    var data: Data
+    var filename: String
+    var mimeType: String
+}
+
+private enum WatchEditorDefaults {
+    static let category = "watchEditor.lastCategory"
+    static let dialColor = "watchEditor.lastDialColor"
+    static let material = "watchEditor.lastMaterial"
 }
 
 struct CameraPicker: UIViewControllerRepresentable {

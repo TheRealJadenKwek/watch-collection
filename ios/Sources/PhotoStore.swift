@@ -104,6 +104,15 @@ actor PhotoStore {
         uploadedButUnconfirmed.insert(asset.key)
     }
 
+    func restore(_ photos: [BackupPhoto]) throws {
+        for photo in photos {
+            let asset = PhotoAsset(directory: photo.key.directory, filename: photo.key.filename, remoteURL: nil)
+            guard let fileURL = Self.localURL(for: asset) else { throw CocoaError(.fileWriteInvalidFileName) }
+            try Self.persist(photo.data, to: fileURL)
+            uploadedButUnconfirmed.insert(photo.key)
+        }
+    }
+
     func sync(_ assets: [PhotoAsset]) async {
         let uniqueAssets = Array(Dictionary(assets.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first }).values)
         let referenced = Set(uniqueAssets.map(\.key))
