@@ -1,11 +1,11 @@
 # Watch Collection
 
-A local-first watch collection tracker with a self-hosted web app, a native iOS companion, and a
+A local-first watch collection tracker with a standalone native iOS app, an optional self-hosted web app, and a
 six-lens **purchase-decision engine** that tells you what your collection is missing — and what to
 hunt next.
 
-Your data is one JSON file on your own machine. No accounts, no cloud, no analytics, no frameworks —
-a stdlib-only Python server, vanilla JS, and SwiftUI.
+No accounts, cloud service, or analytics are required. The iOS app stores its JSON and photos on the
+phone; the optional desktop version remains a stdlib-only Python server with a vanilla JS frontend.
 
 ## Features
 
@@ -26,8 +26,10 @@ a stdlib-only Python server, vanilla JS, and SwiftUI.
   Renames propagate atomically.
 - **Daily backup** — CSV + JSON export, optionally rclone'd to your own cloud remote on a launchd
   schedule.
-- **Native iOS app** — full feature parity plus camera-roll photo uploads and an offline cache;
-  point it at your server over Tailscale and your collection is in your pocket.
+- **Standalone native iOS app** — full feature parity, camera-roll uploads, local scoring, and
+  writable on-device storage. It does not need a Mac or server after its one-time migration.
+- **Files backup** — keeps a portable JSON copy under On My iPhone and can copy the complete photo
+  library there on demand.
 
 ## Quick start
 
@@ -50,9 +52,10 @@ open WatchCollection.xcodeproj
 ```
 
 Set your own development team + bundle identifier in `project.yml`, run it on your phone, and point
-the server URL in the app's Settings at the machine running `server.py` (a
-[Tailscale](https://tailscale.com) address works beautifully). The server binds `0.0.0.0` but only
-accepts loopback + Tailscale CGNAT (`100.64/10`) clients — see `ALLOWED_CLIENT_NETS` in `server.py`.
+the first v2 launch at the previous server with the `WATCH_MIGRATION_URL` launch environment variable.
+The app imports the latest JSON and every referenced photo, then becomes completely standalone.
+Updates from an older installed version normally reuse its existing Application Support cache without
+needing a fresh import.
 
 ### Backups
 
@@ -72,15 +75,16 @@ pinned to the author's personal dataset skip themselves elsewhere.
 ## Architecture
 
 ```
-server.py          stdlib HTTP server: static files + JSON API + photo storage (port 8931)
+server.py          optional desktop/legacy-import server (port 8931)
 app.js/index.html  vanilla-JS single-page web app
 export_sheet.py    stats/scoring/suggestion engine + CSV exporter (single source of truth)
 data/watches.json  ALL your data — one atomic-write JSON file (gitignored)
-ios/               SwiftUI companion app (xcodegen project)
+ios/               standalone SwiftUI app (xcodegen project; on-device JSON + photos)
 ```
 
-The scoring and suggestion engines live server-side in `export_sheet.py`; both UIs render from
-`/api/wishlist/scores` and `/api/suggestions` so they can never disagree.
+The Python scoring engine lives in `export_sheet.py`; its Swift port lives in
+`ios/Sources/DecisionEngine.swift`. Regression verification compares both implementations against the
+same collection data.
 
 ## License
 

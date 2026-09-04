@@ -35,6 +35,7 @@ struct StatsScreen: View {
                         priceLedger
                         sizeChart
                         spendChart
+                        currentCollectionTimeline
                         lugChart
                         categoryCoverage
                         priceLadder
@@ -336,6 +337,95 @@ struct StatsScreen: View {
                                 selectSpendBar(at: tap.location, proxy: proxy, geometry: geometry, values: values)
                             }
                         )
+                }
+            }
+        }
+    }
+
+    private var currentCollectionTimeline: some View {
+        let entries = purchaseTimelineEntries(owned)
+        let missingCount = owned.count - entries.count
+        return SectionCard(eyebrow: "Current collection", title: "Purchase timeline") {
+            if entries.isEmpty {
+                ContentUnavailableView(
+                    "No purchase dates yet",
+                    systemImage: "calendar.badge.clock",
+                    description: Text("Add a purchase month to an owned watch and it will appear here.")
+                )
+                .foregroundStyle(WatchTheme.secondary)
+            } else {
+                HStack {
+                    Label("\(entries.count) owned", systemImage: "watch.analog")
+                    Spacer()
+                    Text("\(entries.first?.year ?? "") – \(entries.last?.year ?? "")")
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(WatchTheme.secondary)
+
+                VStack(spacing: 0) {
+                    ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
+                        Button {
+                            selectedWatch = entry.watch
+                        } label: {
+                            HStack(alignment: .top, spacing: 12) {
+                                VStack(alignment: .trailing, spacing: 2) {
+                                    Text(entry.month.uppercased())
+                                        .font(.caption2.weight(.bold))
+                                        .tracking(0.7)
+                                        .foregroundStyle(WatchTheme.gold)
+                                    Text(entry.year)
+                                        .font(.caption.monospacedDigit())
+                                        .foregroundStyle(WatchTheme.secondary)
+                                }
+                                .frame(width: 54, alignment: .trailing)
+
+                                VStack(spacing: 0) {
+                                    Circle()
+                                        .fill(WatchTheme.gold)
+                                        .frame(width: 10, height: 10)
+                                        .overlay { Circle().stroke(WatchTheme.gold.opacity(0.25), lineWidth: 5) }
+                                    if index < entries.count - 1 {
+                                        Rectangle()
+                                            .fill(WatchTheme.gold.opacity(0.28))
+                                            .frame(width: 1)
+                                            .frame(maxHeight: .infinity)
+                                    }
+                                }
+                                .frame(width: 12)
+
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text(entry.watch.name)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                        .multilineTextAlignment(.leading)
+                                    HStack(spacing: 8) {
+                                        Text(cad(entry.watch.price))
+                                            .foregroundStyle(WatchTheme.gold)
+                                        if let category = entry.watch.category {
+                                            Text(category)
+                                                .foregroundStyle(WatchTheme.secondary)
+                                        }
+                                    }
+                                    .font(.caption)
+                                }
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .padding(.bottom, index < entries.count - 1 ? 18 : 2)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .accessibilityLabel("\(entry.watch.name), purchased \(entry.month) \(entry.year)")
+                        .accessibilityHint("Opens watch details")
+                    }
+                }
+
+                if missingCount > 0 {
+                    Label(
+                        "\(missingCount) owned \(missingCount == 1 ? "watch is" : "watches are") missing a purchase month.",
+                        systemImage: "exclamationmark.circle"
+                    )
+                    .font(.caption)
+                    .foregroundStyle(WatchTheme.amber)
                 }
             }
         }
@@ -703,6 +793,38 @@ private struct YearSpend: Identifiable {
     var id: String { year }
     var year: String
     var total: Double
+}
+
+private struct PurchaseTimelineEntry: Identifiable {
+    var id: String { watch.id }
+    var watch: Watch
+    var sortKey: String
+    var month: String
+    var year: String
+}
+
+private func purchaseTimelineEntries(_ watches: [Watch]) -> [PurchaseTimelineEntry] {
+    let monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    return watches.compactMap { watch in
+        guard let purchased = watch.purchased else { return nil }
+        let parts = purchased.split(separator: "-")
+        guard parts.count >= 2,
+              let year = Int(parts[0]),
+              let month = Int(parts[1]),
+              monthNames.indices.contains(month - 1)
+        else { return nil }
+        return PurchaseTimelineEntry(
+            watch: watch,
+            sortKey: String(format: "%04d-%02d", year, month),
+            month: monthNames[month - 1],
+            year: String(year)
+        )
+    }.sorted {
+        if $0.sortKey == $1.sortKey {
+            return $0.watch.name.localizedCaseInsensitiveCompare($1.watch.name) == .orderedAscending
+        }
+        return $0.sortKey < $1.sortKey
+    }
 }
 
 private func spendByYear(_ watches: [Watch]) -> [YearSpend] {

@@ -85,7 +85,7 @@ struct WishlistScreen: View {
 
     private var wishlistHeader: some View {
         SectionCard(eyebrow: "Purchase decision engine", title: "\(ranked.filter { $0.status == "considering" }.count) candidates · six lenses") {
-            Text("Category, brand, price, dial, size, and material scores come from the Mac. Fit chips use your saved wrist profile.")
+            Text("Category, brand, price, dial, size, and material scores are calculated on this iPhone. Fit chips use your saved wrist profile.")
                 .font(.subheadline)
                 .foregroundStyle(WatchTheme.secondary)
         }
@@ -370,10 +370,6 @@ struct WishlistDetailScreen: View {
     var body: some View {
         NavigationStack {
             Form {
-                if store.isOffline {
-                    Section { Label("Mac unreachable · editing is disabled", systemImage: "wifi.slash") }
-                        .foregroundStyle(WatchTheme.amber)
-                }
                 photoSection
                 Section("Candidate") {
                     TextField("Name", text: $draft.name)

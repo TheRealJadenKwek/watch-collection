@@ -1,21 +1,28 @@
 import Foundation
 
-enum ServerConfiguration {
-    static let productionURL = "http://localhost:8931"
-
-    static var initialBaseURL: String {
+enum LegacyServerConfiguration {
+    static var migrationURL: String? {
+        if let value = ProcessInfo.processInfo.environment["WATCH_MIGRATION_URL"], !value.isEmpty {
+            return value
+        }
         if let value = ProcessInfo.processInfo.environment["WATCH_BASE_URL"], !value.isEmpty {
             return value
         }
         let arguments = ProcessInfo.processInfo.arguments
-        if let index = arguments.firstIndex(where: { $0 == "-WATCH_BASE_URL" || $0 == "--WATCH_BASE_URL" }),
+        if let index = arguments.firstIndex(where: {
+            $0 == "-WATCH_MIGRATION_URL" || $0 == "--WATCH_MIGRATION_URL" ||
+                $0 == "-WATCH_BASE_URL" || $0 == "--WATCH_BASE_URL"
+        }),
            arguments.indices.contains(index + 1) {
             return arguments[index + 1]
+        }
+        if let value = UserDefaults.standard.string(forKey: "serverURL"), !value.isEmpty {
+            return value
         }
         if let value = UserDefaults.standard.string(forKey: "WATCH_BASE_URL"), !value.isEmpty {
             return value
         }
-        return productionURL
+        return nil
     }
 }
 
@@ -31,7 +38,7 @@ enum APIClientError: LocalizedError {
         case .invalidBaseURL: "The server URL is invalid."
         case .invalidResponse: "The server returned an invalid response."
         case let .server(status, message): "Server \(status): \(message)"
-        case let .transport(message): "Mac unreachable: \(message)"
+        case let .transport(message): "Previous collection server unreachable: \(message)"
         case let .decoding(message): "Could not read the server response: \(message)"
         }
     }

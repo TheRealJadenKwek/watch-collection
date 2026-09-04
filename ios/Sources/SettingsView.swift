@@ -3,19 +3,13 @@ import SwiftUI
 struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: AppStore
-    @Binding var serverURL: String
-    @State private var draftURL: String
     @State private var draftSettings: CollectionSettings
-    @State private var connectionResult = ""
     @State private var backupResult = ""
-    @State private var testing = false
     @State private var saving = false
     @State private var backingUp = false
 
-    init(store: AppStore, serverURL: Binding<String>) {
+    init(store: AppStore) {
         self.store = store
-        _serverURL = serverURL
-        _draftURL = State(initialValue: serverURL.wrappedValue)
         _draftSettings = State(initialValue: store.data?.settings ?? CollectionSettings(
             autoBackup: true,
             backupRemote: "gdrive:WatchCollection",
@@ -29,7 +23,7 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                connectionSection
+                storageSection
                 wristSection
                 suggestionSection
                 automationSection
@@ -44,7 +38,7 @@ struct SettingsView: View {
                 ToolbarItem(placement: .principal) { Text("Settings").font(.headline).serifTitle() }
                 ToolbarItem(placement: .confirmationAction) {
                     Button(saving ? "Saving…" : "Save") { save() }
-                        .disabled(saving || draftURL.trimmingCharacters(in: .whitespaces).isEmpty)
+                        .disabled(saving)
                 }
             }
             .alert("Watch Collection", isPresented: errorBinding) {
@@ -53,28 +47,11 @@ struct SettingsView: View {
         }
     }
 
-    private var connectionSection: some View {
-        Section("Mac server") {
-            TextField("Server URL", text: $draftURL)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-            Button {
-                testing = true
-                Task {
-                    connectionResult = await store.testConnection(url: draftURL)
-                    testing = false
-                }
-            } label: {
-                Label(testing ? "Testing…" : "Test connection", systemImage: "network")
-            }
-            .disabled(testing)
-            if !connectionResult.isEmpty {
-                Text(connectionResult)
-                    .font(.caption)
-                    .foregroundStyle(connectionResult.hasPrefix("Connected") ? WatchTheme.green : WatchTheme.amber)
-            }
-            Text("Point this at the machine running server.py — a Tailscale address works great for away-from-home use. Plain HTTP is intentional for this personal, private-network app.")
+    private var storageSection: some View {
+        Section("Storage") {
+            LabeledContent("Collection", value: "On this iPhone")
+            LabeledContent("Connection required", value: "No")
+            Text("Your collection, wishlist, scores, and photos now live inside this app. The Mac is not needed after the one-time migration.")
                 .font(.caption)
                 .foregroundStyle(WatchTheme.secondary)
         }
@@ -94,10 +71,9 @@ struct SettingsView: View {
     }
 
     private var automationSection: some View {
-        Section("Backup & images") {
-            Toggle("Automatic backup", isOn: $draftSettings.autoBackup)
-            Toggle("Find images automatically", isOn: $draftSettings.autoImage)
-            LabeledContent("Destination", value: draftSettings.backupRemote ?? "gdrive:WatchCollection")
+        Section("Backup") {
+            Toggle("Keep JSON backup in Files", isOn: $draftSettings.autoBackup)
+            LabeledContent("Destination", value: "On My iPhone / Watch Collection Backup")
             if let lastBackup = draftSettings.lastBackup {
                 LabeledContent("Last backup", value: lastBackup)
                     .font(.caption)
@@ -110,15 +86,18 @@ struct SettingsView: View {
                     if let settings = store.data?.settings { draftSettings = settings }
                 }
             } label: {
-                Label(backingUp ? "Backing up…" : "Back up now", systemImage: "externaldrive.badge.timemachine")
+                Label(backingUp ? "Backing up…" : "Back up data & photos now", systemImage: "externaldrive.badge.timemachine")
             }
-            .disabled(backingUp || store.isOffline)
+            .disabled(backingUp)
             if !backupResult.isEmpty {
                 Text(backupResult)
                     .font(.caption.monospaced())
                     .foregroundStyle(WatchTheme.secondary)
                     .textSelection(.enabled)
             }
+            Text("The automatic copy keeps watches.json current. A full backup also copies every stored photo into the Files app.")
+                .font(.caption)
+                .foregroundStyle(WatchTheme.secondary)
         }
     }
 
@@ -161,8 +140,8 @@ struct SettingsView: View {
 
     private var aboutSection: some View {
         Section("About") {
-            LabeledContent("Source of truth", value: "Mac server")
-            LabeledContent("Cached mode", value: store.isOffline ? "Read-only" : "Ready")
+            LabeledContent("Source of truth", value: "This iPhone")
+            LabeledContent("Offline editing", value: "Ready")
             LabeledContent("Score maximum", value: "14")
         }
     }
@@ -189,11 +168,7 @@ struct SettingsView: View {
     private func save() {
         saving = true
         Task {
-            let trimmed = draftURL.trimmingCharacters(in: .whitespacesAndNewlines)
-            serverURL = trimmed
-            store.setServerURL(trimmed)
-            await store.refresh()
-            if !store.isOffline { await store.saveSettings(draftSettings) }
+            await store.saveSettings(draftSettings)
             saving = false
             if store.errorMessage == nil { dismiss() }
         }

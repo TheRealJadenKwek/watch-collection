@@ -35,7 +35,7 @@ actor PhotoStore {
         itemID: String,
         filename: String,
         wishlist: Bool,
-        baseURL: String
+        baseURL: String?
     ) -> PhotoAsset? {
         let directory = wishlist ? "wl-\(itemID)" : itemID
         guard isSafePathComponent(directory), isSafePathComponent(filename) else { return nil }
@@ -46,7 +46,7 @@ actor PhotoStore {
         )
     }
 
-    nonisolated static func assets(in data: CollectionData, baseURL: String) -> [PhotoAsset] {
+    nonisolated static func assets(in data: CollectionData, baseURL: String?) -> [PhotoAsset] {
         let watchPhotos = data.watches.flatMap { watch in
             watch.photos.compactMap {
                 asset(itemID: watch.id, filename: $0, wishlist: false, baseURL: baseURL)
@@ -123,6 +123,16 @@ actor PhotoStore {
         garbageCollect(keeping: referenced.union(uploadedButUnconfirmed))
     }
 
+    nonisolated static func missingLocalCount(_ assets: [PhotoAsset]) -> Int {
+        assets.reduce(into: 0) { count, asset in
+            guard let localURL = localURL(for: asset) else {
+                count += 1
+                return
+            }
+            if !FileManager.default.fileExists(atPath: localURL.path) { count += 1 }
+        }
+    }
+
     nonisolated static func localURL(for asset: PhotoAsset) -> URL? {
         guard isSafePathComponent(asset.directory), isSafePathComponent(asset.filename) else { return nil }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
@@ -162,7 +172,8 @@ actor PhotoStore {
         }
     }
 
-    nonisolated private static func remoteURL(baseURL: String, directory: String, filename: String) -> URL? {
+    nonisolated private static func remoteURL(baseURL: String?, directory: String, filename: String) -> URL? {
+        guard let baseURL else { return nil }
         let trimmed = baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard var components = URLComponents(string: trimmed), components.scheme != nil, components.host != nil else {

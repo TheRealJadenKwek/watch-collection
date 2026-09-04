@@ -2,8 +2,7 @@ import SwiftUI
 
 @main
 struct WatchCollectionApp: App {
-    @AppStorage("serverURL") private var serverURL = ServerConfiguration.initialBaseURL
-    @StateObject private var store = AppStore(serverURL: ServerConfiguration.initialBaseURL)
+    @StateObject private var store = AppStore()
 
     init() {
         URLCache.shared = URLCache(
@@ -15,18 +14,16 @@ struct WatchCollectionApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView(store: store, serverURL: $serverURL)
+            RootView(store: store)
                 .preferredColorScheme(.dark)
                 .tint(WatchTheme.gold)
                 .task { await store.start() }
-                .onChange(of: serverURL) { _, value in store.setServerURL(value) }
         }
     }
 }
 
 struct RootView: View {
     @ObservedObject var store: AppStore
-    @Binding var serverURL: String
     @AppStorage("selectedTab") private var selectedTab = AppTab.collection.rawValue
     @State private var showSettings = false
 
@@ -45,18 +42,13 @@ struct RootView: View {
                 } else {
                     EmptyCollectionView(
                         title: "Collection unavailable",
-                        detail: store.errorMessage ?? "Start the Mac server and pull to refresh."
+                        detail: store.errorMessage ?? "No collection is stored on this iPhone yet."
                     )
                 }
             }
         }
-        .safeAreaInset(edge: .top, spacing: 0) {
-            if store.isOffline {
-                OfflineBanner(message: "Mac unreachable · showing cached collection") { showSettings = true }
-            }
-        }
         .sheet(isPresented: $showSettings) {
-            SettingsView(store: store, serverURL: $serverURL)
+            SettingsView(store: store)
                 .preferredColorScheme(.dark)
         }
         .alert("Watch Collection", isPresented: errorBinding) {

@@ -253,10 +253,6 @@ struct WatchDetailScreen: View {
     var body: some View {
         NavigationStack {
             Form {
-                if store.isOffline {
-                    Section { Label("Mac unreachable · editing is disabled", systemImage: "wifi.slash") }
-                        .foregroundStyle(WatchTheme.amber)
-                }
                 photoSection
                 identitySection
                 sizingSection
