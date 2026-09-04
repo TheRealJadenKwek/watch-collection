@@ -7,8 +7,7 @@ struct CollectionScreen: View {
     @ObservedObject var store: AppStore
     let showSettings: () -> Void
     @State private var search = ""
-    @State private var selectedWatch: Watch?
-    @State private var addingWatch = false
+    @State private var presentedSheet: CollectionSheet?
 
     private let columns = [
         GridItem(.flexible(), spacing: 12),
@@ -35,7 +34,7 @@ struct CollectionScreen: View {
                         } else {
                             LazyVGrid(columns: columns, spacing: 12) {
                                 ForEach(watches) { watch in
-                                    Button { selectedWatch = watch } label: {
+                                    Button { presentedSheet = .watch(watch) } label: {
                                         WatchCardView(store: store, watch: watch, isPast: false)
                                     }
                                     .buttonStyle(.plain)
@@ -55,35 +54,63 @@ struct CollectionScreen: View {
                     Text("My Collection").font(.headline).serifTitle()
                 }
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { addingWatch = true } label: { Image(systemName: "plus") }
+                    Button { presentedSheet = .addWatch } label: { Image(systemName: "plus") }
                         .disabled(store.isOffline)
                     GearToolbarButton(action: showSettings)
                 }
             }
-            .sheet(item: $selectedWatch) { watch in
-                WatchDetailScreen(store: store, watch: watch)
-            }
-            .sheet(isPresented: $addingWatch) {
-                WatchDetailScreen(store: store, watch: .newDraft, isNew: true)
+            .sheet(item: $presentedSheet) { sheet in
+                switch sheet {
+                case let .watch(watch):
+                    WatchDetailScreen(store: store, watch: watch)
+                case .addWatch:
+                    WatchDetailScreen(store: store, watch: .newDraft, isNew: true)
+                case .wearToday:
+                    WearTodaySheet(store: store)
+                }
             }
         }
     }
 
     private var collectionHeader: some View {
-        HStack(alignment: .lastTextBaseline) {
-            VStack(alignment: .leading, spacing: 3) {
-                Text("CURRENT ROTATION")
-                    .font(.caption2.weight(.bold))
-                    .tracking(1.5)
+        VStack(alignment: .leading, spacing: 11) {
+            HStack(alignment: .lastTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text("CURRENT ROTATION")
+                        .font(.caption2.weight(.bold))
+                        .tracking(1.5)
+                        .foregroundStyle(WatchTheme.gold)
+                    Text("\(watches.count) owned watches")
+                        .font(.title2.weight(.semibold))
+                        .serifTitle()
+                }
+                Spacer()
+                Text(cad(watches.reduce(0) { $0 + $1.price }))
+                    .font(.subheadline.weight(.semibold))
                     .foregroundStyle(WatchTheme.gold)
-                Text("\(watches.count) owned watches")
-                    .font(.title2.weight(.semibold))
-                    .serifTitle()
             }
-            Spacer()
-            Text(cad(watches.reduce(0) { $0 + $1.price }))
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(WatchTheme.gold)
+            Button {
+                presentedSheet = .wearToday
+            } label: {
+                Label("Log today’s wear", systemImage: "watch.analog")
+                    .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(.borderedProminent)
+            .disabled(watches.isEmpty || store.isOffline)
+        }
+    }
+}
+
+private enum CollectionSheet: Identifiable {
+    case watch(Watch)
+    case addWatch
+    case wearToday
+
+    var id: String {
+        switch self {
+        case let .watch(watch): "watch-\(watch.id)"
+        case .addWatch: "add-watch"
+        case .wearToday: "wear-today"
         }
     }
 }
@@ -244,6 +271,7 @@ struct WatchDetailScreen: View {
     @State private var showCamera = false
     @State private var isSaving = false
     @State private var confirmDelete = false
+    @State private var activitySheet: WatchActivitySheet?
 
     init(store: AppStore, watch: Watch, isNew: Bool = false) {
         self.store = store
@@ -276,6 +304,7 @@ struct WatchDetailScreen: View {
                 identitySection
                 sizingSection
                 purchaseSection
+                if !isNew { ownershipSection }
                 storySection
             }
             .scrollContentBackground(.hidden)
@@ -307,6 +336,14 @@ struct WatchDetailScreen: View {
                     Task { await upload(data: data, filename: "camera-\(UUID().uuidString).jpg", mimeType: "image/jpeg") }
                 }
                 .ignoresSafeArea()
+            }
+            .sheet(item: $activitySheet, onDismiss: reloadDraft) { sheet in
+                switch sheet {
+                case .wearHistory:
+                    WearHistorySheet(store: store, watchID: draft.id)
+                case .maintenance:
+                    MaintenanceSheet(store: store, watchID: draft.id)
+                }
             }
             .confirmationDialog("Delete \(draft.name)?", isPresented: $confirmDelete, titleVisibility: .visible) {
                 Button("Delete watch", role: .destructive) {
@@ -503,6 +540,43 @@ struct WatchDetailScreen: View {
         }
     }
 
+    private var ownershipSection: some View {
+        let sessions = wearSessions(for: draft)
+        let services = serviceRecords(for: draft)
+        let serviceCost = services.compactMap(\.cost).reduce(0, +)
+        let totalMinutes = sessions.reduce(0) { $0 + $1.durationMinutes }
+        let todayMinutes = wearMinutes(for: draft, on: calendarDayKey())
+        let nextDue = services.compactMap(\.nextDue).sorted().first
+        return Section("Wear & service") {
+            if draft.status == "owned" {
+                LabeledContent("Wear sessions", value: "\(sessions.count)")
+                LabeledContent("Total wrist time", value: wearDurationLabel(totalMinutes))
+                if todayMinutes > 0 {
+                    LabeledContent("Today", value: wearDurationLabel(todayMinutes))
+                }
+                LabeledContent("Last worn", value: lastWearDate(for: draft).map { calendarDayLabel($0) } ?? "Not logged")
+                Button {
+                    activitySheet = .wearHistory
+                } label: {
+                    Label("Log wear or view history", systemImage: "watch.analog")
+                }
+            } else {
+                Text("Wear logging is available while this watch is in your current collection.")
+                    .font(.caption)
+                    .foregroundStyle(WatchTheme.secondary)
+            }
+
+            LabeledContent("Service records", value: "\(services.count)")
+            if serviceCost > 0 {
+                LabeledContent("Maintenance spent", value: cad(serviceCost))
+            }
+            if let nextDue {
+                LabeledContent("Next due", value: calendarDayLabel(nextDue))
+            }
+            Button("Manage service history") { activitySheet = .maintenance }
+        }
+    }
+
     private func save() {
         isSaving = true
         Task {
@@ -561,6 +635,13 @@ struct WatchDetailScreen: View {
     private func reloadDraft() {
         if let updated = store.data?.watches.first(where: { $0.id == draft.id }) { draft = updated }
     }
+}
+
+private enum WatchActivitySheet: String, Identifiable {
+    case wearHistory
+    case maintenance
+
+    var id: String { rawValue }
 }
 
 private extension Watch {

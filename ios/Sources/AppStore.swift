@@ -66,6 +66,9 @@ final class AppStore: ObservableObject {
             var updated = try requireData()
             var saved = watch
             saved.purchasedText = purchaseMonthLabel(saved.purchased)
+            saved.wearSessions = wearSessions(for: saved)
+            saved.wearDates = nil
+            saved.serviceRecords = serviceRecords(for: saved)
             if isNew {
                 saved = Watch(
                     id: uniqueID(for: watch.name, existing: updated.watches.map(\.id)),
@@ -197,6 +200,72 @@ final class AppStore: ObservableObject {
             data.watches.append(watch)
             data.wishlist[index].status = "bought"
             self.notice = "Moved into the collection."
+        }
+    }
+
+    func logWear(watchID: String, on date: Date = Date(), durationMinutes: Int) async {
+        await mutate { data in
+            guard (15...(24 * 60)).contains(durationMinutes) else {
+                throw LocalStoreError.invalidOperation
+            }
+            guard let index = data.watches.firstIndex(where: { $0.id == watchID }) else {
+                throw LocalStoreError.itemNotFound
+            }
+            var sessions = wearSessions(for: data.watches[index])
+            sessions.append(WearSession(
+                id: UUID().uuidString.lowercased(),
+                date: calendarDayKey(date),
+                durationMinutes: durationMinutes
+            ))
+            data.watches[index].wearDates = nil
+            data.watches[index].wearSessions = sessions
+            self.notice = "Logged \(wearDurationLabel(durationMinutes)) with \(data.watches[index].name)."
+        }
+    }
+
+    func removeWear(watchID: String, sessionID: String) async {
+        await mutate { data in
+            guard let index = data.watches.firstIndex(where: { $0.id == watchID }) else {
+                throw LocalStoreError.itemNotFound
+            }
+            var sessions = wearSessions(for: data.watches[index])
+            guard sessions.contains(where: { $0.id == sessionID }) else { throw LocalStoreError.itemNotFound }
+            sessions.removeAll { $0.id == sessionID }
+            data.watches[index].wearDates = nil
+            data.watches[index].wearSessions = sessions
+            self.notice = "Wear session removed."
+        }
+    }
+
+    func addServiceRecord(watchID: String, record: ServiceRecord) async {
+        await mutate { data in
+            guard let index = data.watches.firstIndex(where: { $0.id == watchID }),
+                  calendarDayDate(record.date) != nil,
+                  record.nextDue == nil || calendarDayDate(record.nextDue) != nil,
+                  !record.kind.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  record.cost.map({ $0.isFinite && $0 >= 0 }) ?? true
+            else { throw LocalStoreError.invalidOperation }
+            var records = serviceRecords(for: data.watches[index])
+            guard !records.contains(where: { $0.id == record.id }) else { throw LocalStoreError.duplicateValue }
+            records.append(record)
+            data.watches[index].serviceRecords = records.sorted {
+                if $0.date == $1.date { return $0.id < $1.id }
+                return $0.date < $1.date
+            }
+            self.notice = "Service entry added."
+        }
+    }
+
+    func deleteServiceRecord(watchID: String, recordID: String) async {
+        await mutate { data in
+            guard let index = data.watches.firstIndex(where: { $0.id == watchID }) else {
+                throw LocalStoreError.itemNotFound
+            }
+            var records = serviceRecords(for: data.watches[index])
+            guard records.contains(where: { $0.id == recordID }) else { throw LocalStoreError.itemNotFound }
+            records.removeAll { $0.id == recordID }
+            data.watches[index].serviceRecords = records
+            self.notice = "Service entry removed."
         }
     }
 

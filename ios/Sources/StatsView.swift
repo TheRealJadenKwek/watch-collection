@@ -31,6 +31,8 @@ struct StatsScreen: View {
                         .pickerStyle(.segmented)
                         .padding(.horizontal, 2)
                         headlineTiles
+                        rotationDashboard
+                        maintenanceDashboard
                         costChart
                         priceLedger
                         sizeChart
@@ -104,6 +106,164 @@ struct StatsScreen: View {
                 .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
                 .padding(13)
                 .watchCard()
+            }
+        }
+    }
+
+    private var rotationDashboard: some View {
+        let points = wearActivityPoints(owned, days: 30)
+        let events = wearEvents(owned, since: points.first?.date)
+        let recentMinutes = events.reduce(0) { $0 + $1.session.durationMinutes }
+        let distinctCount = Set(events.map { $0.watch.id }).count
+        let coverage = owned.isEmpty ? 0 : Double(distinctCount) / Double(owned.count) * 100
+        let leaders = wearLeaders(owned, since: points.first?.date)
+        let suggestion = nextWearSuggestion(owned)
+        return SectionCard(eyebrow: "Daily rotation", title: "Wrist time") {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 9) {
+                ActivityMetricTile(label: "30-day wrist time", value: wearDurationLabel(recentMinutes))
+                ActivityMetricTile(label: "Rotation coverage", value: "\(Int(coverage.rounded()))%")
+                ActivityMetricTile(label: "Watches worn", value: "\(distinctCount) of \(owned.count)")
+                ActivityMetricTile(
+                    label: "Today",
+                    value: wearDurationLabel(events.filter { Calendar.current.isDateInToday($0.date) }.reduce(0) {
+                        $0 + $1.session.durationMinutes
+                    })
+                )
+            }
+
+            if let suggestion {
+                Button {
+                    selectedWatch = suggestion
+                } label: {
+                    HStack(spacing: 12) {
+                        Image(systemName: "sparkles")
+                            .font(.title3)
+                            .foregroundStyle(WatchTheme.gold)
+                        VStack(alignment: .leading, spacing: 3) {
+                            Text("NEXT ON WRIST")
+                                .font(.caption2.weight(.bold))
+                                .tracking(1)
+                                .foregroundStyle(WatchTheme.gold)
+                            Text(suggestion.name)
+                                .font(.subheadline.weight(.semibold))
+                                .foregroundStyle(.primary)
+                            Text(lastWearDate(for: suggestion).map {
+                                "Last worn \(calendarDayLabel($0).lowercased())"
+                            } ?? "No wear logged yet")
+                            .font(.caption)
+                            .foregroundStyle(WatchTheme.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(WatchTheme.secondary)
+                    }
+                    .padding(12)
+                    .background(WatchTheme.raised)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                }
+                .buttonStyle(.plain)
+            }
+
+            if events.isEmpty {
+                Text("Log what you wear from Collection and a 30-day rotation chart will build here.")
+                    .font(.subheadline)
+                    .foregroundStyle(WatchTheme.secondary)
+            } else {
+                Chart(points) { point in
+                    BarMark(
+                        x: .value("Day", point.date, unit: .day),
+                        y: .value("Hours", point.hours)
+                    )
+                    .foregroundStyle(point.minutes > 0 ? WatchTheme.green.gradient : WatchTheme.raised.gradient)
+                    .cornerRadius(2)
+                }
+                .frame(height: 145)
+                .chartXAxis {
+                    AxisMarks(values: .stride(by: .day, count: 7)) { value in
+                        AxisGridLine().foregroundStyle(Color.white.opacity(0.05))
+                        AxisValueLabel(format: .dateTime.month(.abbreviated).day())
+                    }
+                }
+                .chartYAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
+
+                VStack(spacing: 0) {
+                    ForEach(leaders.prefix(5)) { leader in
+                        Button {
+                            selectedWatch = leader.watch
+                        } label: {
+                            HStack {
+                                Text(leader.watch.name)
+                                    .font(.subheadline.weight(.medium))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Spacer()
+                                Text(wearDurationLabel(leader.minutes))
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(WatchTheme.green)
+                                Text("· \(cad(leader.watch.price / (Double(leader.minutes) / 60)))/hour")
+                                    .font(.caption.monospacedDigit())
+                                    .foregroundStyle(WatchTheme.secondary)
+                            }
+                            .padding(.vertical, 8)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+            }
+        }
+    }
+
+    private var maintenanceDashboard: some View {
+        let records = owned.flatMap { watch in serviceRecords(for: watch).map { (watch, $0) } }
+        let totalCost = records.compactMap { $0.1.cost }.reduce(0, +)
+        let dueItems = serviceDueItems(owned)
+        let overdueCount = dueItems.filter { $0.daysUntilDue < 0 }.count
+        return SectionCard(eyebrow: "Ownership", title: "Service & maintenance") {
+            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 9) {
+                ActivityMetricTile(label: "Service records", value: "\(records.count)")
+                ActivityMetricTile(label: "Maintenance spent", value: cad(totalCost))
+                ActivityMetricTile(label: "Reminders", value: "\(dueItems.count)")
+                ActivityMetricTile(label: "Overdue", value: "\(overdueCount)", warning: overdueCount > 0)
+            }
+
+            if dueItems.isEmpty {
+                Text("Add a service record with a next-due date to see reminders here.")
+                    .font(.subheadline)
+                    .foregroundStyle(WatchTheme.secondary)
+            } else {
+                VStack(spacing: 0) {
+                    ForEach(dueItems.prefix(6)) { item in
+                        Button {
+                            selectedWatch = item.watch
+                        } label: {
+                            HStack(alignment: .firstTextBaseline, spacing: 10) {
+                                Image(systemName: item.daysUntilDue < 0 ? "exclamationmark.circle.fill" : "bell")
+                                    .foregroundStyle(item.daysUntilDue < 0 ? WatchTheme.amber : WatchTheme.gold)
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.watch.name)
+                                        .font(.subheadline.weight(.semibold))
+                                        .foregroundStyle(.primary)
+                                    Text(item.record.kind)
+                                        .font(.caption)
+                                        .foregroundStyle(WatchTheme.secondary)
+                                }
+                                Spacer()
+                                VStack(alignment: .trailing, spacing: 3) {
+                                    Text(calendarDayLabel(item.record.nextDue))
+                                        .font(.caption.weight(.semibold))
+                                        .foregroundStyle(item.daysUntilDue < 0 ? WatchTheme.amber : WatchTheme.gold)
+                                    Text(dueDistanceLabel(item.daysUntilDue))
+                                        .font(.caption2)
+                                        .foregroundStyle(WatchTheme.secondary)
+                                }
+                            }
+                            .padding(.vertical, 9)
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
             }
         }
     }
@@ -313,7 +473,11 @@ struct StatsScreen: View {
 
     private var spendChart: some View {
         let values = spendByYear(scoped)
-        return SectionCard(eyebrow: "Timeline", title: "Spend by year") {
+        let cumulative = cumulativeSpend(values)
+        return SectionCard(eyebrow: "Timeline", title: "Acquisition spend") {
+            Text("Annual spend")
+                .font(.caption.weight(.bold))
+                .foregroundStyle(WatchTheme.secondary)
             Chart(values) { point in
                 BarMark(x: .value("Year", point.year), y: .value("CAD", point.total))
                     .foregroundStyle(selectedSpendYear == point.year ? WatchTheme.gold.gradient : WatchTheme.green.gradient)
@@ -338,6 +502,39 @@ struct StatsScreen: View {
                             }
                         )
                 }
+            }
+
+            if !cumulative.isEmpty {
+                Divider().overlay(Color.white.opacity(0.06))
+                HStack {
+                    Text("Acquisition basis over time")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(WatchTheme.secondary)
+                    Spacer()
+                    Text(cad(cumulative.last?.total ?? 0))
+                        .font(.caption.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(WatchTheme.gold)
+                }
+                Chart(cumulative) { point in
+                    AreaMark(
+                        x: .value("Year", point.year),
+                        y: .value("Cumulative CAD", point.total)
+                    )
+                    .foregroundStyle(WatchTheme.green.opacity(0.16).gradient)
+                    LineMark(
+                        x: .value("Year", point.year),
+                        y: .value("Cumulative CAD", point.total)
+                    )
+                    .foregroundStyle(WatchTheme.gold)
+                    .lineStyle(StrokeStyle(lineWidth: 2.2))
+                    PointMark(
+                        x: .value("Year", point.year),
+                        y: .value("Cumulative CAD", point.total)
+                    )
+                    .foregroundStyle(WatchTheme.gold)
+                }
+                .frame(height: 115)
+                .chartYAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
             }
         }
     }
@@ -734,6 +931,139 @@ struct StatsScreen: View {
     }
 }
 
+private struct ActivityMetricTile: View {
+    let label: String
+    let value: String
+    var warning = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            Text(label.uppercased())
+                .font(.caption2.weight(.bold))
+                .tracking(0.7)
+                .foregroundStyle(WatchTheme.secondary)
+            Text(value)
+                .font(.headline.monospacedDigit())
+                .foregroundStyle(warning ? WatchTheme.amber : WatchTheme.gold)
+                .minimumScaleFactor(0.75)
+        }
+        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+        .padding(11)
+        .background(WatchTheme.raised)
+        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+    }
+}
+
+private struct WearEvent: Identifiable {
+    var id: String { "\(watch.id)-\(session.id)" }
+    var watch: Watch
+    var session: WearSession
+    var date: Date
+}
+
+private struct WearDayPoint: Identifiable {
+    var id: String { calendarDayKey(date) }
+    var date: Date
+    var minutes: Int
+    var hours: Double { Double(minutes) / 60 }
+}
+
+private struct WearLeader: Identifiable {
+    var id: String { watch.id }
+    var watch: Watch
+    var minutes: Int
+}
+
+private func wearEvents(_ watches: [Watch], since: Date? = nil) -> [WearEvent] {
+    watches.flatMap { watch in
+        wearSessions(for: watch).compactMap { session in
+            guard let date = calendarDayDate(session.date), since.map({ date >= $0 }) ?? true else { return nil }
+            return WearEvent(watch: watch, session: session, date: date)
+        }
+    }
+}
+
+private func wearActivityPoints(_ watches: [Watch], days: Int) -> [WearDayPoint] {
+    let calendar = Calendar.current
+    let today = calendar.startOfDay(for: Date())
+    return (0..<max(1, days)).reversed().compactMap { offset in
+        guard let date = calendar.date(byAdding: .day, value: -offset, to: today) else { return nil }
+        let key = calendarDayKey(date)
+        return WearDayPoint(
+            date: date,
+            minutes: watches.reduce(0) { $0 + wearMinutes(for: $1, on: key) }
+        )
+    }
+}
+
+private func wearLeaders(_ watches: [Watch], since: Date?) -> [WearLeader] {
+    watches.compactMap { watch in
+        let minutes = wearSessions(for: watch).filter { session in
+            guard let since else { return true }
+            return calendarDayDate(session.date).map { $0 >= since } ?? false
+        }.reduce(0) { $0 + $1.durationMinutes }
+        return minutes > 0 ? WearLeader(watch: watch, minutes: minutes) : nil
+    }.sorted {
+        if $0.minutes == $1.minutes {
+            return $0.watch.name.localizedCaseInsensitiveCompare($1.watch.name) == .orderedAscending
+        }
+        return $0.minutes > $1.minutes
+    }
+}
+
+private func nextWearSuggestion(_ watches: [Watch]) -> Watch? {
+    let today = calendarDayKey()
+    return watches
+        .filter { wearMinutes(for: $0, on: today) == 0 }
+        .sorted {
+            let left = lastWearDate(for: $0) ?? ""
+            let right = lastWearDate(for: $1) ?? ""
+            if left == right {
+                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+            }
+            return left < right
+        }
+        .first
+}
+
+private struct ServiceDueItem: Identifiable {
+    var id: String { "\(watch.id)-\(record.id)" }
+    var watch: Watch
+    var record: ServiceRecord
+    var daysUntilDue: Int
+}
+
+private func serviceDueItems(_ watches: [Watch]) -> [ServiceDueItem] {
+    let calendar = Calendar.current
+    let today = calendar.startOfDay(for: Date())
+    return watches.flatMap { watch -> [ServiceDueItem] in
+        let latestByKind = Dictionary(grouping: serviceRecords(for: watch), by: \.kind).compactMap { _, records in
+            records.max { left, right in
+                if left.date == right.date { return left.id < right.id }
+                return left.date < right.date
+            }
+        }
+        return latestByKind.compactMap { record in
+            guard let due = calendarDayDate(record.nextDue) else { return nil }
+            let days = calendar.dateComponents([.day], from: today, to: calendar.startOfDay(for: due)).day ?? 0
+            return ServiceDueItem(watch: watch, record: record, daysUntilDue: days)
+        }
+    }.sorted {
+        if $0.daysUntilDue == $1.daysUntilDue {
+            return $0.watch.name.localizedCaseInsensitiveCompare($1.watch.name) == .orderedAscending
+        }
+        return $0.daysUntilDue < $1.daysUntilDue
+    }
+}
+
+private func dueDistanceLabel(_ days: Int) -> String {
+    if days < -1 { return "\(-days) days overdue" }
+    if days == -1 { return "1 day overdue" }
+    if days == 0 { return "Due today" }
+    if days == 1 { return "Due tomorrow" }
+    return "In \(days) days"
+}
+
 private struct MetricBin: Identifiable {
     var id: Double { lower }
     var lower: Double
@@ -793,6 +1123,14 @@ private struct YearSpend: Identifiable {
     var id: String { year }
     var year: String
     var total: Double
+}
+
+private func cumulativeSpend(_ values: [YearSpend]) -> [YearSpend] {
+    var runningTotal = 0.0
+    return values.map { point in
+        runningTotal += point.total
+        return YearSpend(year: point.year, total: runningTotal)
+    }
 }
 
 private struct PurchaseTimelineEntry: Identifiable {

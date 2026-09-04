@@ -59,6 +59,24 @@ struct Watch: Codable, Identifiable, Hashable, Sendable {
     var lugToLug: Double?
     var material: String?
     var brand: String?
+    var wearDates: [String]? = nil
+    var wearSessions: [WearSession]? = nil
+    var serviceRecords: [ServiceRecord]? = nil
+}
+
+struct WearSession: Codable, Identifiable, Hashable, Sendable {
+    let id: String
+    var date: String
+    var durationMinutes: Int
+}
+
+struct ServiceRecord: Codable, Identifiable, Hashable, Sendable {
+    let id: String
+    var date: String
+    var kind: String
+    var notes: String
+    var cost: Double?
+    var nextDue: String?
 }
 
 struct WishlistItem: Codable, Identifiable, Hashable, Sendable {

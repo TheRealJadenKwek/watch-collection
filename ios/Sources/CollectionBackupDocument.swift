@@ -215,7 +215,8 @@ enum CollectionBackupArchive {
               data.watches.allSatisfy({
                   !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
                       isSafePathComponent($0.id) &&
-                      $0.photos.allSatisfy(isSafePathComponent)
+                      $0.photos.allSatisfy(isSafePathComponent) &&
+                      isValidActivity($0)
               }),
               data.wishlist.allSatisfy({
                   !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
@@ -262,5 +263,47 @@ enum CollectionBackupArchive {
     private static func isSafePathComponent(_ value: String) -> Bool {
         !value.isEmpty && value != "." && value != ".." &&
             !value.contains("/") && !value.contains("\\") && !value.contains("\0")
+    }
+
+    private static func isValidActivity(_ watch: Watch) -> Bool {
+        let legacyWears = watch.wearDates ?? []
+        let sessions = watch.wearSessions ?? []
+        let sessionIDs = sessions.map(\.id)
+        let records = watch.serviceRecords ?? []
+        let recordIDs = records.map(\.id)
+        return legacyWears.count <= 20_000 &&
+            Set(legacyWears).count == legacyWears.count &&
+            legacyWears.allSatisfy(isValidDay) &&
+            sessions.count <= 50_000 &&
+            Set(sessionIDs).count == sessionIDs.count &&
+            sessions.allSatisfy { session in
+                !session.id.isEmpty &&
+                    isValidDay(session.date) &&
+                    (15...(24 * 60)).contains(session.durationMinutes)
+            } &&
+            records.count <= 2_000 &&
+            Set(recordIDs).count == recordIDs.count &&
+            records.allSatisfy { record in
+                !record.id.isEmpty &&
+                    !record.kind.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+                    isValidDay(record.date) &&
+                    (record.nextDue.map(isValidDay) ?? true) &&
+                    (record.cost.map { $0.isFinite && $0 >= 0 } ?? true)
+            }
+    }
+
+    private static func isValidDay(_ value: String) -> Bool {
+        let parts = value.split(separator: "-")
+        guard parts.count == 3,
+              let year = Int(parts[0]),
+              let month = Int(parts[1]),
+              let day = Int(parts[2]),
+              let date = Calendar(identifier: .gregorian).date(
+                  from: DateComponents(year: year, month: month, day: day)
+              )
+        else { return false }
+        let components = Calendar(identifier: .gregorian).dateComponents([.year, .month, .day], from: date)
+        return components.year == year && components.month == month && components.day == day &&
+            value == String(format: "%04d-%02d-%02d", year, month, day)
     }
 }

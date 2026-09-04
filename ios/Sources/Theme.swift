@@ -76,6 +76,79 @@ func purchaseMonthLabel(_ value: String?) -> String {
     return date.formatted(.dateTime.month(.wide).year())
 }
 
+func calendarDayKey(_ date: Date = Date()) -> String {
+    let components = Calendar.current.dateComponents([.year, .month, .day], from: date)
+    return String(
+        format: "%04d-%02d-%02d",
+        components.year ?? 2000,
+        components.month ?? 1,
+        components.day ?? 1
+    )
+}
+
+func calendarDayDate(_ value: String?) -> Date? {
+    guard let value else { return nil }
+    let parts = value.split(separator: "-")
+    guard parts.count == 3,
+          let year = Int(parts[0]),
+          let month = Int(parts[1]),
+          let day = Int(parts[2]),
+          let date = Calendar.current.date(from: DateComponents(year: year, month: month, day: day)),
+          calendarDayKey(date) == value
+    else { return nil }
+    return date
+}
+
+func calendarDayLabel(_ value: String?) -> String {
+    guard let date = calendarDayDate(value) else { return "Unknown date" }
+    if Calendar.current.isDateInToday(date) { return "Today" }
+    if Calendar.current.isDateInYesterday(date) { return "Yesterday" }
+    return date.formatted(.dateTime.month(.abbreviated).day().year())
+}
+
+func wearSessions(for watch: Watch) -> [WearSession] {
+    var sessions = watch.wearSessions ?? []
+    if sessions.isEmpty {
+        sessions = Array(Set(watch.wearDates ?? [])).compactMap { day in
+            guard calendarDayDate(day) != nil else { return nil }
+            return WearSession(id: "legacy-\(day)", date: day, durationMinutes: 8 * 60)
+        }
+    }
+    var seen = Set<String>()
+    return sessions.filter { session in
+        calendarDayDate(session.date) != nil &&
+            (15...(24 * 60)).contains(session.durationMinutes) &&
+            seen.insert(session.id).inserted
+    }.sorted {
+        if $0.date == $1.date { return $0.id < $1.id }
+        return $0.date < $1.date
+    }
+}
+
+func serviceRecords(for watch: Watch) -> [ServiceRecord] {
+    (watch.serviceRecords ?? []).sorted {
+        if $0.date == $1.date { return $0.id < $1.id }
+        return $0.date < $1.date
+    }
+}
+
+func lastWearDate(for watch: Watch) -> String? {
+    wearSessions(for: watch).last?.date
+}
+
+func wearMinutes(for watch: Watch, on day: String? = nil) -> Int {
+    wearSessions(for: watch)
+        .filter { day == nil || $0.date == day }
+        .reduce(0) { $0 + $1.durationMinutes }
+}
+
+func wearDurationLabel(_ minutes: Int) -> String {
+    let hours = Double(minutes) / 60
+    if minutes < 60 { return "\(minutes)m" }
+    if minutes % 60 == 0 { return "\(minutes / 60)h" }
+    return "\(hours.formatted(.number.precision(.fractionLength(1))))h"
+}
+
 func optionalNumberBinding(_ value: Binding<Double?>) -> Binding<String> {
     Binding(
         get: { value.wrappedValue.map(compactNumber) ?? "" },
