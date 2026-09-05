@@ -93,9 +93,11 @@ struct CollectionScreen: View {
                 presentedSheet = .wearToday
             } label: {
                 Label("Log today’s wear", systemImage: "watch.analog")
-                    .frame(maxWidth: .infinity)
+                    .frame(maxWidth: .infinity, minHeight: 28)
+                    .contentShape(Rectangle())
             }
             .buttonStyle(.borderedProminent)
+            .controlSize(.large)
             .disabled(watches.isEmpty || store.isOffline)
         }
     }
@@ -217,6 +219,8 @@ struct WatchCardView: View {
             ZStack(alignment: .topLeading) {
                 RemoteWatchImage(asset: coverAsset, allowsRemoteFetch: !store.isOffline)
                     .frame(height: 142)
+                    .clipped()
+                    .allowsHitTesting(false)
                 if isPast {
                     CapsuleChip(text: statusLabel(watch.status), color: WatchTheme.gold, filled: true)
                         .padding(8)
@@ -257,6 +261,9 @@ struct WatchCardView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .watchCard()
+        // Clipping changes drawing only. Keep the scaled photo's hit area inside
+        // the visible card so it cannot intercept the wear button or nearby cards.
+        .contentShape(.interaction, RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
 
