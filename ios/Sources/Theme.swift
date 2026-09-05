@@ -143,10 +143,9 @@ func wearMinutes(for watch: Watch, on day: String? = nil) -> Int {
 }
 
 func wearDurationLabel(_ minutes: Int) -> String {
-    let hours = Double(minutes) / 60
     if minutes < 60 { return "\(minutes)m" }
     if minutes % 60 == 0 { return "\(minutes / 60)h" }
-    return "\(hours.formatted(.number.precision(.fractionLength(1))))h"
+    return "\(minutes / 60)h \(minutes % 60)m"
 }
 
 func optionalNumberBinding(_ value: Binding<Double?>) -> Binding<String> {

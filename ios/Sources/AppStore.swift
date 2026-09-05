@@ -223,6 +223,36 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func setWearTotal(watchID: String, on date: Date, totalMinutes: Int) async -> Bool {
+        do {
+            guard date.timeIntervalSinceReferenceDate.isFinite,
+                  Calendar.current.startOfDay(for: date) <= Calendar.current.startOfDay(for: Date())
+            else { throw LocalStoreError.invalidOperation }
+            var updated = try requireData()
+            guard let index = updated.watches.firstIndex(where: { $0.id == watchID }) else {
+                throw LocalStoreError.itemNotFound
+            }
+            let sessions = try WearTotals.settingTotal(
+                in: wearSessions(for: updated.watches[index]),
+                on: calendarDayKey(date),
+                totalMinutes: totalMinutes
+            )
+            updated.watches[index].wearDates = nil
+            updated.watches[index].wearSessions = sessions
+            await commit(updated)
+            notice = totalMinutes == 0
+                ? "Wear cleared for \(calendarDayLabel(calendarDayKey(date)).lowercased())."
+                : "Saved \(wearDurationLabel(totalMinutes)) total with \(updated.watches[index].name)."
+            return true
+        } catch is WearTotalError {
+            surface(LocalStoreError.invalidOperation)
+            return false
+        } catch {
+            surface(error)
+            return false
+        }
+    }
+
     func removeWear(watchID: String, sessionID: String) async {
         await mutate { data in
             guard let index = data.watches.firstIndex(where: { $0.id == watchID }) else {

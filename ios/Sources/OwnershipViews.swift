@@ -3,31 +3,26 @@ import SwiftUI
 struct WearTodaySheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: AppStore
-    @State private var savingID: String?
     @State private var selectedDate = Date()
-    @AppStorage("wearLog.lastDurationMinutes") private var durationMinutes = 4 * 60
+    @State private var selectedWatch: WearDaySelection?
 
     private var selectedDay: String { calendarDayKey(selectedDate) }
     private var owned: [Watch] {
         (store.data?.watches ?? [])
             .filter { $0.status == "owned" }
             .sorted {
-                let left = lastWearDate(for: $0) ?? ""
-                let right = lastWearDate(for: $1) ?? ""
-                if left == right {
-                    return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-                }
-                return left < right
+                let order = $0.name.localizedCaseInsensitiveCompare($1.name)
+                return order == .orderedSame ? $0.id < $1.id : order == .orderedAscending
             }
     }
 
     var body: some View {
         NavigationStack {
             List {
-                Section("Wear session") {
+                Section {
                     DatePicker("Date", selection: $selectedDate, in: ...Date(), displayedComponents: .date)
-                    WearDurationPicker(minutes: $durationMinutes)
-                    Text("Tap every watch you wore. You can add multiple sessions for the same watch and day.")
+                } footer: {
+                    Text("Tap a watch to set its hours. You can update your total throughout the day.")
                         .font(.subheadline)
                         .foregroundStyle(WatchTheme.secondary)
                 }
@@ -36,15 +31,7 @@ struct WearTodaySheet: View {
                     ForEach(owned) { watch in
                         let existingMinutes = wearMinutes(for: watch, on: selectedDay)
                         Button {
-                            savingID = watch.id
-                            Task {
-                                await store.logWear(
-                                    watchID: watch.id,
-                                    on: selectedDate,
-                                    durationMinutes: durationMinutes
-                                )
-                                savingID = nil
-                            }
+                            selectedWatch = WearDaySelection(watch: watch, date: selectedDate)
                         } label: {
                             HStack(spacing: 12) {
                                 RemoteWatchImage(
@@ -53,39 +40,32 @@ struct WearTodaySheet: View {
                                     },
                                     allowsRemoteFetch: false
                                 )
-                                .frame(width: 58, height: 58)
+                                .frame(width: 64, height: 64)
                                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                .allowsHitTesting(false)
 
                                 VStack(alignment: .leading, spacing: 4) {
                                     Text(watch.name)
                                         .font(.subheadline.weight(.semibold))
                                         .foregroundStyle(.primary)
-                                    Text(lastWearDate(for: watch).map {
-                                        "Last worn \(calendarDayLabel($0).lowercased())"
-                                    } ?? "No wears logged yet")
+                                    Text(existingMinutes > 0
+                                         ? "\(wearDurationLabel(existingMinutes)) worn · tap to adjust"
+                                         : "Tap to set hours")
                                     .font(.caption)
-                                    .foregroundStyle(WatchTheme.secondary)
+                                    .foregroundStyle(existingMinutes > 0 ? WatchTheme.green : WatchTheme.secondary)
                                 }
                                 Spacer()
-                                if savingID == watch.id {
-                                    ProgressView().tint(WatchTheme.gold)
-                                } else {
-                                    VStack(alignment: .trailing, spacing: 3) {
-                                        if existingMinutes > 0 {
-                                            Text(wearDurationLabel(existingMinutes))
-                                                .font(.caption.weight(.semibold))
-                                                .foregroundStyle(WatchTheme.green)
-                                        }
-                                        Image(systemName: "plus.circle")
-                                            .foregroundStyle(WatchTheme.gold)
-                                    }
-                                }
+                                Image(systemName: "chevron.right")
+                                    .font(.caption.weight(.semibold))
+                                    .foregroundStyle(WatchTheme.gold)
                             }
+                            .padding(.vertical, 4)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .disabled(savingID != nil)
-                        .accessibilityLabel("Log \(wearDurationLabel(durationMinutes)) with \(watch.name) on \(calendarDayLabel(selectedDay))")
+                        .accessibilityLabel(watch.name)
+                        .accessibilityValue("\(wearDurationLabel(existingMinutes)) worn on \(calendarDayLabel(selectedDay))")
+                        .accessibilityHint("Opens the hours slider for this watch")
                     }
                 }
             }
@@ -96,9 +76,171 @@ struct WearTodaySheet: View {
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
             }
+            .sheet(item: $selectedWatch) { selection in
+                WearDayEditorSheet(store: store, selection: selection)
+            }
         }
         .preferredColorScheme(.dark)
-        .presentationDetents([.medium, .large])
+        .presentationDetents([.large])
+    }
+}
+
+private struct WearDaySelection: Identifiable {
+    let id = UUID()
+    let watch: Watch
+    let date: Date
+}
+
+private struct WearDayEditorSheet: View {
+    @Environment(\.dismiss) private var dismiss
+    @ObservedObject var store: AppStore
+    let selection: WearDaySelection
+    @State private var hours: Double
+    @State private var isSaving = false
+    @State private var saveError: String?
+
+    init(store: AppStore, selection: WearDaySelection) {
+        self.store = store
+        self.selection = selection
+        let minutes = wearMinutes(for: selection.watch, on: calendarDayKey(selection.date))
+        _hours = State(initialValue: min(Double(minutes) / 60, 24))
+    }
+
+    private var minutes: Int { Int((hours * 60).rounded()) }
+    private var isToday: Bool { Calendar.current.isDateInToday(selection.date) }
+
+    var body: some View {
+        NavigationStack {
+            ScrollView {
+                VStack(spacing: 24) {
+                    VStack(spacing: 16) {
+                        RemoteWatchImage(
+                            asset: selection.watch.photos.first.flatMap {
+                                store.photoAsset(itemID: selection.watch.id, filename: $0, wishlist: false)
+                            },
+                            allowsRemoteFetch: false
+                        )
+                        .frame(width: 210, height: 210)
+                        .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))
+                        .allowsHitTesting(false)
+                        .shadow(color: .black.opacity(0.25), radius: 20, y: 10)
+
+                        Text(selection.watch.name)
+                            .font(.title2.weight(.semibold))
+                            .multilineTextAlignment(.center)
+                    }
+
+                    VStack(spacing: 16) {
+                        Text(isToday ? "Hours worn so far today" : "Hours worn on \(calendarDayLabel(calendarDayKey(selection.date)))")
+                            .font(.subheadline)
+                            .foregroundStyle(WatchTheme.secondary)
+                            .multilineTextAlignment(.center)
+
+                        HStack(spacing: 20) {
+                            adjustmentButton("minus", label: "15 minutes less", enabled: minutes > 0) {
+                                hours = max(0, Double(minutes - 15) / 60)
+                            }
+                            Text(hours.formatted(.number.precision(.fractionLength(0...2))))
+                                .font(.system(size: 48, weight: .semibold, design: .rounded).monospacedDigit())
+                                .foregroundStyle(WatchTheme.gold)
+                                .frame(maxWidth: .infinity)
+                                .minimumScaleFactor(0.6)
+                                .lineLimit(1)
+                                .accessibilityLabel("\(wearDurationLabel(minutes)) worn")
+                            adjustmentButton("plus", label: "15 minutes more", enabled: minutes < 24 * 60) {
+                                hours = min(24, Double(minutes + 15) / 60)
+                            }
+                        }
+
+                        Slider(value: $hours, in: 0...24, step: 0.25)
+                            .tint(WatchTheme.gold)
+                            .accessibilityLabel("Hours worn")
+                            .accessibilityValue(wearDurationLabel(minutes))
+                            .accessibilityIdentifier("wear.total.slider")
+                        HStack {
+                            Text("0 hours")
+                            Spacer()
+                            Text("24 hours")
+                        }
+                        .font(.caption)
+                        .foregroundStyle(WatchTheme.secondary)
+
+                        Text("This is your total for the day, not extra time. Update it whenever you switch watches.")
+                            .font(.footnote)
+                            .foregroundStyle(WatchTheme.secondary)
+                            .multilineTextAlignment(.center)
+                        if wearMinutes(for: selection.watch, on: calendarDayKey(selection.date)) > 24 * 60 {
+                            Text("Previous entries total more than 24 hours. Save a corrected daily total below.")
+                                .font(.footnote)
+                                .foregroundStyle(WatchTheme.gold)
+                        }
+                        if let saveError {
+                            Text(saveError).font(.footnote).foregroundStyle(.red)
+                        }
+                    }
+                    .padding(20)
+                    .background(WatchTheme.card, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+                }
+                .padding(24)
+            }
+            .background(WatchTheme.background)
+            .safeAreaInset(edge: .bottom) {
+                Button {
+                    isSaving = true
+                    saveError = nil
+                    Task {
+                        let saved = await store.setWearTotal(
+                            watchID: selection.watch.id,
+                            on: selection.date,
+                            totalMinutes: minutes
+                        )
+                        isSaving = false
+                        if saved { dismiss() }
+                        else { saveError = store.errorMessage ?? "Couldn't save your hours. Please try again." }
+                    }
+                } label: {
+                    Text(isSaving ? "Saving…" : "Save total · \(wearDurationLabel(minutes))")
+                        .font(.headline)
+                        .frame(maxWidth: .infinity, minHeight: 36)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(WatchTheme.gold)
+                .controlSize(.large)
+                .accessibilityIdentifier("wear.total.save")
+                .disabled(isSaving)
+                .padding(.horizontal, 24)
+                .padding(.vertical, 12)
+                .background(WatchTheme.background)
+            }
+            .navigationTitle(isToday ? "Today's Wear" : "Daily Wear")
+            .navigationBarTitleDisplayMode(.inline)
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Cancel") { dismiss() }.disabled(isSaving)
+                }
+            }
+            .disabled(isSaving)
+        }
+        .preferredColorScheme(.dark)
+        .presentationDetents([.large])
+        .presentationDragIndicator(.visible)
+        .interactiveDismissDisabled(isSaving)
+    }
+
+    private func adjustmentButton(_ symbol: String, label: String, enabled: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: symbol)
+                .font(.title3.weight(.semibold))
+                .frame(width: 48, height: 48)
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(WatchTheme.gold)
+        .background(WatchTheme.gold.opacity(0.1), in: Circle())
+        .disabled(!enabled)
+        .opacity(enabled ? 1 : 0.35)
+        .accessibilityLabel(label)
     }
 }
 
