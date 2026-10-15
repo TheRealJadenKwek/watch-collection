@@ -25,6 +25,7 @@ struct WatchPlaceholder: View {
 struct RemoteWatchImage: View {
     let asset: PhotoAsset?
     let allowsRemoteFetch: Bool
+    var focus: PhotoFocus? = nil
     @State private var image: UIImage?
     @State private var isLoading = false
 
@@ -35,9 +36,7 @@ struct RemoteWatchImage: View {
     var body: some View {
         ZStack {
             if let image {
-                Image(uiImage: image)
-                    .resizable()
-                    .scaledToFill()
+                FocusedImage(image: image, focus: focus)
             } else {
                 WatchPlaceholder()
             }

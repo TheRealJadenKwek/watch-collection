@@ -321,10 +321,50 @@ function varietyPanel(title, field, canonical, manageRoute) {
   </section>`;
 }
 
+function uniqueCostRecords(watches) {
+  const ids = new Set(watches.map(watch => watch.id));
+  return watches.filter(watch => !ids.has(watch.costSourceWatchID));
+}
+
+function purchaseHistory(watches) {
+  return uniqueCostRecords(watches).flatMap(watch => {
+    const source = state.data.watches.find(item => item.id === watch.costSourceWatchID);
+    if (watch.acquisitionMethod === "trade" && !source) return [];
+    return [{ watch, source, purchased: (source || watch).purchased }];
+  });
+}
+
+function purchaseTimeline(watches) {
+  // Preserve collection order within a month when no exact purchase day is recorded.
+  const purchases = purchaseHistory(watches);
+  const entries = purchases.filter(w => /^\d{4}-(0[1-9]|1[0-2])$/.test(w.purchased || ""))
+    .sort((a, b) => a.purchased.localeCompare(b.purchased));
+  const datedIDs = new Set(entries.map(entry => entry.watch.id));
+  const trades = watches.filter(w => w.acquisitionMethod === "trade" && !datedIDs.has(w.id));
+  const months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const missing = purchases.length - entries.length;
+  return `<section class="panel wide" aria-labelledby="purchaseTimelineTitle" id="purchaseTimeline">
+    <div class="panel-heading"><div><p class="eyebrow">${state.statsScope === "owned" ? "Current collection" : "All-time"}</p><h3 id="purchaseTimelineTitle">Purchase timeline</h3></div>
+      <small>${entries.length} purchases${entries.length ? ` · ${entries[0].purchased.slice(0, 4)}–${entries.at(-1).purchased.slice(0, 4)}` : ""}</small></div>
+    ${entries.length ? `<ol class="purchase-timeline">${entries.map(({watch, source, purchased}) => {
+      const [year, month] = purchased.split("-");
+      return `<li><button type="button" class="purchase-entry" data-open-watch="${esc(watch.id)}" aria-label="${esc(watch.name)}, ${source ? `original ${esc(source.name)} purchase` : "purchased"} ${months[Number(month) - 1]} ${year}">
+        <time datetime="${esc(purchased)}"><strong>${months[Number(month) - 1]}</strong><span>${year}</span></time>
+        <span class="purchase-node" aria-hidden="true"></span>
+        ${imageMarkup(watch, "watch", "purchase-photo")}
+        <span class="purchase-copy"><strong>${esc(watch.name)}</strong><span><b>${money(watch.price)}</b>${watch.category ? ` · ${esc(watch.category)}` : ""}</span>${source ? `<span>Original ${esc(source.name)} purchase · ${esc(source.purchasedText || purchased)} · carried over through trade</span>` : ""}</span>
+      </button></li>`;
+    }).join("")}</ol>` : `<p class="form-note">No purchase dates yet. Add a purchase month to an owned watch and it will appear here.</p>`}
+    ${trades.length ? `<div class="purchase-trades"><p class="eyebrow">Acquired by trade</p>${trades.map(watch => `<button type="button" class="text-button" data-open-watch="${esc(watch.id)}">${esc(watch.name)} · ${watch.costSourceWatchID ? `${money(watch.price)} original purchase cost carried over` : "No separate purchase"}</button>`).join("")}</div>` : ""}
+    ${missing ? `<p class="form-note">${missing} ${missing === 1 ? "watch is" : "watches are"} missing a purchase month.</p>` : ""}
+  </section>`;
+}
+
 function renderStats() {
   const all = state.data.watches;
   const owned = all.filter(watch => watch.status === "owned");
   const scope = state.statsScope === "owned" ? owned : all;
+  const costScope = uniqueCostRecords(scope);
   const hl = state.data.headlineStats?.[state.statsScope] ?? {};
   const iqrRange = `${money(hl.q1 ?? 0)} – ${money(hl.q3 ?? 0)}`;
   const wrist = state.data.settings.wrist;
@@ -334,9 +374,9 @@ function renderStats() {
   const pcts = [10, 25, 50, 75, 80, 90, 95];
   const diamHist = histogram(scope, "diameter");
   const lugHist = histogram(scope, "lugToLug");
-  const costHist = PRICE_TIERS.map(tier => [tier.label, scope.filter(watch => priceTier(watch.price)?.label === tier.label).length]);
-  const yearly = [...counter(scope.filter(w => w.purchased), watch => watch.purchased.slice(0, 4))];
-  const yearSpend = [...new Set(scope.filter(w => w.purchased).map(w => w.purchased.slice(0, 4)))].sort().map(year => [year, sum(scope.filter(w => w.purchased?.startsWith(year)).map(w => w.price))]);
+  const costHist = PRICE_TIERS.map(tier => [tier.label, costScope.filter(watch => priceTier(watch.price)?.label === tier.label).length]);
+  const datedCosts = purchaseHistory(scope).filter(entry => entry.purchased);
+  const yearSpend = [...new Set(datedCosts.map(entry => entry.purchased.slice(0, 4)))].sort().map(year => [year, sum(datedCosts.filter(entry => entry.purchased.startsWith(year)).map(entry => entry.watch.price))]);
   const brandCounts = [...counter(scope, watchBrand)].sort((a, b) => b[1] - a[1]);
   const statusCounts = [...counter(all, watch => STATUS_LABELS[watch.status] || watch.status)].sort((a, b) => b[1] - a[1]);
   const designCounts = [...counter(scope, watch => watch.original === true ? "Original" : watch.original === false ? "Rep / homage" : "Unknown")];
@@ -369,8 +409,10 @@ function renderStats() {
         ["Owned in sweet spot", `${sweetPercent.toFixed(0)}%`],
       ].map(([label, value]) => `<div class="stat-tile"><span>${label}</span><strong>${value}</strong></div>`).join("")}
     </div>
+    ${costScope.length < scope.length ? `<p class="form-note">Price statistics count the original purchase cost carried through a trade once. Both watch records remain in the collection count.</p>` : ""}
     <div class="stats-layout">
-      <section class="panel wide"><div class="panel-heading"><div><p class="eyebrow">Distribution</p><h3>Percentiles</h3></div><small>Linear interpolation</small></div><div class="chip-cloud">${pcts.map(percent => `<span class="chip">P${percent} <strong>${money(percentile(scope.map(w => w.price), percent))}</strong></span>`).join("")}</div></section>
+      ${purchaseTimeline(scope)}
+      <section class="panel wide"><div class="panel-heading"><div><p class="eyebrow">Distribution</p><h3>Percentiles</h3></div><small>Linear interpolation</small></div><div class="chip-cloud">${pcts.map(percent => `<span class="chip">P${percent} <strong>${money(percentile(costScope.map(w => w.price), percent))}</strong></span>`).join("")}</div></section>
 
       <section class="panel wide"><div class="panel-heading"><div><p class="eyebrow">Price tiers</p><h3>Cost histogram</h3></div><small>Every tier in this ${state.statsScope === "owned" ? "current" : "all-time"} scope</small></div>${costHistogramChart(costHist, hl)}</section>
 
@@ -593,7 +635,9 @@ function itemForm(item, kind, isNew) {
           <label>Status<select name="status">${statusOptions.map(value => `<option value="${value}" ${item?.status === value ? "selected" : ""}>${value}</option>`).join("")}</select></label>
           <label class="wide">Notes<textarea name="notes">${esc(item?.notes || "")}</textarea></label>
         ` : `
-          <label>Price paid (CAD)<input name="price" type="number" min="0" step="0.01" value="${formValue(item?.price ?? 0)}" required></label>
+          <label>${item?.costSourceWatchID ? "Original purchase cost (CAD)" : "Price paid (CAD)"}<input name="price" type="number" min="0" step="0.01" value="${formValue(item?.price ?? 0)}" required></label>
+          ${item?.costSourceWatchID ? `<p class="form-note">Carried over from ${esc(state.data.watches.find(watch => watch.id === item.costSourceWatchID)?.name || "the traded watch")}. Counted once in all-time spending.</p>` : ""}
+          <label>Acquired by<select name="acquisitionMethod"><option value="purchase" ${item?.acquisitionMethod !== "trade" ? "selected" : ""}>Purchase</option><option value="trade" ${item?.acquisitionMethod === "trade" ? "selected" : ""}>Trade</option></select></label>
           <label>Purchase month<input name="purchased" type="month" value="${formValue(item?.purchased)}"></label>
           <label class="wide">Purchase date as written<input name="purchasedText" value="${formValue(item?.purchasedText)}"></label>
           <label>Original design?<select name="original"><option value="" ${item?.original == null ? "selected" : ""}>Unknown</option><option value="true" ${item?.original === true ? "selected" : ""}>Original</option><option value="false" ${item?.original === false ? "selected" : ""}>Rep / homage</option></select></label>
@@ -611,7 +655,7 @@ function openItem(kind, item = null, options = {}) {
   const isNew = !item;
   const blank = kind === "watch" ? { name: "", photos: [], status: "owned" } : { name: "", brand: options.brand || "", photos: [], status: "considering", added: new Date().toISOString().slice(0, 7) };
   state.pendingUploads = [];
-  state.modal = { kind, id: item?.id || null, isNew, galleryIndex: 0, completeQueue: options.completeQueue || null };
+  state.modal = { kind, id: item?.id || null, isNew, baseline: item ? structuredClone(item) : null, galleryIndex: 0, completeQueue: options.completeQueue || null };
   $("#itemDialogContent").innerHTML = itemForm(item || blank, kind, isNew);
   $("#itemDialog").showModal();
   $("#itemForm [name='name']").focus();
@@ -658,7 +702,8 @@ async function handleItemSubmit(event) {
   const plural = kind === "watch" ? "watches" : "wishlist";
   const payload = serializeItemForm(form);
   try {
-    const result = await api(form.dataset.new === "true" ? `/api/${plural}` : `/api/${plural}/${encodeURIComponent(form.dataset.id)}`, { method: form.dataset.new === "true" ? "POST" : "PUT", body: JSON.stringify(payload) });
+    const body = form.dataset.new === "true" ? payload : {base: state.modal.baseline, changes: payload};
+    const result = await api(form.dataset.new === "true" ? `/api/${plural}` : `/api/${plural}/${encodeURIComponent(form.dataset.id)}`, { method: form.dataset.new === "true" ? "POST" : "PUT", body: JSON.stringify(body) });
     if (state.pendingUploads.length) await uploadFiles(kind, result.id, state.pendingUploads);
     const queue = state.modal?.completeQueue ? [...state.modal.completeQueue].filter(id => id !== result.id) : null;
     $("#itemDialog").close(); state.modal = null; state.pendingUploads = [];
@@ -872,6 +917,18 @@ async function init() {
   wireEvents();
   try { await refresh(); setTab("collection"); }
   catch (error) { document.querySelector("main").innerHTML = `<div class="empty-state">Could not load the collection: ${esc(error.message)}</div>`; }
+  let checking = false;
+  const checkForUpdates = async () => {
+    if (checking || document.hidden || document.querySelector("dialog[open]") || !state.data) return;
+    checking = true;
+    try {
+      const latest = await api("/api/data");
+      if (JSON.stringify(latest) !== JSON.stringify(state.data) && !document.querySelector("dialog[open]")) await refresh();
+    } catch { /* Keep the current collection usable while the server reconnects. */ }
+    finally { checking = false; }
+  };
+  setInterval(checkForUpdates, 15000);
+  document.addEventListener("visibilitychange", checkForUpdates);
 }
 
 document.addEventListener("DOMContentLoaded", init);

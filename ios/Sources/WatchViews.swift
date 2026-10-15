@@ -217,7 +217,7 @@ struct WatchCardView: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             ZStack(alignment: .topLeading) {
-                RemoteWatchImage(asset: coverAsset, allowsRemoteFetch: !store.isOffline)
+                RemoteWatchImage(asset: coverAsset, allowsRemoteFetch: !store.isOffline, focus: watch.focus(for: watch.photos.first))
                     .frame(height: 142)
                     .clipped()
                     .allowsHitTesting(false)
@@ -272,7 +272,9 @@ struct WatchDetailScreen: View {
     @ObservedObject var store: AppStore
     let isNew: Bool
     @State private var draft: Watch
+    @State private var baseline: Watch
     @State private var selectedPhotoIndex = 0
+    @State private var framingTarget: PhotoFramingTarget?
     @State private var photoItem: PhotosPickerItem?
     @State private var pendingPhotos: [PendingWatchPhoto] = []
     @State private var showCamera = false
@@ -301,6 +303,7 @@ struct WatchDetailScreen: View {
             }
         }
         _draft = State(initialValue: initial)
+        _baseline = State(initialValue: initial)
     }
 
     var body: some View {
@@ -332,7 +335,7 @@ struct WatchDetailScreen: View {
                 Task { await importPhoto(item) }
             }
             .onChange(of: draft.status) { _, status in
-                if status == "owned", purchaseMonthParts(draft.purchased) == nil {
+                if status == "owned", !draft.isTrade, purchaseMonthParts(draft.purchased) == nil {
                     draft.purchased = currentPurchaseMonth()
                     draft.purchasedText = purchaseMonthLabel(draft.purchased)
                 }
@@ -437,7 +440,8 @@ struct WatchDetailScreen: View {
             ForEach(Array(draft.photos.enumerated()), id: \.offset) { index, filename in
                 RemoteWatchImage(
                     asset: store.photoAsset(itemID: draft.id, filename: filename, wishlist: false),
-                    allowsRemoteFetch: !store.isOffline
+                    allowsRemoteFetch: !store.isOffline,
+                    focus: draft.focus(for: filename)
                 )
                 .frame(height: 250)
                 .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -457,6 +461,8 @@ struct WatchDetailScreen: View {
                     }
                 }
                 Spacer()
+                Button("Adjust") { framingTarget = PhotoFramingTarget(filename: filename) }
+                Spacer()
                 Button("Delete photo", role: .destructive) {
                     Task {
                         await store.deletePhoto(itemID: draft.id, filename: filename, wishlist: false)
@@ -465,7 +471,21 @@ struct WatchDetailScreen: View {
                     }
                 }
             }
+            .buttonStyle(.borderless)
             .disabled(store.isOffline)
+            .sheet(item: $framingTarget) { target in
+                PhotoFramingSheet(
+                    asset: store.photoAsset(itemID: draft.id, filename: target.filename, wishlist: false),
+                    allowsRemoteFetch: !store.isOffline,
+                    initialFocus: draft.focus(for: target.filename),
+                    aspect: 1.25,
+                    previews: [("Gallery", 1.45), ("Wear log", 1)]
+                ) { focus in
+                    await store.setPhotoFocus(itemID: draft.id, filename: target.filename, wishlist: false, focus: focus)
+                    // Only pull the saved framing so unsaved form edits survive.
+                    draft.photoFocus = store.data?.watches.first(where: { $0.id == draft.id })?.photoFocus
+                }
+            }
         }
     }
 
@@ -513,9 +533,20 @@ struct WatchDetailScreen: View {
 
     private var purchaseSection: some View {
         Section("Purchase & status") {
-            TextField("Price paid (CAD)", value: $draft.price, format: .number)
+            Picker("Acquired by", selection: Binding(
+                get: { draft.acquisitionMethod ?? "purchase" },
+                set: { draft.acquisitionMethod = $0 }
+            )) {
+                Text("Purchase").tag("purchase")
+                Text("Trade").tag("trade")
+            }
+            TextField(draft.costSourceWatchID == nil ? "Price paid (CAD)" : "Original purchase cost (CAD)", value: $draft.price, format: .number)
                 .keyboardType(.decimalPad)
-            MonthYearPicker(value: $draft.purchased, allowsUnknown: draft.status != "owned")
+            if let sourceID = draft.costSourceWatchID {
+                Text("Carried over from \(store.data?.watches.first(where: { $0.id == sourceID })?.name ?? "the traded watch"). Counted once in all-time spending.")
+                    .font(.caption).foregroundStyle(WatchTheme.secondary)
+            }
+            MonthYearPicker(value: $draft.purchased, allowsUnknown: draft.status != "owned" || draft.isTrade)
             if !purchaseMonthLabel(draft.purchased).isEmpty {
                 LabeledContent("Timeline date", value: purchaseMonthLabel(draft.purchased))
                     .font(.caption)
@@ -588,11 +619,11 @@ struct WatchDetailScreen: View {
         isSaving = true
         Task {
             var normalized = draft
-            normalized.purchasedText = purchaseMonthLabel(normalized.purchased)
+            if normalized.purchased != baseline.purchased { normalized.purchasedText = purchaseMonthLabel(normalized.purchased) }
             let uploads = pendingPhotos.map {
                 LocalPhotoUpload(data: $0.data, filename: $0.filename, mimeType: $0.mimeType)
             }
-            if let saved = await store.saveWatch(normalized, isNew: isNew, initialPhotos: uploads) {
+            if let saved = await store.saveWatch(normalized, isNew: isNew, initialPhotos: uploads, baseline: baseline) {
                 rememberSelections(from: saved)
                 dismiss()
             }
@@ -624,7 +655,7 @@ struct WatchDetailScreen: View {
         if draft.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             issues.append("Enter the watch name.")
         }
-        if draft.status == "owned", purchaseMonthParts(draft.purchased) == nil {
+        if draft.status == "owned", !draft.isTrade, purchaseMonthParts(draft.purchased) == nil {
             issues.append("Choose the purchase month and year.")
         }
         if draft.price < 0 {

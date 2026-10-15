@@ -12,8 +12,8 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jadenkwek.watchcollection
         DEVELOPMENT_TEAM: RLC58VS9R6
-        MARKETING_VERSION: "2.3"
-        CURRENT_PROJECT_VERSION: "6"
+        MARKETING_VERSION: "2.5"
+        CURRENT_PROJECT_VERSION: "8"
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -25,6 +25,11 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         CFBundleDisplayName: Watch Collection
+        BGTaskSchedulerPermittedIdentifiers:
+          - com.jadenkwek.watchcollection.refresh
+        UIBackgroundModes:
+          - fetch
+        NSLocalNetworkUsageDescription: Sync your watch collection and photos with your Mac.
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait

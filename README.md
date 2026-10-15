@@ -5,7 +5,7 @@ six-lens **purchase-decision engine** that tells you what your collection is mis
 hunt next.
 
 No accounts, cloud service, or analytics are required. The iOS app stores its JSON and photos on the
-phone; the optional desktop version remains a stdlib-only Python server with a vanilla JS frontend.
+phone and can automatically sync with the stdlib-only desktop server through Tailscale.
 
 ## Features
 
@@ -30,6 +30,9 @@ phone; the optional desktop version remains a stdlib-only Python server with a v
   writable on-device storage. It does not need a Mac or server after its one-time migration.
 - **Files backup** — keeps a portable JSON copy under On My iPhone and can copy the complete photo
   library there on demand.
+- **Two-way automatic sync** — shares collection, wishlist, photos, wear logs, and service records;
+  keeps offline edits; asks before resolving concurrent edits to the same field.
+- **Purchase timeline** — chronological current-collection purchases in both Mac and iPhone Stats.
 
 ## Quick start
 
@@ -57,6 +60,33 @@ The app imports the latest JSON and every referenced photo, then becomes complet
 Updates from an older installed version normally reuse its existing Application Support cache without
 needing a fresh import.
 
+### Automatic sync (iOS 2.4)
+
+Install the updated iPhone app and run the updated `server.py`. In iPhone Settings, enable
+**Sync with my Mac** and enter `http://<Mac Tailscale IP or hostname>:8931`, then tap
+**Apply sync settings**. The app reuses a previously saved server address when available.
+Both devices need Tailscale connected and the Mac must be awake. Ordinary Wi-Fi alone does
+not grant access: the server still accepts only loopback and Tailscale clients.
+
+Sync runs at launch, when the app becomes active, after local edits, when network connectivity
+returns, and every minute while active. Background refresh is also requested, but iOS determines
+its timing; reconnecting Wi-Fi cannot guarantee an immediate refresh while the app is suspended.
+Open the app for a foreground catch-up. The Mac web page checks for new data every 15 seconds
+while visible, and defers refreshing while an editor is open.
+
+On the first sync, records present on only one device are retained. Later syncs use a saved
+baseline to merge independent field changes and propagate deletions. Same-field and delete/edit
+conflicts pause the exchange and appear in Settings with **Keep iPhone** / **Keep Mac** choices.
+Choices are bound to the exact values reviewed, so a newer change requires another review.
+The web editor also rejects overwriting a field changed while its form was open.
+
+Photo uploads use immutable names, verify duplicate bytes, and finish before records reference
+them. Incoming photos download before the phone acknowledges the new baseline. The phone saves
+its collection and baseline together atomically, retains edits made while requests are in flight,
+and retries interrupted exchanges. Server snapshots before sync writes are kept under
+`data/sync-history/`; the phone's portable Files backup remains available. Device-specific backup
+preferences are not synced. Sync is replication, not a replacement for a separate backup.
+
 ### Backups
 
 `python3 export_sheet.py` writes a detailed CSV + JSON snapshot to `exports/`; with
@@ -66,7 +96,7 @@ remote in `settings.backupRemote`. Templates for daily launchd scheduling are in
 ## Tests
 
 ```bash
-python3 -m unittest tests.test_watch_app
+python3 -m unittest tests.test_watch_app tests.test_sync
 ```
 
 The suite runs against whatever `data/watches.json` you have; a handful of regression assertions

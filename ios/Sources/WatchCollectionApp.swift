@@ -3,6 +3,7 @@ import SwiftUI
 @main
 struct WatchCollectionApp: App {
     @StateObject private var store = AppStore()
+    @Environment(\.scenePhase) private var scenePhase
 
     init() {
         URLCache.shared = URLCache(
@@ -18,6 +19,12 @@ struct WatchCollectionApp: App {
                 .preferredColorScheme(.dark)
                 .tint(WatchTheme.gold)
                 .task { await store.start() }
+                .onChange(of: scenePhase, initial: true) { _, phase in store.sceneChanged(phase) }
+        }
+        .backgroundTask(.appRefresh(AppStore.backgroundSyncID)) {
+            await store.start()
+            await store.syncNow()
+            await store.scheduleBackgroundSync()
         }
     }
 }
@@ -40,10 +47,14 @@ struct RootView: View {
                             .foregroundStyle(WatchTheme.secondary)
                     }
                 } else {
-                    EmptyCollectionView(
-                        title: "Collection unavailable",
-                        detail: store.errorMessage ?? "No collection is stored on this iPhone yet."
-                    )
+                    VStack {
+                        EmptyCollectionView(
+                            title: "Collection unavailable",
+                            detail: store.errorMessage ?? "No collection is stored on this iPhone yet."
+                        )
+                        Button("Open Settings") { showSettings = true }
+                            .buttonStyle(.borderedProminent)
+                    }
                 }
             }
         }

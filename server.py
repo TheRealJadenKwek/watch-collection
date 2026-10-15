@@ -25,6 +25,8 @@ from urllib.parse import quote_plus, unquote, urlencode, urlsplit
 from urllib.request import Request, urlopen
 
 from export_sheet import headline_stats, next_move_suggestions, score_wishlist
+from sync import merge as merge_sync, fingerprint
+import base64
 
 
 HOST = "0.0.0.0"  # gated by ALLOWED_CLIENT_NETS below — loopback + Tailscale only
@@ -47,7 +49,7 @@ WISHLIST_STATUSES = {"considering", "passed", "bought"}
 WATCH_FIELDS = {
     "name", "story", "purchased", "purchasedText", "diameter", "lugToLug",
     "price", "original", "status", "statusNote", "category", "dialColor",
-    "material", "brand",
+    "material", "brand", "acquisitionMethod", "costSourceWatchID",
 }
 WISHLIST_FIELDS = {
     "name", "brand", "category", "priceExpected", "priceNote", "notes",
@@ -169,6 +171,11 @@ def validate_changes(changes: object, kind: str) -> dict:
         if field in clean:
             _number(clean[field], field, nullable=True)
     if kind == "watch":
+        if "costSourceWatchID" in clean and clean["costSourceWatchID"] is not None:
+            if not isinstance(clean["costSourceWatchID"], str) or not is_safe_component(clean["costSourceWatchID"]):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "costSourceWatchID must be a watch id or null")
+        if "acquisitionMethod" in clean and clean["acquisitionMethod"] not in (None, "purchase", "trade"):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "acquisitionMethod must be purchase or trade")
         if "purchased" in clean:
             value = clean["purchased"]
             if value is not None and (not isinstance(value, str) or not PURCHASED.fullmatch(value)):
@@ -433,6 +440,13 @@ class WatchHandler(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         path, parts = self._path_parts()
+        if path == "/api/sync":
+            def snapshot():
+                with DATA_LOCK:
+                    data = read_data()
+                    self.send_json(HTTPStatus.OK, self.sync_snapshot(data))
+            self._dispatch_errors(snapshot)
+            return
         if path == "/api/data":
             self._dispatch_errors(lambda: self.send_json(HTTPStatus.OK, read_data_with_stats()))
             return
@@ -495,7 +509,16 @@ class WatchHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:
         def dispatch():
             _path, parts = self._path_parts()
-            if parts == ["api", "watches"]:
+            if parts[:2] == ["api", "sync"]:
+                if self.headers.get("Origin") or not self.headers.get("Content-Type", "").startswith("application/json"):
+                    raise ApiError(HTTPStatus.FORBIDDEN, "Sync requires a native JSON request")
+                if parts == ["api", "sync"]:
+                    self.sync_collection(self.read_json_body(maximum=8 * 1024 * 1024))
+                elif len(parts) == 5 and parts[2] == "photos":
+                    self.sync_photo(parts[3], parts[4], self.read_json_body(maximum=35 * 1024 * 1024))
+                else:
+                    raise ApiError(HTTPStatus.NOT_FOUND, "Not found")
+            elif parts == ["api", "watches"]:
                 self.create_entity("watch", self.read_json_body())
             elif parts == ["api", "wishlist"]:
                 self.create_entity("wishlist", self.read_json_body())
@@ -515,6 +538,94 @@ class WatchHandler(BaseHTTPRequestHandler):
                 raise ApiError(HTTPStatus.NOT_FOUND, "Not found")
         self._dispatch_errors(dispatch)
 
+    @staticmethod
+    def sync_photo_paths(data):
+        return [f"{prefix}{item['id']}/{photo}" for key, prefix in (("watches", ""), ("wishlist", "wl-"))
+                for item in data.get(key, []) for photo in item.get("photos", [])]
+
+    def sync_snapshot(self, data):
+        return {"data": data, "revision": fingerprint(data), "photos": [p for p in self.sync_photo_paths(data)
+                if (PHOTOS_DIR / p).is_file()], "conflicts": []}
+
+    def validate_sync_data(self, data):
+        if not isinstance(data, dict):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Invalid collection")
+        try:
+            fingerprint(data)  # rejects non-finite JSON numbers
+            for key in ("categories", "dialColors", "materials"):
+                assert isinstance(data[key], list) and all(isinstance(v, str) for v in data[key])
+            assert isinstance(data["settings"], dict) and isinstance(data["settings"]["wrist"], dict)
+            for key, kind in (("watches", "watch"), ("wishlist", "wishlist")):
+                items = data[key]
+                assert isinstance(items, list) and len(items) <= 10000
+                assert len({v["id"] for v in items}) == len(items)
+                for item in items:
+                    assert is_safe_component(item["id"])
+                    fields = WATCH_FIELDS if kind == "watch" else WISHLIST_FIELDS
+                    validate_changes({k: v for k, v in item.items() if k in fields and not (k == "brand" and v is None)}, kind)
+                    assert all(k in item for k in ("name", "status", "photos"))
+                    assert isinstance(item["photos"], list)
+                    assert all(is_safe_component(p) and Path(p).suffix.lower() in ALLOWED_PHOTO_EXTENSIONS for p in item["photos"])
+                    for history in ("wearSessions", "serviceRecords"):
+                        values = item.get(history) or []
+                        assert isinstance(values, list) and all(isinstance(v, dict) and isinstance(v["id"], str) for v in values)
+                        assert len({v["id"] for v in values}) == len(values)
+            brands = data["brandWatchlist"]
+            assert isinstance(brands, list) and all(isinstance(v["brand"], str) for v in brands)
+            assert len({v["brand"] for v in brands}) == len(brands)
+        except (AssertionError, KeyError, TypeError, ValueError):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Invalid sync collection")
+
+    def sync_collection(self, body):
+        if not isinstance(body, dict) or not isinstance(body.get("resolutions", {}), dict):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Invalid sync request")
+        local, base = body.get("local"), body.get("base")
+        self.validate_sync_data(local)
+        if base is not None:
+            self.validate_sync_data(base)
+        with DATA_LOCK:
+            current = read_data()
+            merged, conflicts = merge_sync(base, local, current, body.get("resolutions"))
+            if conflicts:
+                self.send_json(HTTPStatus.OK, {**self.sync_snapshot(current), "conflicts": conflicts})
+                return
+            self.validate_sync_data(merged)
+            missing = [p for p in self.sync_photo_paths(merged) if not (PHOTOS_DIR / p).is_file()]
+            if missing:
+                raise ApiError(HTTPStatus.CONFLICT, "Upload missing photos before syncing: " + ", ".join(missing[:3]))
+            if merged != current:
+                snapshots = DATA_FILE.parent / "sync-history"
+                snapshots.mkdir(parents=True, exist_ok=True)
+                snapshot = snapshots / (fingerprint(current) + ".json")
+                if not snapshot.exists():
+                    snapshot.write_text(json.dumps(current, ensure_ascii=False, indent=2), encoding="utf-8")
+                atomic_write_data(merged)
+            self.send_json(HTTPStatus.OK, self.sync_snapshot(merged))
+
+    def sync_photo(self, directory, filename, body):
+        if not is_safe_component(directory) or not is_safe_component(filename) or Path(filename).suffix.lower() not in ALLOWED_PHOTO_EXTENSIONS:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Unsafe photo path")
+        try:
+            payload = base64.b64decode(body["data"], validate=True)
+            if not payload or len(payload) > 25 * 1024 * 1024:
+                raise ValueError()
+        except (KeyError, TypeError, ValueError):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Invalid photo")
+        with DATA_LOCK:
+            destination = PHOTOS_DIR / directory / filename
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            if destination.exists():
+                if destination.read_bytes() != payload:
+                    raise ApiError(HTTPStatus.CONFLICT, "Photo filename already contains different data")
+            else:
+                temporary = destination.with_name(".sync-" + uuid.uuid4().hex)
+                with temporary.open("xb") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, destination)
+        self.send_json(HTTPStatus.OK, {"ok": True})
+
     def do_DELETE(self) -> None:
         def dispatch():
             _path, parts = self._path_parts()
@@ -533,7 +644,10 @@ class WatchHandler(BaseHTTPRequestHandler):
     def update_entity(self, kind: str, item_id: str, body: object) -> None:
         if not is_safe_component(item_id):
             raise ApiError(HTTPStatus.BAD_REQUEST, "Unsafe id")
-        changes = validate_changes(body, kind)
+        baseline = body.get("base") if isinstance(body, dict) and "changes" in body else None
+        changes = validate_changes(body.get("changes") if baseline is not None else body, kind)
+        if baseline is not None and not isinstance(baseline, dict):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Invalid edit baseline")
         key = "watches" if kind == "watch" else "wishlist"
         with DATA_LOCK:
             data = read_data()  # re-read inside the write lock before every merge
@@ -541,6 +655,11 @@ class WatchHandler(BaseHTTPRequestHandler):
             item = next((value for value in data.get(key, []) if value.get("id") == item_id), None)
             if item is None:
                 raise ApiError(HTTPStatus.NOT_FOUND, f"{kind.title()} not found")
+            if baseline is not None:
+                changes = {k: v for k, v in changes.items() if v != baseline.get(k)}
+                conflicts = [k for k, v in changes.items() if item.get(k) != baseline.get(k) and item.get(k) != v]
+                if conflicts:
+                    raise ApiError(HTTPStatus.CONFLICT, "Changed on another device: " + ", ".join(conflicts) + ". Reopen this watch to review its latest values.")
             item.update(changes)
             atomic_write_data(data)
             result = dict(item)

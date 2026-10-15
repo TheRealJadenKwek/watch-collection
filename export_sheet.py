@@ -88,8 +88,15 @@ def percentile(values: list[float], percent: int) -> float:
     return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
 
 
+def unique_cost_records(watches: list[dict]) -> list[dict]:
+    """Count a carried purchase on the current watch, or its original when both are in scope."""
+    ids = {watch.get("id") for watch in watches if watch.get("id")}
+    return [watch for watch in watches if watch.get("costSourceWatchID") not in ids]
+
+
 def headline_stats(watches: list[dict]) -> dict[str, float]:
-    prices = [float(watch["price"]) for watch in watches if isinstance(watch.get("price"), (int, float)) and not isinstance(watch.get("price"), bool)]
+    priced = [watch for watch in watches if isinstance(watch.get("price"), (int, float)) and not isinstance(watch.get("price"), bool)]
+    prices = [float(watch["price"]) for watch in unique_cost_records(priced)]
     if not prices:
         return {key: 0.0 for key in ("count", "total", "mean", "median", "iqr", "q1", "q3", "min", "max", "stdDev", "skewness")}
     total = sum(prices)
@@ -103,7 +110,7 @@ def headline_stats(watches: list[dict]) -> dict[str, float]:
         else 0.0
     )
     return {
-        "count": float(len(prices)), "total": total, "mean": mean,
+        "count": float(len(priced)), "total": total, "mean": mean,
         "median": percentile(prices, 50), "iqr": percentile(prices, 75) - percentile(prices, 25),
         "q1": percentile(prices, 25), "q3": percentile(prices, 75),
         "min": min(prices), "max": max(prices),
@@ -160,7 +167,7 @@ def price_tier(value: float | int | None) -> str | None:
 
 def cost_histogram(watches: list[dict]) -> dict[str, int]:
     counts = {label: 0 for label, _lower, _upper in PRICE_TIERS}
-    for watch in watches:
+    for watch in unique_cost_records(watches):
         value = watch.get("price")
         if isinstance(value, (int, float)) and not isinstance(value, bool):
             tier = price_tier(value)
@@ -501,7 +508,7 @@ def write_scope_sections(writer: csv.writer, scopes: dict[str, list[dict]], wris
     for percent in PERCENTILES:
         row = [f"P{percent}"]
         for watches in scopes.values():
-            row.append(money(percentile([float(watch["price"]) for watch in watches], percent)))
+            row.append(money(percentile([float(watch["price"]) for watch in unique_cost_records(watches)], percent)))
         writer.writerow(row)
 
     section(writer, "COST HISTOGRAM (PRICE TIERS)", ["Scope", "Tier", "Count"])

@@ -275,7 +275,7 @@ struct WishlistCard: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(alignment: .top, spacing: 12) {
-                RemoteWatchImage(asset: imageAsset, allowsRemoteFetch: !store.isOffline)
+                RemoteWatchImage(asset: imageAsset, allowsRemoteFetch: !store.isOffline, focus: item.focus(for: item.photos.first))
                     .frame(width: 104, height: 112)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
                 VStack(alignment: .leading, spacing: 7) {
@@ -356,8 +356,10 @@ struct WishlistDetailScreen: View {
     @ObservedObject var store: AppStore
     let isNew: Bool
     @State private var draft: WishlistItem
+    @State private var baseline: WishlistItem
     @State private var photoItem: PhotosPickerItem?
     @State private var selectedPhotoIndex = 0
+    @State private var framingTarget: PhotoFramingTarget?
     @State private var isSaving = false
     @State private var confirmDelete = false
 
@@ -365,6 +367,7 @@ struct WishlistDetailScreen: View {
         self.store = store
         self.isNew = isNew
         _draft = State(initialValue: item)
+        _baseline = State(initialValue: item)
     }
 
     var body: some View {
@@ -448,7 +451,8 @@ struct WishlistDetailScreen: View {
                     ForEach(Array(draft.photos.enumerated()), id: \.offset) { index, filename in
                         RemoteWatchImage(
                             asset: store.photoAsset(itemID: draft.id, filename: filename, wishlist: true),
-                            allowsRemoteFetch: !store.isOffline
+                            allowsRemoteFetch: !store.isOffline,
+                            focus: draft.focus(for: filename)
                         )
                             .frame(height: 230)
                             .clipShape(RoundedRectangle(cornerRadius: 14))
@@ -464,8 +468,23 @@ struct WishlistDetailScreen: View {
                             Task { await store.setCover(itemID: draft.id, filename: filename, wishlist: true); reloadDraft(); selectedPhotoIndex = 0 }
                         }
                         Spacer()
+                        Button("Adjust") { framingTarget = PhotoFramingTarget(filename: filename) }
+                        Spacer()
                         Button("Delete photo", role: .destructive) {
                             Task { await store.deletePhoto(itemID: draft.id, filename: filename, wishlist: true); reloadDraft(); selectedPhotoIndex = 0 }
+                        }
+                    }
+                    .buttonStyle(.borderless)
+                    .sheet(item: $framingTarget) { target in
+                        PhotoFramingSheet(
+                            asset: store.photoAsset(itemID: draft.id, filename: target.filename, wishlist: true),
+                            allowsRemoteFetch: !store.isOffline,
+                            initialFocus: draft.focus(for: target.filename),
+                            aspect: 104.0 / 112.0,
+                            previews: [("Gallery", 1.55)]
+                        ) { focus in
+                            await store.setPhotoFocus(itemID: draft.id, filename: target.filename, wishlist: true, focus: focus)
+                            draft.photoFocus = store.data?.wishlist.first(where: { $0.id == draft.id })?.photoFocus
                         }
                     }
                 }
@@ -481,7 +500,7 @@ struct WishlistDetailScreen: View {
     private func save() {
         isSaving = true
         Task {
-            if await store.saveWishlist(draft, isNew: isNew) != nil { dismiss() }
+            if await store.saveWishlist(draft, isNew: isNew, baseline: baseline) != nil { dismiss() }
             isSaving = false
         }
     }

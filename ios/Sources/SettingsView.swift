@@ -5,6 +5,7 @@ struct SettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: AppStore
     @State private var draftSettings: CollectionSettings
+    @State private var baselineSettings: CollectionSettings?
     @State private var backupResult = ""
     @State private var saving = false
     @State private var backingUp = false
@@ -15,9 +16,15 @@ struct SettingsView: View {
     @State private var exportContentType = UTType.watchCollectionBackup
     @State private var exportFilename = "Watch Collection Backup"
     @State private var pendingImport: CollectionImport?
+    @State private var syncEnabled: Bool
+    @State private var syncAddress: String
+    @State private var resolvedConflicts: Set<String> = []
 
     init(store: AppStore) {
         self.store = store
+        _baselineSettings = State(initialValue: store.data?.settings)
+        _syncEnabled = State(initialValue: store.syncEnabled)
+        _syncAddress = State(initialValue: store.syncAddress)
         _draftSettings = State(initialValue: store.data?.settings ?? CollectionSettings(
             autoBackup: true,
             backupRemote: "gdrive:WatchCollection",
@@ -32,6 +39,7 @@ struct SettingsView: View {
         NavigationStack {
             Form {
                 storageSection
+                syncSection
                 wristSection
                 suggestionSection
                 automationSection
@@ -89,10 +97,57 @@ struct SettingsView: View {
         Section("Storage") {
             LabeledContent("Collection", value: "On this iPhone")
             LabeledContent("Connection required", value: "No")
-            Text("Your collection, wishlist, scores, and photos now live inside this app. The Mac is not needed after the one-time migration.")
+            Text("Your collection and photos stay on this iPhone and work offline. Sync shares changes when your Mac is reachable through Tailscale.")
                 .font(.caption)
                 .foregroundStyle(WatchTheme.secondary)
         }
+    }
+
+    private var syncSection: some View {
+        Section("Automatic sync") {
+            Toggle("Sync with my Mac", isOn: $syncEnabled)
+            TextField("http://your-mac:8931", text: $syncAddress)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .keyboardType(.URL)
+                .accessibilityLabel("Mac sync address")
+            Button("Apply sync settings") {
+                Task { await store.configureSync(enabled: syncEnabled, address: syncAddress) }
+            }
+            .disabled(store.isSyncing)
+            LabeledContent("Status", value: store.syncMessage)
+                .font(.caption)
+            if let date = store.lastSync {
+                LabeledContent("Last synced", value: date.formatted(date: .abbreviated, time: .shortened))
+                    .font(.caption)
+            }
+            Button(store.isSyncing ? "Syncing..." : "Sync now") {
+                Task { await store.syncNow() }
+            }
+            .disabled(store.isSyncing || !store.syncEnabled)
+            Text("Sync runs when you open the app, after edits, and when a connection returns. iOS chooses when background refresh runs. Keep your Mac awake and Tailscale connected on both devices.")
+                .font(.caption)
+                .foregroundStyle(WatchTheme.secondary)
+            ForEach(store.syncConflicts) { conflict in
+                VStack(alignment: .leading, spacing: 8) {
+                    Text(conflict.title).font(.caption.weight(.semibold))
+                    Text("iPhone: \(conflict.localText)").font(.caption)
+                    Text("Mac: \(conflict.remoteText)").font(.caption)
+                    HStack {
+                        Button("Keep iPhone") { choose(conflict, "local") }
+                        Button("Keep Mac") { choose(conflict, "remote") }
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(resolvedConflicts.contains(conflict.id) || store.isSyncing)
+                    if resolvedConflicts.contains(conflict.id) { Text("Choice saved").font(.caption) }
+                }
+            }
+        }
+    }
+
+    private func choose(_ conflict: SyncConflict, _ choice: String) {
+        resolvedConflicts.insert(conflict.id)
+        Task { await store.resolveSyncConflict(conflict.id, choice: choice) }
     }
 
     private var wristSection: some View {
@@ -236,7 +291,7 @@ struct SettingsView: View {
     private func save() {
         saving = true
         Task {
-            await store.saveSettings(draftSettings)
+            await store.saveSettings(draftSettings, baseline: baselineSettings)
             saving = false
             if store.errorMessage == nil { dismiss() }
         }

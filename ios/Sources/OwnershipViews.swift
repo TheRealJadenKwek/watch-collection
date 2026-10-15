@@ -38,7 +38,8 @@ struct WearTodaySheet: View {
                                     asset: watch.photos.first.flatMap {
                                         store.photoAsset(itemID: watch.id, filename: $0, wishlist: false)
                                     },
-                                    allowsRemoteFetch: false
+                                    allowsRemoteFetch: false,
+                                    focus: watch.focus(for: watch.photos.first)
                                 )
                                 .frame(width: 64, height: 64)
                                 .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
@@ -118,7 +119,8 @@ private struct WearDayEditorSheet: View {
                             asset: selection.watch.photos.first.flatMap {
                                 store.photoAsset(itemID: selection.watch.id, filename: $0, wishlist: false)
                             },
-                            allowsRemoteFetch: false
+                            allowsRemoteFetch: false,
+                            focus: selection.watch.focus(for: selection.watch.photos.first)
                         )
                         .frame(width: 210, height: 210)
                         .clipShape(RoundedRectangle(cornerRadius: 24, style: .continuous))

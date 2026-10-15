@@ -246,7 +246,7 @@ enum DecisionEngine {
     }
 
     private static func headlineStats(_ watches: [Watch]) -> HeadlineStatsPayload {
-        let prices = watches.map(\.price).sorted()
+        let prices = uniqueCostRecords(watches).map(\.price).sorted()
         guard !prices.isEmpty else {
             return HeadlineStatsPayload(count: 0, total: 0, mean: 0, median: 0, iqr: 0, q1: 0, q3: 0, min: 0, max: 0, stdDev: 0, skewness: 0)
         }
@@ -265,7 +265,7 @@ enum DecisionEngine {
         let q1 = percentile(prices, percent: 25)
         let q3 = percentile(prices, percent: 75)
         return HeadlineStatsPayload(
-            count: count,
+            count: Double(watches.count),
             total: total,
             mean: mean,
             median: percentile(prices, percent: 50),

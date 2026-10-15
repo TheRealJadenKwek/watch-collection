@@ -62,6 +62,19 @@ struct Watch: Codable, Identifiable, Hashable, Sendable {
     var wearDates: [String]? = nil
     var wearSessions: [WearSession]? = nil
     var serviceRecords: [ServiceRecord]? = nil
+    var acquisitionMethod: String? = nil
+    var costSourceWatchID: String? = nil
+    var photoFocus: [String: PhotoFocus]? = nil
+
+    var isTrade: Bool { acquisitionMethod == "trade" }
+}
+
+func uniqueCostRecords(_ watches: [Watch]) -> [Watch] {
+    let ids = Set(watches.map(\.id))
+    return watches.filter { watch in
+        guard let source = watch.costSourceWatchID else { return true }
+        return !ids.contains(source)
+    }
 }
 
 struct WearSession: Codable, Identifiable, Hashable, Sendable {
@@ -94,6 +107,19 @@ struct WishlistItem: Codable, Identifiable, Hashable, Sendable {
     var lugToLug: Double?
     var material: String?
     var photos: [String]
+    var photoFocus: [String: PhotoFocus]? = nil
+}
+
+/// How a photo sits inside its frame: the image point (x, y in 0...1) that is
+/// centred in the frame, and a zoom on top of aspect-fill (1 = plain fill).
+/// Stored per filename so every surface (card, gallery, thumbnails) frames it the same way.
+struct PhotoFocus: Codable, Hashable, Sendable {
+    var x: Double
+    var y: Double
+    var zoom: Double
+
+    static let centered = PhotoFocus(x: 0.5, y: 0.5, zoom: 1)
+    static let maximumZoom = 5.0
 }
 
 struct BrandRadarItem: Codable, Hashable, Sendable {

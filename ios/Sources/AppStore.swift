@@ -1,5 +1,7 @@
 import Foundation
 import SwiftUI
+import Network
+import BackgroundTasks
 
 enum LocalStoreError: LocalizedError {
     case missingData
@@ -7,6 +9,7 @@ enum LocalStoreError: LocalizedError {
     case duplicateValue
     case valueInUse(Int)
     case invalidOperation
+    case saveFailed
 
     var errorDescription: String? {
         switch self {
@@ -15,6 +18,7 @@ enum LocalStoreError: LocalizedError {
         case .duplicateValue: "That name already exists."
         case let .valueInUse(count): "Cannot delete this value because it is used by \(count) item(s). Reassign them first."
         case .invalidOperation: "That change could not be applied."
+        case .saveFailed: "The collection could not be saved. Check the iPhone's available storage and try again."
         }
     }
 }
@@ -28,6 +32,20 @@ final class AppStore: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published var errorMessage: String?
     @Published var notice: String?
+    @Published private(set) var syncMessage = "Waiting to sync"
+    @Published private(set) var isSyncing = false
+    @Published private(set) var syncConflicts: [SyncConflict] = []
+    @Published private(set) var lastSync: Date?
+    @Published private(set) var syncEnabled = UserDefaults.standard.object(forKey: "syncEnabled") as? Bool ?? true
+    @Published private(set) var syncAddress = UserDefaults.standard.string(forKey: "syncAddress")
+        ?? LegacyServerConfiguration.migrationURL ?? ""
+
+    static let backgroundSyncID = "com.jadenkwek.watchcollection.refresh"
+    private var syncBase: CollectionData?
+    private var editGeneration = 0
+    private var connectionMonitor: NWPathMonitor?
+    private var syncTimer: Task<Void, Never>?
+    private var syncResolutions: [String: String] = [:]
 
     private var started = false
 
@@ -37,35 +55,155 @@ final class AppStore: ObservableObject {
         isRefreshing = true
         defer { isRefreshing = false }
 
-        if let cached = CacheStore.loadData() {
+        if let checkpoint = SyncDisk.load() {
+            syncBase = checkpoint.server == syncAddress ? checkpoint.base : nil
+            lastSync = checkpoint.lastSuccess
+            publish(checkpoint.data, persist: false)
+        } else if let cached = CacheStore.loadData() {
             publish(cached, persist: true)
         }
 
-        await migrateFromLegacyServerIfNeeded()
+        // Never replace a populated standalone phone with the old migration snapshot.
+        startConnectionMonitor()
+        await syncNow()
 
         if let data, data.settings.autoBackup {
             _ = try? LocalBackup.mirrorJSON(from: data)
         }
 
         if data == nil {
-            errorMessage = "Open the previous version once while its server is reachable, then install this update again."
+            errorMessage = "Set the Mac's sync address in Settings, or restore a collection backup."
         }
     }
 
     func refresh() async {
-        guard let data else { return }
         isRefreshing = true
-        publish(data, persist: true)
-        await PhotoStore.shared.sync(PhotoStore.assets(in: data, baseURL: nil))
+        await syncNow()
         isRefreshing = false
-        notice = "Collection refreshed."
     }
 
-    func saveWatch(_ watch: Watch, isNew: Bool = false, initialPhotos: [LocalPhotoUpload] = []) async -> Watch? {
+    func configureSync(enabled: Bool, address: String) async {
+        let clean = address.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        if clean != syncAddress {
+            syncBase = nil
+            lastSync = nil
+            syncConflicts = []
+            syncResolutions = [:]
+        }
+        syncAddress = clean
+        syncEnabled = enabled
+        editGeneration += 1
+        UserDefaults.standard.set(clean, forKey: "syncAddress")
+        UserDefaults.standard.set(enabled, forKey: "syncEnabled")
+        if let data { publish(data, persist: true) }
+        await syncNow()
+        scheduleBackgroundSync()
+    }
+
+    func resolveSyncConflict(_ id: String, choice: String) async {
+        syncResolutions[id] = choice
+        if syncConflicts.allSatisfy({ syncResolutions[$0.id] != nil }) { await syncNow() }
+    }
+
+    func sceneChanged(_ phase: ScenePhase) {
+        syncTimer?.cancel()
+        if phase == .active {
+            syncTimer = Task { [weak self] in
+                while !Task.isCancelled {
+                    await self?.syncNow()
+                    do { try await Task.sleep(for: .seconds(60)) } catch { break }
+                }
+            }
+        } else if phase == .background {
+            scheduleBackgroundSync()
+        }
+    }
+
+    func scheduleBackgroundSync() {
+        guard syncEnabled, !syncAddress.isEmpty else { return }
+        let request = BGAppRefreshTaskRequest(identifier: Self.backgroundSyncID)
+        request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
+        // The system determines the actual launch time; foreground sync is the fallback.
+        try? BGTaskScheduler.shared.submit(request)
+    }
+
+    private func startConnectionMonitor() {
+        guard connectionMonitor == nil else { return }
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard path.status == .satisfied else { return }
+            Task { @MainActor [weak self] in await self?.syncNow() }
+        }
+        monitor.start(queue: DispatchQueue(label: "watch-collection.connection"))
+        connectionMonitor = monitor
+    }
+
+    @discardableResult
+    func syncNow() async -> Bool {
+        guard started, !isSyncing else { return false }
+        guard syncEnabled else { syncMessage = "Automatic sync is off"; return false }
+        guard !syncAddress.isEmpty else { syncMessage = "Add the Mac's address in Settings"; return false }
+        isSyncing = true
+        syncMessage = "Syncing collection and photos..."
+        defer { isSyncing = false }
+        let address = syncAddress
+        do {
+            let client = try CollectionSyncClient(address: address)
+            for _ in 0..<3 {
+                let generation = editGeneration
+                let local = data
+                let remote = try await client.snapshot()
+                let result: SyncSnapshot
+                if let local {
+                    result = try await client.exchange(base: syncBase, local: local, resolutions: syncResolutions, remote: remote)
+                } else { result = remote }
+                guard syncAddress == address, syncEnabled else { return false }
+                // Do not install a response over edits made while a request was in flight.
+                guard generation == editGeneration else { continue }
+                if !result.conflicts.isEmpty {
+                    syncConflicts = result.conflicts
+                    syncMessage = "\(result.conflicts.count) changes need your choice in Settings"
+                    return false
+                }
+                try await client.downloadPhotos(result.data)
+                try Task.checkCancellation()
+                guard generation == editGeneration, syncAddress == address, syncEnabled else { continue }
+                var merged = result.data
+                if let local {
+                    merged.settings.autoBackup = local.settings.autoBackup
+                    merged.settings.backupRemote = local.settings.backupRemote
+                    merged.settings.lastBackup = local.settings.lastBackup
+                }
+                let now = Date()
+                try SyncDisk.save(SyncCheckpoint(data: merged, base: result.data, server: address, lastSuccess: now))
+                syncBase = result.data
+                lastSync = now
+                publish(merged, persist: false)
+                CacheStore.save(merged)
+                if merged.settings.autoBackup { _ = try? LocalBackup.mirrorJSON(from: merged) }
+                syncConflicts = []
+                syncResolutions = [:]
+                syncMessage = "Up to date"
+                isOffline = false
+                return true
+            }
+            syncMessage = "New edits are saved locally; sync will retry"
+        } catch is CancellationError {
+            syncMessage = "Saved on this iPhone; sync will resume"
+        } catch {
+            syncMessage = "Saved on this iPhone. \(error.localizedDescription)"
+            // Keep local editing enabled when the sync server is unreachable.
+        }
+        return false
+    }
+
+    func saveWatch(_ watch: Watch, isNew: Bool = false, initialPhotos: [LocalPhotoUpload] = [], baseline: Watch? = nil) async -> Watch? {
         do {
             var updated = try requireData()
             var saved = watch
-            saved.purchasedText = purchaseMonthLabel(saved.purchased)
+            if isNew || (baseline != nil && baseline?.purchased != watch.purchased) {
+                saved.purchasedText = purchaseMonthLabel(saved.purchased)
+            }
             saved.wearSessions = wearSessions(for: saved)
             saved.wearDates = nil
             saved.serviceRecords = serviceRecords(for: saved)
@@ -86,7 +224,9 @@ final class AppStore: ObservableObject {
                     dialColor: watch.dialColor,
                     lugToLug: watch.lugToLug,
                     material: watch.material,
-                    brand: watch.brand
+                    brand: watch.brand,
+                    acquisitionMethod: watch.acquisitionMethod,
+                    costSourceWatchID: watch.costSourceWatchID
                 )
                 for photo in initialPhotos {
                     let extensionName = safePhotoExtension(filename: photo.filename, mimeType: photo.mimeType)
@@ -102,11 +242,12 @@ final class AppStore: ObservableObject {
                 }
                 updated.watches.append(saved)
             } else if let index = updated.watches.firstIndex(where: { $0.id == watch.id }) {
+                if let baseline { saved = try mergeDraft(base: baseline, draft: saved, current: updated.watches[index]) }
                 updated.watches[index] = saved
             } else {
                 throw LocalStoreError.itemNotFound
             }
-            await commit(updated)
+            try await commit(updated)
             notice = isNew ? "Watch added." : "Watch saved."
             return saved
         } catch {
@@ -115,7 +256,7 @@ final class AppStore: ObservableObject {
         }
     }
 
-    func saveWishlist(_ item: WishlistItem, isNew: Bool = false) async -> WishlistItem? {
+    func saveWishlist(_ item: WishlistItem, isNew: Bool = false, baseline: WishlistItem? = nil) async -> WishlistItem? {
         do {
             var updated = try requireData()
             var saved = item
@@ -138,11 +279,12 @@ final class AppStore: ObservableObject {
                 )
                 updated.wishlist.append(saved)
             } else if let index = updated.wishlist.firstIndex(where: { $0.id == item.id }) {
+                if let baseline { saved = try mergeDraft(base: baseline, draft: saved, current: updated.wishlist[index]) }
                 updated.wishlist[index] = saved
             } else {
                 throw LocalStoreError.itemNotFound
             }
-            await commit(updated)
+            try await commit(updated)
             notice = isNew ? "Candidate added." : "Candidate saved."
             return saved
         } catch {
@@ -239,7 +381,7 @@ final class AppStore: ObservableObject {
             )
             updated.watches[index].wearDates = nil
             updated.watches[index].wearSessions = sessions
-            await commit(updated)
+            try await commit(updated)
             notice = totalMinutes == 0
                 ? "Wear cleared for \(calendarDayLabel(calendarDayKey(date)).lowercased())."
                 : "Saved \(wearDurationLabel(totalMinutes)) total with \(updated.watches[index].name)."
@@ -313,9 +455,9 @@ final class AppStore: ObservableObject {
         return components?.url
     }
 
-    func saveSettings(_ settings: CollectionSettings) async {
+    func saveSettings(_ settings: CollectionSettings, baseline: CollectionSettings? = nil) async {
         await mutate { data in
-            data.settings = settings
+            data.settings = try baseline.map { try mergeDraft(base: $0, draft: settings, current: data.settings) } ?? settings
             self.notice = "Settings saved."
         }
     }
@@ -325,7 +467,7 @@ final class AppStore: ObservableObject {
             var updated = try requireData()
             let timestamp = ISO8601DateFormatter().string(from: Date())
             updated.settings.lastBackup = timestamp
-            await commit(updated)
+            try await commit(updated)
             _ = try await Task.detached(priority: .utility) {
                 try LocalBackup.createFullBackup(from: updated)
             }.value
@@ -365,7 +507,7 @@ final class AppStore: ObservableObject {
     func restore(_ imported: CollectionImport) async -> Bool {
         do {
             try await PhotoStore.shared.restore(imported.photos)
-            await commit(imported.data)
+            try await commit(imported.data)
             let missing = PhotoStore.missingLocalCount(PhotoStore.assets(in: imported.data, baseURL: nil))
             notice = missing == 0
                 ? "Collection restored with all photos."
@@ -450,7 +592,7 @@ final class AppStore: ObservableObject {
                 guard let index = updated.watches.firstIndex(where: { $0.id == itemID }) else { throw LocalStoreError.itemNotFound }
                 updated.watches[index].photos.insert(storedFilename, at: 0)
             }
-            await commit(updated)
+            try await commit(updated)
             notice = "Photo added."
         } catch {
             surface(error)
@@ -479,12 +621,39 @@ final class AppStore: ObservableObject {
                 guard let index = data.wishlist.firstIndex(where: { $0.id == itemID }),
                       data.wishlist[index].photos.contains(filename) else { throw LocalStoreError.itemNotFound }
                 data.wishlist[index].photos.removeAll { $0 == filename }
+                data.wishlist[index].photoFocus = Self.focusMap(data.wishlist[index].photoFocus, setting: nil, for: filename)
             } else {
                 guard let index = data.watches.firstIndex(where: { $0.id == itemID }),
                       data.watches[index].photos.contains(filename) else { throw LocalStoreError.itemNotFound }
                 data.watches[index].photos.removeAll { $0 == filename }
+                data.watches[index].photoFocus = Self.focusMap(data.watches[index].photoFocus, setting: nil, for: filename)
             }
         }
+    }
+
+    /// Saves how a photo is framed (nil = default centred fill).
+    func setPhotoFocus(itemID: String, filename: String, wishlist: Bool, focus: PhotoFocus?) async {
+        await mutate { data in
+            if wishlist {
+                guard let index = data.wishlist.firstIndex(where: { $0.id == itemID }),
+                      data.wishlist[index].photos.contains(filename) else { throw LocalStoreError.itemNotFound }
+                data.wishlist[index].photoFocus = Self.focusMap(data.wishlist[index].photoFocus, setting: focus, for: filename)
+            } else {
+                guard let index = data.watches.firstIndex(where: { $0.id == itemID }),
+                      data.watches[index].photos.contains(filename) else { throw LocalStoreError.itemNotFound }
+                data.watches[index].photoFocus = Self.focusMap(data.watches[index].photoFocus, setting: focus, for: filename)
+            }
+        }
+    }
+
+    private nonisolated static func focusMap(
+        _ map: [String: PhotoFocus]?,
+        setting focus: PhotoFocus?,
+        for filename: String
+    ) -> [String: PhotoFocus]? {
+        var updated = map ?? [:]
+        updated[filename] = focus
+        return updated.isEmpty ? nil : updated
     }
 
     func photoAsset(itemID: String, filename: String, wishlist: Bool) -> PhotoAsset? {
@@ -527,14 +696,26 @@ final class AppStore: ObservableObject {
         return data
     }
 
-    private func commit(_ updated: CollectionData) async {
-        publish(updated, persist: true)
+    private func commit(_ updated: CollectionData) async throws {
+        guard publish(updated, persist: true) else { throw LocalStoreError.saveFailed }
+        editGeneration += 1
         if updated.settings.autoBackup { _ = try? LocalBackup.mirrorJSON(from: updated) }
-        await PhotoStore.shared.sync(PhotoStore.assets(in: updated, baseURL: nil))
+        // Retain photo bytes until both devices acknowledge deletions. Incoming and
+        // queued uploads must not be garbage-collected by a simultaneous local edit.
+        Task { await self.syncNow() }
     }
 
-    private func publish(_ rawData: CollectionData, persist: Bool) {
+    @discardableResult
+    private func publish(_ rawData: CollectionData, persist: Bool) -> Bool {
         let derived = DecisionEngine.withDerivedStats(rawData)
+        if persist {
+            do {
+                try SyncDisk.save(SyncCheckpoint(data: derived, base: syncBase, server: syncAddress, lastSuccess: lastSync))
+            } catch {
+                errorMessage = "The collection could not be saved: \(error.localizedDescription)"
+                return false
+            }
+        }
         data = derived
         scores = DecisionEngine.scores(for: derived)
         suggestions = DecisionEngine.suggestions(for: derived)
@@ -545,13 +726,14 @@ final class AppStore: ObservableObject {
             CacheStore.save(WishlistScoresResponse(scores: scores))
             if let suggestions { CacheStore.save(suggestions) }
         }
+        return true
     }
 
     private func mutate(_ operation: (inout CollectionData) throws -> Void) async {
         do {
             var updated = try requireData()
             try operation(&updated)
-            await commit(updated)
+            try await commit(updated)
         } catch {
             surface(error)
         }

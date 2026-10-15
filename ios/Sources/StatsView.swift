@@ -17,6 +17,7 @@ struct StatsScreen: View {
     private var all: [Watch] { store.data?.watches ?? [] }
     private var owned: [Watch] { all.filter { $0.status == "owned" } }
     private var scoped: [Watch] { scope == "owned" ? owned : all }
+    private var costScoped: [Watch] { uniqueCostRecords(scoped) }
     private var wrist: WristProfile { store.data?.settings.wrist ?? WristProfile(inches: 6, sweetSpotMin: 35, sweetSpotMax: 40, perfect: 38, lugMax: 47) }
 
     var body: some View {
@@ -269,7 +270,7 @@ struct StatsScreen: View {
     }
 
     private var costChart: some View {
-        let bins = costHistogram(scoped)
+        let bins = costHistogram(costScoped)
         let headline = store.data?.headlineStats?[scope]
         let medianX = headline.map { costReferencePosition($0.median, maximumPrice: $0.max) }
         let meanX = headline.map { costReferencePosition($0.mean, maximumPrice: $0.max) }
@@ -371,9 +372,13 @@ struct StatsScreen: View {
     }
 
     private var priceLedger: some View {
-        let rows = ledgerRows(scoped)
+        let rows = ledgerRows(costScoped)
         let grandTotal = rows.last?.subtotalCents ?? 0
         return SectionCard(eyebrow: "Total spent audit", title: "Price ledger") {
+            if costScoped.count < scoped.count {
+                Text("The original purchase cost carried through a trade is counted once.")
+                    .font(.caption).foregroundStyle(WatchTheme.secondary)
+            }
             DisclosureGroup(isExpanded: $priceLedgerExpanded) {
                 VStack(spacing: 0) {
                     ForEach(rows) { row in
@@ -472,7 +477,7 @@ struct StatsScreen: View {
     }
 
     private var spendChart: some View {
-        let values = spendByYear(scoped)
+        let values = spendByYear(scoped, all: all)
         let cumulative = cumulativeSpend(values)
         return SectionCard(eyebrow: "Timeline", title: "Acquisition spend") {
             Text("Annual spend")
@@ -540,19 +545,24 @@ struct StatsScreen: View {
     }
 
     private var currentCollectionTimeline: some View {
-        let entries = purchaseTimelineEntries(owned)
-        let missingCount = owned.count - entries.count
-        return SectionCard(eyebrow: "Current collection", title: "Purchase timeline") {
+        let purchases = uniqueCostRecords(scoped).filter { watch in
+            !watch.isTrade || all.contains(where: { $0.id == watch.costSourceWatchID })
+        }
+        let entries = purchaseTimelineEntries(purchases, all: all)
+        let datedIDs = Set(entries.map(\.id))
+        let trades = scoped.filter { $0.isTrade && !datedIDs.contains($0.id) }
+        let missingCount = purchases.count - entries.count
+        return SectionCard(eyebrow: scope == "owned" ? "Current collection" : "All-time", title: "Purchase timeline") {
             if entries.isEmpty {
                 ContentUnavailableView(
                     "No purchase dates yet",
                     systemImage: "calendar.badge.clock",
-                    description: Text("Add a purchase month to an owned watch and it will appear here.")
+                    description: Text("Purchases with a known month appear here. Trades are listed separately.")
                 )
                 .foregroundStyle(WatchTheme.secondary)
             } else {
                 HStack {
-                    Label("\(entries.count) owned", systemImage: "watch.analog")
+                    Label("\(entries.count) purchases", systemImage: "watch.analog")
                     Spacer()
                     Text("\(entries.first?.year ?? "") – \(entries.last?.year ?? "")")
                 }
@@ -604,6 +614,10 @@ struct StatsScreen: View {
                                         }
                                     }
                                     .font(.caption)
+                                    if let source = entry.source {
+                                        Text("Original \(source.name) purchase · \(source.purchasedText) · carried over through trade")
+                                            .font(.caption).foregroundStyle(WatchTheme.secondary)
+                                    }
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
                                 .padding(.bottom, index < entries.count - 1 ? 18 : 2)
@@ -611,18 +625,34 @@ struct StatsScreen: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
-                        .accessibilityLabel("\(entry.watch.name), purchased \(entry.month) \(entry.year)")
+                        .accessibilityLabel("\(entry.watch.name), \(entry.source == nil ? "purchased" : "original purchase carried over") \(entry.month) \(entry.year)")
                         .accessibilityHint("Opens watch details")
                     }
                 }
 
                 if missingCount > 0 {
                     Label(
-                        "\(missingCount) owned \(missingCount == 1 ? "watch is" : "watches are") missing a purchase month.",
+                        "\(missingCount) \(missingCount == 1 ? "watch is" : "watches are") missing a purchase month.",
                         systemImage: "exclamationmark.circle"
                     )
                     .font(.caption)
                     .foregroundStyle(WatchTheme.amber)
+                }
+            }
+            if !trades.isEmpty {
+                Divider()
+                Text("Acquired by trade")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(WatchTheme.secondary)
+                ForEach(trades) { watch in
+                    Button { selectedWatch = watch } label: {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(watch.name).font(.subheadline.weight(.semibold))
+                            Text(watch.costSourceWatchID == nil ? "No separate purchase" : "\(cad(watch.price)) original purchase cost carried over")
+                                .font(.caption).foregroundStyle(WatchTheme.secondary)
+                        }
+                    }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -1136,15 +1166,18 @@ private func cumulativeSpend(_ values: [YearSpend]) -> [YearSpend] {
 private struct PurchaseTimelineEntry: Identifiable {
     var id: String { watch.id }
     var watch: Watch
+    var source: Watch?
     var sortKey: String
     var month: String
     var year: String
 }
 
-private func purchaseTimelineEntries(_ watches: [Watch]) -> [PurchaseTimelineEntry] {
+private func purchaseTimelineEntries(_ watches: [Watch], all: [Watch]) -> [PurchaseTimelineEntry] {
     let monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-    return watches.compactMap { watch in
-        guard let purchased = watch.purchased else { return nil }
+    return uniqueCostRecords(watches).compactMap { watch in
+        let source = all.first { $0.id == watch.costSourceWatchID }
+        guard !watch.isTrade || source != nil,
+              let purchased = (source ?? watch).purchased else { return nil }
         let parts = purchased.split(separator: "-")
         guard parts.count >= 2,
               let year = Int(parts[0]),
@@ -1153,21 +1186,20 @@ private func purchaseTimelineEntries(_ watches: [Watch]) -> [PurchaseTimelineEnt
         else { return nil }
         return PurchaseTimelineEntry(
             watch: watch,
+            source: source,
             sortKey: String(format: "%04d-%02d", year, month),
             month: monthNames[month - 1],
             year: String(year)
         )
     }.sorted {
-        if $0.sortKey == $1.sortKey {
-            return $0.watch.name.localizedCaseInsensitiveCompare($1.watch.name) == .orderedAscending
-        }
+        // Keep collection order for purchases recorded in the same month.
         return $0.sortKey < $1.sortKey
     }
 }
 
-private func spendByYear(_ watches: [Watch]) -> [YearSpend] {
-    let grouped = Dictionary(grouping: watches.filter { $0.purchased != nil }) { String($0.purchased!.prefix(4)) }
-    return grouped.map { YearSpend(year: $0.key, total: $0.value.reduce(0) { $0 + $1.price }) }.sorted { $0.year < $1.year }
+private func spendByYear(_ watches: [Watch], all: [Watch]) -> [YearSpend] {
+    let grouped = Dictionary(grouping: purchaseTimelineEntries(watches, all: all), by: \.year)
+    return grouped.map { YearSpend(year: $0.key, total: $0.value.reduce(0) { $0 + $1.watch.price }) }.sorted { $0.year < $1.year }
 }
 
 private struct LugMeasurement: Identifiable {
@@ -1188,7 +1220,7 @@ private func ledgerRows(_ watches: [Watch]) -> [LedgerRow] {
         if $0.price == $1.price { return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
         return $0.price < $1.price
     }.map { watch in
-        subtotalCents += Int(watch.price * 100)
+        subtotalCents += Int((watch.price * 100).rounded())
         return LedgerRow(watch: watch, subtotalCents: subtotalCents)
     }
 }

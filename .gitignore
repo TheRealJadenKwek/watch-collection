@@ -10,6 +10,7 @@ exports/
 # Xcode / build artifacts (regenerate with `xcodegen generate` in ios/)
 ios/WatchCollection.xcodeproj/
 ios/build/
+ios/build-sim/
 DerivedData/
 
 # Local design notes (not shipped)
