@@ -1,29 +1,59 @@
 import SwiftUI
 
 enum WatchTheme {
-    static let background = Color(red: 18 / 255, green: 16 / 255, blue: 13 / 255)
-    static let card = Color(red: 26 / 255, green: 23 / 255, blue: 18 / 255)
-    static let raised = Color(red: 35 / 255, green: 31 / 255, blue: 24 / 255)
-    static let gold = Color(red: 201 / 255, green: 163 / 255, blue: 92 / 255)
-    static let secondary = Color(red: 183 / 255, green: 176 / 255, blue: 163 / 255)
-    static let green = Color(red: 91 / 255, green: 143 / 255, blue: 113 / 255)
-    static let amber = Color(red: 198 / 255, green: 139 / 255, blue: 76 / 255)
-    static let red = Color(red: 191 / 255, green: 93 / 255, blue: 88 / 255)
+    // Warm near-black base with champagne accents; ivory text instead of pure white.
+    static let background = Color(red: 12 / 255, green: 11 / 255, blue: 9 / 255)
+    static let card = Color(red: 22 / 255, green: 20 / 255, blue: 16 / 255)
+    static let raised = Color(red: 31 / 255, green: 28 / 255, blue: 22 / 255)
+    static let gold = Color(red: 212 / 255, green: 180 / 255, blue: 120 / 255)
+    static let goldDeep = Color(red: 166 / 255, green: 134 / 255, blue: 78 / 255)
+    static let ivory = Color(red: 238 / 255, green: 232 / 255, blue: 218 / 255)
+    static let secondary = Color(red: 164 / 255, green: 156 / 255, blue: 142 / 255)
+    static let hairline = Color.white.opacity(0.07)
+    static let green = Color(red: 110 / 255, green: 160 / 255, blue: 126 / 255)
+    static let amber = Color(red: 214 / 255, green: 150 / 255, blue: 84 / 255)
+    static let red = Color(red: 200 / 255, green: 102 / 255, blue: 96 / 255)
 }
 
 extension View {
-    func watchCard() -> some View {
+    func watchCard(cornerRadius: CGFloat = 20) -> some View {
         self
-            .background(WatchTheme.card)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .background {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .fill(WatchTheme.card)
+                    .overlay {
+                        // Faint top light so cards read as raised objects, not flat boxes.
+                        LinearGradient(colors: [Color.white.opacity(0.035), .clear], startPoint: .top, endPoint: .center)
+                            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+                    }
+            }
+            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
             .overlay {
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .stroke(Color.white.opacity(0.06), lineWidth: 1)
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(WatchTheme.hairline, lineWidth: 1)
             }
     }
 
     func serifTitle() -> some View {
         fontDesign(.serif)
+    }
+}
+
+/// Small tracked uppercase label used above titles and figures.
+struct Eyebrow: View {
+    let text: String
+    var color: Color = WatchTheme.gold
+
+    init(_ text: String, color: Color = WatchTheme.gold) {
+        self.text = text
+        self.color = color
+    }
+
+    var body: some View {
+        Text(text.uppercased())
+            .font(.system(size: 10.5, weight: .semibold))
+            .tracking(1.8)
+            .foregroundStyle(color)
     }
 }
 
@@ -39,6 +69,21 @@ let cadFormatter: NumberFormatter = {
 func cad(_ value: Double?) -> String {
     guard let value else { return "Price TBD" }
     return cadFormatter.string(from: NSNumber(value: value)) ?? "$\(value)"
+}
+
+private let cadWholeFormatter: NumberFormatter = {
+    let formatter = NumberFormatter()
+    formatter.numberStyle = .currency
+    formatter.currencyCode = "CAD"
+    formatter.locale = Locale(identifier: "en_CA")
+    formatter.maximumFractionDigits = 0
+    return formatter
+}()
+
+/// Whole-dollar CAD for headline figures where cents are noise.
+func cadWhole(_ value: Double?) -> String {
+    guard let value else { return "—" }
+    return cadWholeFormatter.string(from: NSNumber(value: value.rounded())) ?? "$\(Int(value.rounded()))"
 }
 
 func cad(cents: Int) -> String {

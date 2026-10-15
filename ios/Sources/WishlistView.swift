@@ -32,10 +32,6 @@ struct WishlistScreen: View {
                     ScrollView {
                         LazyVStack(spacing: 14) {
                             wishlistHeader
-                            nextMoveSection { id in
-                                withAnimation { proxy.scrollTo("wishlist-\(id)", anchor: .top) }
-                            }
-                            radarStrip
                             if ranked.isEmpty {
                                 EmptyCollectionView(title: "Wishlist empty", detail: "Add a candidate to start comparing fit.")
                                     .frame(minHeight: 320)
@@ -53,8 +49,13 @@ struct WishlistScreen: View {
                                     .id("wishlist-\(item.id)")
                                 }
                             }
+                            nextMoveSection { id in
+                                withAnimation { proxy.scrollTo("wishlist-\(id)", anchor: .top) }
+                            }
+                            radarStrip
                         }
-                        .padding(14)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 8)
                         .padding(.bottom, 18)
                     }
                     .background(WatchTheme.background)
@@ -84,11 +85,24 @@ struct WishlistScreen: View {
     }
 
     private var wishlistHeader: some View {
-        SectionCard(eyebrow: "Purchase decision engine", title: "\(ranked.filter { $0.status == "considering" }.count) candidates · six lenses") {
-            Text("Category, brand, price, dial, size, and material scores are calculated on this iPhone. Fit chips use your saved wrist profile.")
-                .font(.subheadline)
+        let count = ranked.filter { $0.status == "considering" }.count
+        return VStack(alignment: .leading, spacing: 8) {
+            Eyebrow("Purchase decision engine")
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                Text("\(count)")
+                    .font(.system(size: 46, weight: .regular, design: .serif).monospacedDigit())
+                    .foregroundStyle(WatchTheme.ivory)
+                Text(count == 1 ? "candidate" : "candidates")
+                    .font(.system(size: 19, weight: .regular, design: .serif))
+                    .foregroundStyle(WatchTheme.secondary)
+            }
+            Text("Ranked by six lenses: category, brand, price, dial, size and material, against your wrist profile.")
+                .font(.footnote)
                 .foregroundStyle(WatchTheme.secondary)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, 4)
+        .padding(.bottom, 4)
     }
 
     private var radarStrip: some View {
@@ -138,15 +152,22 @@ struct WishlistScreen: View {
                 .font(.caption)
                 .foregroundStyle(WatchTheme.secondary)
             if let suggestions = store.suggestions?.suggestions, !suggestions.isEmpty {
-                VStack(spacing: 10) {
-                    ForEach(Array(suggestions.enumerated()), id: \.offset) { _, suggestion in
-                        NextMoveSuggestionCard(
-                            suggestion: suggestion,
-                            wishlist: store.data?.wishlist ?? [],
-                            scrollTo: scrollTo
-                        )
+                ScrollView(.horizontal, showsIndicators: false) {
+                    HStack(alignment: .top, spacing: 10) {
+                        ForEach(Array(suggestions.enumerated()), id: \.offset) { _, suggestion in
+                            NextMoveSuggestionCard(
+                                suggestion: suggestion,
+                                wishlist: store.data?.wishlist ?? [],
+                                scrollTo: scrollTo
+                            )
+                            .frame(width: 286)
+                        }
                     }
+                    .scrollTargetLayout()
                 }
+                .scrollTargetBehavior(.viewAligned)
+                .padding(.horizontal, -18)
+                .contentMargins(.horizontal, 18, for: .scrollContent)
             } else {
                 Text("No eligible category gaps. Adjust suggestion categories in Settings.")
                     .font(.subheadline)
@@ -205,10 +226,7 @@ struct NextMoveSuggestionCard: View {
             }
             if let brands = suggestion.brands, !brands.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("BRANDS TO EXPLORE")
-                        .font(.system(size: 9, weight: .bold))
-                        .tracking(1)
-                        .foregroundStyle(WatchTheme.secondary.opacity(0.7))
+                    Eyebrow("Brands to explore", color: WatchTheme.secondary)
                     ChipFlowLayout(spacing: 5) {
                         ForEach(brands, id: \.name) { brand in
                             CapsuleChip(
@@ -220,24 +238,20 @@ struct NextMoveSuggestionCard: View {
                     }
                 }
             }
-            ChipFlowLayout(spacing: 5) {
+            VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(suggestion.reasons.enumerated()), id: \.offset) { _, reason in
-                    Text(reason)
-                        .font(.caption2.weight(.medium))
-                        .lineLimit(2)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 5)
-                        .foregroundStyle(WatchTheme.secondary)
-                        .background(WatchTheme.secondary.opacity(0.1))
-                        .clipShape(RoundedRectangle(cornerRadius: 8))
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Circle().fill(WatchTheme.gold.opacity(0.7)).frame(width: 4, height: 4)
+                        Text(reason)
+                            .font(.caption)
+                            .foregroundStyle(WatchTheme.secondary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
                 }
             }
             if !suggestion.wishlistMatches.isEmpty {
                 VStack(alignment: .leading, spacing: 5) {
-                    Text("YOUR CANDIDATES")
-                        .font(.system(size: 9, weight: .bold))
-                        .tracking(1)
-                        .foregroundStyle(WatchTheme.gold)
+                    Eyebrow("Your candidates")
                     ForEach(suggestion.wishlistMatches, id: \.self) { id in
                         Button {
                             scrollTo(id)
@@ -251,10 +265,10 @@ struct NextMoveSuggestionCard: View {
                 }
             }
         }
-        .padding(12)
-        .background(WatchTheme.raised.opacity(0.75))
-        .clipShape(RoundedRectangle(cornerRadius: 13))
-        .overlay { RoundedRectangle(cornerRadius: 13).stroke(Color.white.opacity(0.07)) }
+        .padding(14)
+        .frame(maxHeight: .infinity, alignment: .top)
+        .background(WatchTheme.raised.opacity(0.7), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(WatchTheme.hairline) }
     }
 }
 
@@ -266,88 +280,181 @@ struct WishlistCard: View {
     let pass: () -> Void
     let bought: () -> Void
     let findImage: () -> Void
+    @State private var showsLenses = false
+
+    /// Width / height of the wishlist thumbnail. The framing editor uses the same ratio.
+    static let photoAspect: CGFloat = 96.0 / 120.0
 
     private let lensOrder = ["category", "brand", "price", "dial", "size", "material"]
     private var imageAsset: PhotoAsset? {
         item.photos.first.flatMap { store.photoAsset(itemID: item.id, filename: $0, wishlist: true) }
     }
+    private var detailLine: String {
+        [item.category, item.diameter.map { "\(compactNumber($0))mm" }]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+    }
 
     var body: some View {
-        VStack(spacing: 0) {
-            HStack(alignment: .top, spacing: 12) {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(alignment: .top, spacing: 14) {
                 RemoteWatchImage(asset: imageAsset, allowsRemoteFetch: !store.isOffline, focus: item.focus(for: item.photos.first))
-                    .frame(width: 104, height: 112)
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                VStack(alignment: .leading, spacing: 7) {
+                    .frame(width: 96, height: 120)
+                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                VStack(alignment: .leading, spacing: 6) {
                     Text(item.name)
-                        .font(.headline)
-                        .serifTitle()
+                        .font(.system(size: 17, weight: .semibold, design: .serif))
+                        .foregroundStyle(WatchTheme.ivory)
                         .lineLimit(3)
                     Text(item.priceNote.isEmpty ? cad(item.priceExpected) : item.priceNote)
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(WatchTheme.gold)
-                    HStack(spacing: 5) {
-                        CapsuleChip(text: item.category ?? "category unset")
-                        if let material = item.material { CapsuleChip(text: material) }
+                        .lineLimit(2)
+                    if !detailLine.isEmpty {
+                        Text(detailLine)
+                            .font(.caption)
+                            .foregroundStyle(WatchTheme.secondary)
+                            .lineLimit(1)
                     }
                     if let wrist = store.data?.settings.wrist,
                        let fit = fitInfo(for: item.diameter, lugToLug: item.lugToLug, wrist: wrist) {
-                        FitChip(info: fit)
+                        FitIndicator(info: fit)
                     }
                 }
-                Spacer(minLength: 0)
-                VStack(spacing: 0) {
-                    Text(score.map { "\($0.total)" } ?? "—")
-                        .font(.system(size: 30, weight: .bold, design: .serif))
-                        .foregroundStyle(WatchTheme.gold)
-                    Text("/ \(score?.max ?? 14)")
-                        .font(.caption2.weight(.bold))
-                        .foregroundStyle(WatchTheme.secondary)
-                }
-                .frame(minWidth: 43)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                ScoreRing(score: score?.total, maximum: score?.max ?? 14)
             }
             .padding(14)
 
-            Divider().overlay(Color.white.opacity(0.07))
+            lensStrip
+                .padding(.horizontal, 14)
+                .padding(.bottom, showsLenses ? 4 : 12)
 
-            VStack(spacing: 0) {
-                ForEach(lensOrder, id: \.self) { name in
-                    let lens = score?.lenses[name]
-                    HStack(alignment: .firstTextBaseline) {
-                        Text(name.capitalized)
-                            .font(.caption.weight(.bold))
-                            .frame(width: 58, alignment: .leading)
-                        Text(lens?.reason ?? "Waiting for score")
-                            .font(.caption)
-                            .foregroundStyle(WatchTheme.secondary)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                        Text(lens.map { $0.score >= 0 ? "+\($0.score)" : "\($0.score)" } ?? "—")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle((lens?.score ?? 0) > 0 ? WatchTheme.gold : WatchTheme.secondary)
+            if showsLenses {
+                VStack(spacing: 0) {
+                    ForEach(lensOrder, id: \.self) { name in
+                        let lens = score?.lenses[name]
+                        HStack(alignment: .firstTextBaseline) {
+                            Text(name.capitalized)
+                                .font(.caption.weight(.semibold))
+                                .foregroundStyle(WatchTheme.ivory)
+                                .frame(width: 62, alignment: .leading)
+                            Text(lens?.reason ?? "Waiting for score")
+                                .font(.caption)
+                                .foregroundStyle(WatchTheme.secondary)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text(lens.map { $0.score >= 0 ? "+\($0.score)" : "\($0.score)" } ?? "—")
+                                .font(.caption.weight(.bold).monospacedDigit())
+                                .foregroundStyle((lens?.score ?? 0) > 0 ? WatchTheme.gold : WatchTheme.secondary)
+                        }
+                        .padding(.vertical, 6)
                     }
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 7)
                 }
+                .padding(.horizontal, 14)
+                .padding(.bottom, 8)
+                .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
-            HStack {
-                Button("Edit", action: edit)
+            Rectangle().fill(WatchTheme.hairline).frame(height: 1)
+
+            HStack(spacing: 10) {
                 if item.status == "considering" {
+                    Button(action: bought) {
+                        Text("Bought it")
+                            .font(.caption.weight(.bold))
+                            .foregroundStyle(WatchTheme.background)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 7)
+                            .background(WatchTheme.gold, in: Capsule())
+                    }
                     Button("Pass", action: pass)
-                    Button("Bought", action: bought)
-                        .buttonStyle(.borderedProminent)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(WatchTheme.secondary)
                 } else {
                     CapsuleChip(text: item.status.capitalized, color: WatchTheme.secondary)
                 }
                 Spacer()
-                Button(action: findImage) { Label("Find image", systemImage: "photo.badge.magnifyingglass") }
+                Button("Edit", action: edit)
+                    .font(.caption.weight(.semibold))
+                Menu {
+                    Button(action: findImage) { Label("Find image online", systemImage: "photo.badge.magnifyingglass") }
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 14, weight: .semibold))
+                        .frame(width: 30, height: 26)
+                        .contentShape(Rectangle())
+                }
             }
-            .font(.caption.weight(.semibold))
-            .padding(14)
+            .buttonStyle(.plain)
+            .foregroundStyle(WatchTheme.gold)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
             .disabled(store.isOffline)
         }
         .watchCard()
-        .opacity(item.status == "passed" ? 0.58 : 1)
+        .opacity(item.status == "passed" ? 0.55 : 1)
+    }
+
+    /// One compact segment per lens; tap to expand the reasons.
+    private var lensStrip: some View {
+        Button {
+            withAnimation(.easeInOut(duration: 0.2)) { showsLenses.toggle() }
+        } label: {
+            HStack(spacing: 6) {
+                ForEach(lensOrder, id: \.self) { name in
+                    let value = score?.lenses[name]?.score ?? 0
+                    VStack(spacing: 4) {
+                        Capsule()
+                            .fill(value > 0 ? WatchTheme.gold.opacity(min(1, 0.45 + Double(value) * 0.18)) : Color.white.opacity(0.08))
+                            .frame(height: 4)
+                        Text(name.capitalized)
+                            .font(.system(size: 9, weight: .semibold))
+                            .lineLimit(1)
+                            .minimumScaleFactor(0.7)
+                            .foregroundStyle(value > 0 ? WatchTheme.gold : WatchTheme.secondary.opacity(0.7))
+                    }
+                }
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 10, weight: .bold))
+                    .foregroundStyle(WatchTheme.secondary)
+                    .rotationEffect(.degrees(showsLenses ? 180 : 0))
+                    .padding(.leading, 2)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(showsLenses ? "Hide score breakdown" : "Show score breakdown")
+    }
+}
+
+struct ScoreRing: View {
+    let score: Int?
+    let maximum: Int
+
+    private var fraction: Double {
+        guard let score, maximum > 0 else { return 0 }
+        return min(max(Double(score) / Double(maximum), 0), 1)
+    }
+
+    var body: some View {
+        ZStack {
+            Circle().stroke(Color.white.opacity(0.08), lineWidth: 3)
+            Circle()
+                .trim(from: 0, to: fraction)
+                .stroke(WatchTheme.gold, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .rotationEffect(.degrees(-90))
+            VStack(spacing: -2) {
+                Text(score.map(String.init) ?? "—")
+                    .font(.system(size: 20, weight: .regular, design: .serif).monospacedDigit())
+                    .foregroundStyle(WatchTheme.ivory)
+                Text("/\(maximum)")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(WatchTheme.secondary)
+            }
+        }
+        .frame(width: 52, height: 52)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Score \(score ?? 0) of \(maximum)")
     }
 }
 
@@ -373,47 +480,50 @@ struct WishlistDetailScreen: View {
     var body: some View {
         NavigationStack {
             Form {
-                photoSection
-                Section("Candidate") {
-                    TextField("Name", text: $draft.name)
-                    TextField("Brand", text: $draft.brand)
-                    Picker("Category", selection: optionalSelectionBinding($draft.category)) {
-                        Text("Unset").tag("")
-                        ForEach(store.data?.categories ?? [], id: \.self) { Text($0).tag($0) }
+                Group {
+                    photoSection
+                    Section("Candidate") {
+                        TextField("Name", text: $draft.name)
+                        TextField("Brand", text: $draft.brand)
+                        Picker("Category", selection: optionalSelectionBinding($draft.category)) {
+                            Text("Unset").tag("")
+                            ForEach(store.data?.categories ?? [], id: \.self) { Text($0).tag($0) }
+                        }
+                        TextField("Expected price (CAD)", text: optionalNumberBinding($draft.priceExpected))
+                            .keyboardType(.decimalPad)
+                        TextField("Quote text", text: $draft.priceNote)
+                        TextField("Added (YYYY-MM)", text: $draft.added)
+                        Picker("Status", selection: $draft.status) {
+                            Text("Considering").tag("considering")
+                            Text("Passed").tag("passed")
+                            Text("Bought").tag("bought")
+                        }
                     }
-                    TextField("Expected price (CAD)", text: optionalNumberBinding($draft.priceExpected))
-                        .keyboardType(.decimalPad)
-                    TextField("Quote text", text: $draft.priceNote)
-                    TextField("Added (YYYY-MM)", text: $draft.added)
-                    Picker("Status", selection: $draft.status) {
-                        Text("Considering").tag("considering")
-                        Text("Passed").tag("passed")
-                        Text("Bought").tag("bought")
+                    Section("Variety & fit") {
+                        Picker("Dial colour", selection: optionalSelectionBinding($draft.dialColor)) {
+                            Text("Unset").tag("")
+                            ForEach(store.data?.dialColors ?? [], id: \.self) { Text($0).tag($0) }
+                        }
+                        Picker("Case material", selection: optionalSelectionBinding($draft.material)) {
+                            Text("Unset").tag("")
+                            ForEach(store.data?.materials ?? [], id: \.self) { Text($0).tag($0) }
+                        }
+                        TextField("Diameter (mm)", text: optionalNumberBinding($draft.diameter)).keyboardType(.decimalPad)
+                        TextField("Lug-to-lug (mm)", text: optionalNumberBinding($draft.lugToLug)).keyboardType(.decimalPad)
+                        if let wrist = store.data?.settings.wrist,
+                           let fit = fitInfo(for: draft.diameter, lugToLug: draft.lugToLug, wrist: wrist) {
+                            HStack { Text("Fit"); Spacer(); FitChip(info: fit) }
+                        }
+                    }
+                    Section("Notes") {
+                        TextField("Notes", text: $draft.notes, axis: .vertical).lineLimit(4...10)
+                        if !isNew {
+                            Button("Delete candidate", role: .destructive) { confirmDelete = true }
+                                .disabled(store.isOffline)
+                        }
                     }
                 }
-                Section("Variety & fit") {
-                    Picker("Dial colour", selection: optionalSelectionBinding($draft.dialColor)) {
-                        Text("Unset").tag("")
-                        ForEach(store.data?.dialColors ?? [], id: \.self) { Text($0).tag($0) }
-                    }
-                    Picker("Case material", selection: optionalSelectionBinding($draft.material)) {
-                        Text("Unset").tag("")
-                        ForEach(store.data?.materials ?? [], id: \.self) { Text($0).tag($0) }
-                    }
-                    TextField("Diameter (mm)", text: optionalNumberBinding($draft.diameter)).keyboardType(.decimalPad)
-                    TextField("Lug-to-lug (mm)", text: optionalNumberBinding($draft.lugToLug)).keyboardType(.decimalPad)
-                    if let wrist = store.data?.settings.wrist,
-                       let fit = fitInfo(for: draft.diameter, lugToLug: draft.lugToLug, wrist: wrist) {
-                        HStack { Text("Fit"); Spacer(); FitChip(info: fit) }
-                    }
-                }
-                Section("Notes") {
-                    TextField("Notes", text: $draft.notes, axis: .vertical).lineLimit(4...10)
-                    if !isNew {
-                        Button("Delete candidate", role: .destructive) { confirmDelete = true }
-                            .disabled(store.isOffline)
-                    }
-                }
+                .listRowBackground(WatchTheme.card)
             }
             .scrollContentBackground(.hidden)
             .background(WatchTheme.background)
@@ -480,7 +590,7 @@ struct WishlistDetailScreen: View {
                             asset: store.photoAsset(itemID: draft.id, filename: target.filename, wishlist: true),
                             allowsRemoteFetch: !store.isOffline,
                             initialFocus: draft.focus(for: target.filename),
-                            aspect: 104.0 / 112.0,
+                            aspect: WishlistCard.photoAspect,
                             previews: [("Gallery", 1.55)]
                         ) { focus in
                             await store.setPhotoFocus(itemID: draft.id, filename: target.filename, wishlist: true, focus: focus)
@@ -541,11 +651,16 @@ struct BoughtSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section(item.name) {
-                    TextField("Final price paid (CAD)", value: $price, format: .number).keyboardType(.decimalPad)
-                    MonthYearPicker(value: $purchased, allowsUnknown: false)
+                Group {
+                    Section(item.name) {
+                        TextField("Final price paid (CAD)", value: $price, format: .number).keyboardType(.decimalPad)
+                        MonthYearPicker(value: $purchased, allowsUnknown: false)
+                    }
                 }
+                .listRowBackground(WatchTheme.card)
             }
+            .scrollContentBackground(.hidden)
+            .background(WatchTheme.background)
             .navigationTitle("Mark Bought")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {

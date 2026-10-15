@@ -38,13 +38,16 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                storageSection
-                syncSection
-                wristSection
-                suggestionSection
-                automationSection
-                taxonomySection
-                aboutSection
+                Group {
+                    storageSection
+                    syncSection
+                    wristSection
+                    suggestionSection
+                    automationSection
+                    taxonomySection
+                    aboutSection
+                }
+                .listRowBackground(WatchTheme.card)
             }
             .scrollContentBackground(.hidden)
             .background(WatchTheme.background)

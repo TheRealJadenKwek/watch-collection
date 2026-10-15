@@ -264,46 +264,49 @@ struct WearHistorySheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("Add a wear") {
-                    DatePicker("Date", selection: $selectedDate, in: ...Date(), displayedComponents: .date)
-                    WearDurationPicker(minutes: $durationMinutes)
-                    Button {
-                        isSaving = true
-                        Task {
-                            await store.logWear(
-                                watchID: watchID,
-                                on: selectedDate,
-                                durationMinutes: durationMinutes
-                            )
-                            isSaving = false
-                        }
-                    } label: {
-                        Label(isSaving ? "Saving…" : "Add wear", systemImage: "calendar.badge.plus")
-                    }
-                    .disabled(isSaving)
-                }
-
-                Section("History · \(sessions.count) sessions · \(wearDurationLabel(totalMinutes))") {
-                    if sessions.isEmpty {
-                        Text("No wears logged yet.")
-                            .foregroundStyle(WatchTheme.secondary)
-                    } else {
-                        ForEach(sessions) { session in
-                            HStack {
-                                Label(calendarDayLabel(session.date), systemImage: "watch.analog")
-                                Spacer()
-                                Text(wearDurationLabel(session.durationMinutes))
-                                    .font(.caption.weight(.semibold).monospacedDigit())
-                                    .foregroundStyle(WatchTheme.gold)
+                Group {
+                    Section("Add a wear") {
+                        DatePicker("Date", selection: $selectedDate, in: ...Date(), displayedComponents: .date)
+                        WearDurationPicker(minutes: $durationMinutes)
+                        Button {
+                            isSaving = true
+                            Task {
+                                await store.logWear(
+                                    watchID: watchID,
+                                    on: selectedDate,
+                                    durationMinutes: durationMinutes
+                                )
+                                isSaving = false
                             }
-                                .swipeActions {
-                                    Button("Delete", role: .destructive) {
-                                        Task { await store.removeWear(watchID: watchID, sessionID: session.id) }
-                                    }
+                        } label: {
+                            Label(isSaving ? "Saving…" : "Add wear", systemImage: "calendar.badge.plus")
+                        }
+                        .disabled(isSaving)
+                    }
+    
+                    Section("History · \(sessions.count) sessions · \(wearDurationLabel(totalMinutes))") {
+                        if sessions.isEmpty {
+                            Text("No wears logged yet.")
+                                .foregroundStyle(WatchTheme.secondary)
+                        } else {
+                            ForEach(sessions) { session in
+                                HStack {
+                                    Label(calendarDayLabel(session.date), systemImage: "watch.analog")
+                                    Spacer()
+                                    Text(wearDurationLabel(session.durationMinutes))
+                                        .font(.caption.weight(.semibold).monospacedDigit())
+                                        .foregroundStyle(WatchTheme.gold)
                                 }
+                                    .swipeActions {
+                                        Button("Delete", role: .destructive) {
+                                            Task { await store.removeWear(watchID: watchID, sessionID: session.id) }
+                                        }
+                                    }
+                            }
                         }
                     }
                 }
+                .listRowBackground(WatchTheme.card)
             }
             .scrollContentBackground(.hidden)
             .background(WatchTheme.background)
@@ -379,69 +382,72 @@ struct MaintenanceSheet: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section("New record") {
-                    Picker("Type", selection: $kind) {
-                        ForEach(kinds, id: \.self) { Text($0).tag($0) }
-                    }
-                    DatePicker("Completed", selection: $serviceDate, in: ...Date(), displayedComponents: .date)
-                    TextField("Cost (CAD)", text: optionalNumberBinding($cost))
-                        .keyboardType(.decimalPad)
-                    TextField("Notes", text: $notes, axis: .vertical)
-                        .lineLimit(2...5)
-                    Toggle("Remind me when next due", isOn: $hasReminder)
-                    if hasReminder {
-                        DatePicker("Next due", selection: $nextDue, displayedComponents: .date)
-                    }
-                    if let validationIssue {
-                        Label(validationIssue, systemImage: "exclamationmark.circle")
-                            .font(.caption)
-                            .foregroundStyle(WatchTheme.amber)
-                    }
-                    Button {
-                        addRecord()
-                    } label: {
-                        Label(isSaving ? "Saving…" : "Add service record", systemImage: "wrench.and.screwdriver")
-                    }
-                    .disabled(isSaving || validationIssue != nil)
-                }
-
-                Section("History · \(records.count)") {
-                    if records.isEmpty {
-                        Text("No service records yet.")
-                            .foregroundStyle(WatchTheme.secondary)
-                    } else {
-                        ForEach(records) { record in
-                            VStack(alignment: .leading, spacing: 5) {
-                                HStack {
-                                    Text(record.kind).font(.subheadline.weight(.semibold))
-                                    Spacer()
-                                    Text(calendarDayLabel(record.date))
-                                        .font(.caption)
-                                        .foregroundStyle(WatchTheme.secondary)
-                                }
-                                if !record.notes.isEmpty {
-                                    Text(record.notes)
-                                        .font(.caption)
-                                        .foregroundStyle(WatchTheme.secondary)
-                                }
-                                HStack(spacing: 10) {
-                                    if let cost = record.cost {
-                                        Text(cad(cost)).foregroundStyle(WatchTheme.gold)
-                                    }
-                                    if let due = record.nextDue {
-                                        Label("Due \(calendarDayLabel(due))", systemImage: "bell")
-                                    }
-                                }
+                Group {
+                    Section("New record") {
+                        Picker("Type", selection: $kind) {
+                            ForEach(kinds, id: \.self) { Text($0).tag($0) }
+                        }
+                        DatePicker("Completed", selection: $serviceDate, in: ...Date(), displayedComponents: .date)
+                        TextField("Cost (CAD)", text: optionalNumberBinding($cost))
+                            .keyboardType(.decimalPad)
+                        TextField("Notes", text: $notes, axis: .vertical)
+                            .lineLimit(2...5)
+                        Toggle("Remind me when next due", isOn: $hasReminder)
+                        if hasReminder {
+                            DatePicker("Next due", selection: $nextDue, displayedComponents: .date)
+                        }
+                        if let validationIssue {
+                            Label(validationIssue, systemImage: "exclamationmark.circle")
                                 .font(.caption)
-                            }
-                            .swipeActions {
-                                Button("Delete", role: .destructive) {
-                                    Task { await store.deleteServiceRecord(watchID: watchID, recordID: record.id) }
+                                .foregroundStyle(WatchTheme.amber)
+                        }
+                        Button {
+                            addRecord()
+                        } label: {
+                            Label(isSaving ? "Saving…" : "Add service record", systemImage: "wrench.and.screwdriver")
+                        }
+                        .disabled(isSaving || validationIssue != nil)
+                    }
+    
+                    Section("History · \(records.count)") {
+                        if records.isEmpty {
+                            Text("No service records yet.")
+                                .foregroundStyle(WatchTheme.secondary)
+                        } else {
+                            ForEach(records) { record in
+                                VStack(alignment: .leading, spacing: 5) {
+                                    HStack {
+                                        Text(record.kind).font(.subheadline.weight(.semibold))
+                                        Spacer()
+                                        Text(calendarDayLabel(record.date))
+                                            .font(.caption)
+                                            .foregroundStyle(WatchTheme.secondary)
+                                    }
+                                    if !record.notes.isEmpty {
+                                        Text(record.notes)
+                                            .font(.caption)
+                                            .foregroundStyle(WatchTheme.secondary)
+                                    }
+                                    HStack(spacing: 10) {
+                                        if let cost = record.cost {
+                                            Text(cad(cost)).foregroundStyle(WatchTheme.gold)
+                                        }
+                                        if let due = record.nextDue {
+                                            Label("Due \(calendarDayLabel(due))", systemImage: "bell")
+                                        }
+                                    }
+                                    .font(.caption)
+                                }
+                                .swipeActions {
+                                    Button("Delete", role: .destructive) {
+                                        Task { await store.deleteServiceRecord(watchID: watchID, recordID: record.id) }
+                                    }
                                 }
                             }
                         }
                     }
                 }
+                .listRowBackground(WatchTheme.card)
             }
             .scrollContentBackground(.hidden)
             .background(WatchTheme.background)

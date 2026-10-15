@@ -47,7 +47,8 @@ struct StatsScreen: View {
                         varietyPanel(title: "Material variety", field: \Watch.material, values: store.data?.materials ?? [])
                         completeData
                     }
-                    .padding(14)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 8)
                     .padding(.bottom, 18)
                 }
                 .background(WatchTheme.background)
@@ -74,41 +75,73 @@ struct StatsScreen: View {
 
     private var headlineTiles: some View {
         let stats = store.data?.headlineStats?[scope]
-        let iqrRange = "\(cad(stats?.q1 ?? 0)) – \(cad(stats?.q3 ?? 0))"
         let measured = owned.filter { $0.diameter != nil }
         let inRange = measured.filter { watch in
             guard let diameter = watch.diameter else { return false }
             return wrist.sweetSpotMin...wrist.sweetSpotMax ~= diameter
         }.count
-        let percent = measured.isEmpty ? 0 : Double(inRange) / Double(measured.count) * 100
-        let values: [(String, String)] = [
-            ("Count", "\(Int(stats?.count ?? 0))"),
-            ("Total spent", cad(stats?.total ?? 0)),
-            ("Mean", cad(stats?.mean ?? 0)),
-            ("Median", cad(stats?.median ?? 0)),
-            ("IQR (P25–P75)", iqrRange),
-            ("Minimum", cad(stats?.min ?? 0)),
-            ("Maximum", cad(stats?.max ?? 0)),
-            ("Std dev", cad(stats?.stdDev ?? 0)),
-            ("Sweet spot", "\(Int(percent.rounded()))%"),
+        let fraction = measured.isEmpty ? 0 : Double(inRange) / Double(measured.count)
+        let count = Int(stats?.count ?? 0)
+        let figures: [(String, String)] = [
+            ("Mean", cadWhole(stats?.mean ?? 0)),
+            ("Median", cadWhole(stats?.median ?? 0)),
+            ("Std dev", cadWhole(stats?.stdDev ?? 0)),
+            ("Lowest", cadWhole(stats?.min ?? 0)),
+            ("Highest", cadWhole(stats?.max ?? 0)),
+            ("Middle 50%", "\(cadWhole(stats?.q1 ?? 0))–\(cadWhole(stats?.q3 ?? 0))"),
         ]
-        return LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 10) {
-            ForEach(values, id: \.0) { label, value in
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(label.uppercased())
-                        .font(.caption2.weight(.bold))
-                        .tracking(0.8)
-                        .foregroundStyle(WatchTheme.secondary)
-                    Text(value)
-                        .font(.title3.weight(.semibold))
-                        .foregroundStyle(label == "Total spent" ? WatchTheme.gold : .primary)
-                        .minimumScaleFactor(0.75)
+        return VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 6) {
+                Eyebrow(scope == "owned" ? "Current collection" : "All-time")
+                Text(cad(stats?.total ?? 0))
+                    .font(.system(size: 40, weight: .regular, design: .serif).monospacedDigit())
+                    .foregroundStyle(WatchTheme.gold)
+                    .minimumScaleFactor(0.7)
+                    .lineLimit(1)
+                Text("spent across \(count) watch\(count == 1 ? "" : "es")")
+                    .font(.subheadline)
+                    .foregroundStyle(WatchTheme.secondary)
+            }
+
+            VStack(alignment: .leading, spacing: 7) {
+                HStack {
+                    Text("In your \(compactNumber(wrist.sweetSpotMin))–\(compactNumber(wrist.sweetSpotMax))mm sweet spot")
+                        .font(.caption.weight(.medium))
+                        .foregroundStyle(WatchTheme.ivory)
+                    Spacer()
+                    Text("\(inRange) of \(measured.count)")
+                        .font(.caption.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(WatchTheme.gold)
                 }
-                .frame(maxWidth: .infinity, minHeight: 64, alignment: .leading)
-                .padding(13)
-                .watchCard()
+                GeometryReader { geo in
+                    ZStack(alignment: .leading) {
+                        Capsule().fill(Color.white.opacity(0.07))
+                        Capsule()
+                            .fill(LinearGradient(colors: [WatchTheme.goldDeep, WatchTheme.gold], startPoint: .leading, endPoint: .trailing))
+                            .frame(width: max(6, geo.size.width * fraction))
+                    }
+                }
+                .frame(height: 6)
+            }
+
+            Rectangle().fill(WatchTheme.hairline).frame(height: 1)
+
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 3), alignment: .leading, spacing: 16) {
+                ForEach(figures, id: \.0) { label, value in
+                    VStack(alignment: .leading, spacing: 4) {
+                        Eyebrow(label, color: WatchTheme.secondary)
+                        Text(value)
+                            .font(.system(size: 16, weight: .regular, design: .serif).monospacedDigit())
+                            .foregroundStyle(WatchTheme.ivory)
+                            .minimumScaleFactor(0.6)
+                            .lineLimit(1)
+                    }
+                }
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(20)
+        .watchCard(cornerRadius: 22)
     }
 
     private var rotationDashboard: some View {
@@ -175,7 +208,7 @@ struct StatsScreen: View {
                         x: .value("Day", point.date, unit: .day),
                         y: .value("Hours", point.hours)
                     )
-                    .foregroundStyle(point.minutes > 0 ? WatchTheme.green.gradient : WatchTheme.raised.gradient)
+                    .foregroundStyle(point.minutes > 0 ? WatchTheme.goldDeep.opacity(0.7).gradient : WatchTheme.raised.gradient)
                     .cornerRadius(2)
                 }
                 .frame(height: 145)
@@ -289,9 +322,9 @@ struct StatsScreen: View {
                     BarMark(
                         x: .value("Tier", bin.position),
                         y: .value("Watches", bin.count),
-                        width: .ratio(0.68)
+                        width: .fixed(24)
                     )
-                    .foregroundStyle(selectedCostTier == bin.id ? WatchTheme.gold.gradient : WatchTheme.green.gradient)
+                    .foregroundStyle(selectedCostTier == bin.id ? WatchTheme.gold.gradient : WatchTheme.goldDeep.opacity(0.55).gradient)
                     .opacity(selectedCostTier == nil || selectedCostTier == bin.id ? 1 : 0.42)
                     .cornerRadius(3)
                     .accessibilityLabel(bin.label)
@@ -439,14 +472,14 @@ struct StatsScreen: View {
                     yStart: .value("Floor", 0),
                     yEnd: .value("Ceiling", ceiling)
                 )
-                .foregroundStyle(WatchTheme.green.opacity(0.16))
+                .foregroundStyle(WatchTheme.gold.opacity(0.09))
                 ForEach(bins) { bin in
                     BarMark(
                         x: .value("Diameter", bin.midpoint),
                         y: .value("Watches", bin.count),
                         width: .fixed(13)
                     )
-                    .foregroundStyle(selectedBin?.lower == bin.lower ? WatchTheme.gold.gradient : WatchTheme.green.gradient)
+                    .foregroundStyle(selectedBin?.lower == bin.lower ? WatchTheme.gold.gradient : WatchTheme.goldDeep.opacity(0.7).gradient)
                     .opacity(selectedBin == nil || selectedBin?.lower == bin.lower ? 1 : 0.42)
                     .annotation(position: .top) {
                         if selectedBin?.lower == bin.lower {
@@ -459,6 +492,7 @@ struct StatsScreen: View {
                     .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4]))
             }
             .frame(height: 190)
+            .chartXScale(domain: sizeDomain(bins))
             .chartXAxisLabel("mm · shaded \(compactNumber(wrist.sweetSpotMin))–\(compactNumber(wrist.sweetSpotMax)) sweet spot")
             .chartYAxisLabel("watches")
             .chartXSelection(value: $selectedSizeX)
@@ -476,6 +510,14 @@ struct StatsScreen: View {
         }
     }
 
+    /// Frame the size chart around the actual watches and sweet spot instead of starting at 0mm.
+    private func sizeDomain(_ bins: [MetricBin]) -> ClosedRange<Double> {
+        let values = bins.filter { $0.count > 0 }.flatMap { [$0.lower, $0.lower + 2] } + [wrist.sweetSpotMin, wrist.sweetSpotMax]
+        let lower = ((values.min() ?? 30) - 2).rounded(.down)
+        let upper = ((values.max() ?? 50) + 2).rounded(.up)
+        return lower...max(upper, lower + 1)
+    }
+
     private var spendChart: some View {
         let values = spendByYear(scoped, all: all)
         let cumulative = cumulativeSpend(values)
@@ -485,7 +527,7 @@ struct StatsScreen: View {
                 .foregroundStyle(WatchTheme.secondary)
             Chart(values) { point in
                 BarMark(x: .value("Year", point.year), y: .value("CAD", point.total))
-                    .foregroundStyle(selectedSpendYear == point.year ? WatchTheme.gold.gradient : WatchTheme.green.gradient)
+                    .foregroundStyle(selectedSpendYear == point.year ? WatchTheme.gold.gradient : WatchTheme.goldDeep.opacity(0.7).gradient)
                     .opacity(selectedSpendYear == nil || selectedSpendYear == point.year ? 1 : 0.42)
                     .cornerRadius(4)
                     .annotation(position: .top) {
@@ -525,7 +567,7 @@ struct StatsScreen: View {
                         x: .value("Year", point.year),
                         y: .value("Cumulative CAD", point.total)
                     )
-                    .foregroundStyle(WatchTheme.green.opacity(0.16).gradient)
+                    .foregroundStyle(WatchTheme.gold.opacity(0.12).gradient)
                     LineMark(
                         x: .value("Year", point.year),
                         y: .value("Cumulative CAD", point.total)
@@ -685,7 +727,7 @@ struct StatsScreen: View {
             } else {
                 Chart(measurements) { measurement in
                     BarMark(x: .value("L2L", measurement.value), y: .value("Watch", measurement.id))
-                        .foregroundStyle(selectedLugWatchID == measurement.id ? WatchTheme.gold.gradient : WatchTheme.green.gradient)
+                        .foregroundStyle(selectedLugWatchID == measurement.id ? WatchTheme.gold.gradient : WatchTheme.goldDeep.opacity(0.7).gradient)
                         .opacity(selectedLugWatchID == nil || selectedLugWatchID == measurement.id ? 1 : 0.42)
                         .annotation(position: .trailing) {
                             if selectedLugWatchID == measurement.id {
@@ -968,19 +1010,19 @@ private struct ActivityMetricTile: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 5) {
-            Text(label.uppercased())
-                .font(.caption2.weight(.bold))
-                .tracking(0.7)
-                .foregroundStyle(WatchTheme.secondary)
+            Eyebrow(label, color: WatchTheme.secondary)
+                .lineLimit(1)
+                .minimumScaleFactor(0.8)
             Text(value)
-                .font(.headline.monospacedDigit())
-                .foregroundStyle(warning ? WatchTheme.amber : WatchTheme.gold)
-                .minimumScaleFactor(0.75)
+                .font(.system(size: 22, weight: .regular, design: .serif).monospacedDigit())
+                .foregroundStyle(warning ? WatchTheme.amber : WatchTheme.ivory)
+                .minimumScaleFactor(0.7)
+                .lineLimit(1)
         }
-        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
-        .padding(11)
-        .background(WatchTheme.raised)
-        .clipShape(RoundedRectangle(cornerRadius: 11, style: .continuous))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.vertical, 12)
+        .padding(.horizontal, 13)
+        .background(WatchTheme.raised.opacity(0.6), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
     }
 }
 

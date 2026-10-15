@@ -10,8 +10,8 @@ struct CollectionScreen: View {
     @State private var presentedSheet: CollectionSheet?
 
     private let columns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 14),
+        GridItem(.flexible(), spacing: 14),
     ]
 
     private var watches: [Watch] {
@@ -32,7 +32,7 @@ struct CollectionScreen: View {
                             EmptyCollectionView(title: "No watches found", detail: "Try a different search.")
                                 .frame(minHeight: 360)
                         } else {
-                            LazyVGrid(columns: columns, spacing: 12) {
+                            LazyVGrid(columns: columns, spacing: 14) {
                                 ForEach(watches) { watch in
                                     Button { presentedSheet = .watch(watch) } label: {
                                         WatchCardView(store: store, watch: watch, isPast: false)
@@ -42,7 +42,8 @@ struct CollectionScreen: View {
                             }
                         }
                     }
-                    .padding(14)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
                     .padding(.bottom, 12)
                 }
                 .background(WatchTheme.background)
@@ -72,34 +73,72 @@ struct CollectionScreen: View {
         }
     }
 
+    private var todayKey: String { calendarDayKey() }
+    private var wornToday: [Watch] { watches.filter { wearMinutes(for: $0, on: todayKey) > 0 } }
+
     private var collectionHeader: some View {
-        VStack(alignment: .leading, spacing: 11) {
-            HStack(alignment: .lastTextBaseline) {
-                VStack(alignment: .leading, spacing: 3) {
-                    Text("CURRENT ROTATION")
-                        .font(.caption2.weight(.bold))
-                        .tracking(1.5)
-                        .foregroundStyle(WatchTheme.gold)
-                    Text("\(watches.count) owned watches")
-                        .font(.title2.weight(.semibold))
-                        .serifTitle()
+        let total = watches.reduce(0) { $0 + $1.price }
+        let todayMinutes = wornToday.reduce(0) { $0 + wearMinutes(for: $1, on: todayKey) }
+        return VStack(alignment: .leading, spacing: 18) {
+            VStack(alignment: .leading, spacing: 8) {
+                Eyebrow("Current rotation")
+                HStack(alignment: .firstTextBaseline) {
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        Text("\(watches.count)")
+                            .font(.system(size: 46, weight: .regular, design: .serif).monospacedDigit())
+                            .foregroundStyle(WatchTheme.ivory)
+                        Text(watches.count == 1 ? "watch" : "watches")
+                            .font(.system(size: 19, weight: .regular, design: .serif))
+                            .foregroundStyle(WatchTheme.secondary)
+                    }
+                    Spacer()
+                    VStack(alignment: .trailing, spacing: 2) {
+                        Text(cadWhole(total))
+                            .font(.system(size: 20, weight: .regular, design: .serif).monospacedDigit())
+                            .foregroundStyle(WatchTheme.gold)
+                        Text("invested")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(WatchTheme.secondary)
+                    }
                 }
-                Spacer()
-                Text(cad(watches.reduce(0) { $0 + $1.price }))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(WatchTheme.gold)
             }
+
             Button {
                 presentedSheet = .wearToday
             } label: {
-                Label("Log today’s wear", systemImage: "watch.analog")
-                    .frame(maxWidth: .infinity, minHeight: 28)
-                    .contentShape(Rectangle())
+                HStack(spacing: 12) {
+                    ZStack {
+                        Circle().fill(WatchTheme.gold.opacity(0.14))
+                        Image(systemName: "watch.analog")
+                            .font(.system(size: 16, weight: .medium))
+                            .foregroundStyle(WatchTheme.gold)
+                    }
+                    .frame(width: 38, height: 38)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(wornToday.isEmpty ? "Today’s wrist" : wornToday.map(\.name).joined(separator: ", "))
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(WatchTheme.ivory)
+                            .lineLimit(1)
+                        Text(wornToday.isEmpty ? "Nothing logged yet" : "\(wearDurationLabel(todayMinutes)) logged today")
+                            .font(.caption)
+                            .foregroundStyle(WatchTheme.secondary)
+                    }
+                    Spacer(minLength: 8)
+                    Text(wornToday.isEmpty ? "Log wear" : "Update")
+                        .font(.caption.weight(.bold))
+                        .foregroundStyle(WatchTheme.background)
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 7)
+                        .background(WatchTheme.gold, in: Capsule())
+                }
+                .padding(12)
+                .watchCard(cornerRadius: 18)
+                .contentShape(Rectangle())
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
+            .buttonStyle(.plain)
             .disabled(watches.isEmpty || store.isOffline)
         }
+        .padding(.top, 4)
     }
 }
 
@@ -125,8 +164,8 @@ struct PastScreen: View {
     @State private var selectedWatch: Watch?
 
     private let columns = [
-        GridItem(.flexible(), spacing: 12),
-        GridItem(.flexible(), spacing: 12),
+        GridItem(.flexible(), spacing: 14),
+        GridItem(.flexible(), spacing: 14),
     ]
 
     private var statuses: [String] {
@@ -148,14 +187,16 @@ struct PastScreen: View {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 16) {
                         HStack {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text("THE ARCHIVE")
-                                    .font(.caption2.weight(.bold))
-                                    .tracking(1.5)
-                                    .foregroundStyle(WatchTheme.gold)
-                                Text("\(watches.count) past watches")
-                                    .font(.title2.weight(.semibold))
-                                    .serifTitle()
+                            VStack(alignment: .leading, spacing: 8) {
+                                Eyebrow("The archive")
+                                HStack(alignment: .firstTextBaseline, spacing: 6) {
+                                    Text("\(watches.count)")
+                                        .font(.system(size: 46, weight: .regular, design: .serif).monospacedDigit())
+                                        .foregroundStyle(WatchTheme.ivory)
+                                    Text("past watches")
+                                        .font(.system(size: 19, weight: .regular, design: .serif))
+                                        .foregroundStyle(WatchTheme.secondary)
+                                }
                             }
                             Spacer()
                             Menu {
@@ -174,7 +215,7 @@ struct PastScreen: View {
                             EmptyCollectionView(title: "No past watches found", detail: "Change the search or status filter.")
                                 .frame(minHeight: 360)
                         } else {
-                            LazyVGrid(columns: columns, spacing: 12) {
+                            LazyVGrid(columns: columns, spacing: 14) {
                                 ForEach(watches) { watch in
                                     Button { selectedWatch = watch } label: {
                                         WatchCardView(store: store, watch: watch, isPast: true)
@@ -184,7 +225,8 @@ struct PastScreen: View {
                             }
                         }
                     }
-                    .padding(14)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 12)
                     .padding(.bottom, 12)
                 }
                 .background(WatchTheme.background)
@@ -209,58 +251,89 @@ struct WatchCardView: View {
     let watch: Watch
     let isPast: Bool
 
+    /// Width / height of the card photo. The framing editor uses the same ratio.
+    static let photoAspect: CGFloat = 0.82
+
     private var wrist: WristProfile? { store.data?.settings.wrist }
     private var coverAsset: PhotoAsset? {
         watch.photos.first.flatMap { store.photoAsset(itemID: watch.id, filename: $0, wishlist: false) }
     }
+    private var detailLine: String {
+        [watch.category, watch.diameter.map { "\(compactNumber($0))mm" }]
+            .compactMap { $0 }
+            .joined(separator: " · ")
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ZStack(alignment: .topLeading) {
-                RemoteWatchImage(asset: coverAsset, allowsRemoteFetch: !store.isOffline, focus: watch.focus(for: watch.photos.first))
-                    .frame(height: 142)
-                    .clipped()
-                    .allowsHitTesting(false)
-                if isPast {
-                    CapsuleChip(text: statusLabel(watch.status), color: WatchTheme.gold, filled: true)
-                        .padding(8)
+            Color.clear
+                .aspectRatio(Self.photoAspect, contentMode: .fit)
+                .overlay {
+                    RemoteWatchImage(
+                        asset: coverAsset,
+                        allowsRemoteFetch: !store.isOffline,
+                        focus: watch.focus(for: watch.photos.first)
+                    )
                 }
-            }
-            VStack(alignment: .leading, spacing: 8) {
-                // Every card reserves the same name/note space so grid rows stay perfectly even.
-                Text(watch.name)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
-                    .lineLimit(2, reservesSpace: true)
-                    .multilineTextAlignment(.leading)
-                Text(cad(watch.price))
-                    .font(.caption.weight(.bold))
-                    .foregroundStyle(WatchTheme.gold)
-                if isPast {
-                    Text(watch.statusNote)
-                        .font(.caption2)
-                        .foregroundStyle(WatchTheme.secondary)
-                        .lineLimit(1, reservesSpace: true)
+                .overlay(alignment: .bottom) {
+                    LinearGradient(
+                        colors: [.clear, Color.black.opacity(0.55), Color.black.opacity(0.85)],
+                        startPoint: .top,
+                        endPoint: .bottom
+                    )
+                    .frame(height: 96)
                 }
-                ChipFlowLayout(spacing: 5) {
-                    CapsuleChip(text: watch.category ?? "Uncategorised")
-                    if let wrist, let fit = fitInfo(for: watch.diameter, lugToLug: watch.lugToLug, wrist: wrist) {
-                        FitChip(info: fit)
+                .overlay(alignment: .bottomLeading) {
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(watch.name)
+                            .font(.system(size: 15, weight: .semibold, design: .serif))
+                            .foregroundStyle(WatchTheme.ivory)
+                            .lineLimit(2)
+                            .multilineTextAlignment(.leading)
+                            .shadow(color: .black.opacity(0.4), radius: 4, y: 1)
+                        Text(cad(watch.price))
+                            .font(.system(size: 12, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(WatchTheme.gold)
                     }
-                    if watch.original == false {
-                        CapsuleChip(text: "Rep", color: WatchTheme.gold)
-                    }
-                    if let material = watch.material {
-                        CapsuleChip(text: material)
-                    }
+                    .padding(11)
                 }
-                .frame(height: 51, alignment: .topLeading)
+                .overlay(alignment: .topLeading) {
+                    HStack(spacing: 5) {
+                        if isPast {
+                            CapsuleChip(text: statusLabel(watch.status), color: WatchTheme.gold, filled: true)
+                        }
+                        if watch.original == false {
+                            CapsuleChip(text: "REP", color: WatchTheme.ivory, filled: true)
+                        }
+                    }
+                    .padding(9)
+                }
                 .clipped()
+                .allowsHitTesting(false)
+
+            VStack(alignment: .leading, spacing: 5) {
+                Text(detailLine.isEmpty ? "Details unset" : detailLine)
+                    .font(.system(size: 11.5, weight: .medium))
+                    .foregroundStyle(WatchTheme.secondary)
+                    .lineLimit(1)
+                Group {
+                    if isPast {
+                        Text(watch.statusNote.isEmpty ? " " : watch.statusNote)
+                            .font(.system(size: 11))
+                            .foregroundStyle(WatchTheme.secondary.opacity(0.8))
+                            .lineLimit(1)
+                    } else if let wrist, let fit = fitInfo(for: watch.diameter, lugToLug: watch.lugToLug, wrist: wrist) {
+                        FitIndicator(info: fit)
+                    } else {
+                        Text(" ").font(.system(size: 11))
+                    }
+                }
             }
-            .padding(11)
+            .padding(.horizontal, 11)
+            .padding(.vertical, 10)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .watchCard()
+        .watchCard(cornerRadius: 18)
         // Clipping changes drawing only. Keep the scaled photo's hit area inside
         // the visible card so it cannot intercept the wear button or nearby cards.
         .contentShape(.interaction, RoundedRectangle(cornerRadius: 18, style: .continuous))
@@ -309,13 +382,16 @@ struct WatchDetailScreen: View {
     var body: some View {
         NavigationStack {
             Form {
-                if !validationIssues.isEmpty { validationSection }
-                photoSection
-                identitySection
-                sizingSection
-                purchaseSection
-                if !isNew { ownershipSection }
-                storySection
+                Group {
+                    if !validationIssues.isEmpty { validationSection }
+                    photoSection
+                    identitySection
+                    sizingSection
+                    purchaseSection
+                    if !isNew { ownershipSection }
+                    storySection
+                }
+                .listRowBackground(WatchTheme.card)
             }
             .scrollContentBackground(.hidden)
             .background(WatchTheme.background)
@@ -478,7 +554,7 @@ struct WatchDetailScreen: View {
                     asset: store.photoAsset(itemID: draft.id, filename: target.filename, wishlist: false),
                     allowsRemoteFetch: !store.isOffline,
                     initialFocus: draft.focus(for: target.filename),
-                    aspect: 1.25,
+                    aspect: WatchCardView.photoAspect,
                     previews: [("Gallery", 1.45), ("Wear log", 1)]
                 ) { focus in
                     await store.setPhotoFocus(itemID: draft.id, filename: target.filename, wishlist: false, focus: focus)

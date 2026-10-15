@@ -73,30 +73,45 @@ struct CapsuleChip: View {
 
     var body: some View {
         Text(text)
-            .font(.caption2.weight(.semibold))
+            .font(.system(size: 11, weight: .semibold))
             .lineLimit(1)
             .padding(.horizontal, 8)
-            .padding(.vertical, 5)
+            .padding(.vertical, 4)
             .foregroundStyle(filled ? WatchTheme.background : color)
-            .background(filled ? color : color.opacity(0.12))
-            .clipShape(Capsule())
-            .overlay { Capsule().stroke(color.opacity(filled ? 0 : 0.25), lineWidth: 0.7) }
+            .background(filled ? color : color.opacity(0.12), in: Capsule())
+    }
+}
+
+/// Coloured dot + short label: a quieter way to show fit than a full chip.
+struct FitIndicator: View {
+    let info: FitInfo
+
+    var body: some View {
+        HStack(spacing: 5) {
+            Circle().fill(fitColor(info)).frame(width: 6, height: 6)
+            Text(info.label)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(WatchTheme.secondary)
+                .lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityHint("Fit based on \(info.basis)")
+    }
+}
+
+func fitColor(_ info: FitInfo) -> Color {
+    switch info.key {
+    case "perfect", "great": WatchTheme.gold
+    case "sweet": WatchTheme.green
+    default: WatchTheme.amber
     }
 }
 
 struct FitChip: View {
     let info: FitInfo
 
-    private var color: Color {
-        switch info.key {
-        case "perfect", "great": WatchTheme.gold
-        case "sweet": WatchTheme.green
-        default: WatchTheme.amber
-        }
-    }
-
     var body: some View {
-        CapsuleChip(text: info.label, color: color)
+        CapsuleChip(text: info.label, color: fitColor(info))
             .accessibilityHint("Fit based on \(info.basis)")
     }
 }
@@ -134,19 +149,16 @@ struct SectionCard<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            if let eyebrow {
-                Text(eyebrow.uppercased())
-                    .font(.caption2.weight(.bold))
-                    .tracking(1.4)
-                    .foregroundStyle(WatchTheme.gold)
+            VStack(alignment: .leading, spacing: 6) {
+                if let eyebrow { Eyebrow(eyebrow) }
+                Text(title)
+                    .font(.system(size: 22, weight: .regular, design: .serif))
+                    .foregroundStyle(WatchTheme.ivory)
             }
-            Text(title)
-                .font(.title3.weight(.semibold))
-                .serifTitle()
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(16)
+        .padding(18)
         .watchCard()
     }
 }
@@ -277,7 +289,7 @@ struct ChipFlowLayout: Layout {
         let width = proposal.width ?? .infinity
         var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0
         for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
+            let size = Self.fittedSize(subview, maxWidth: width)
             if x > 0, x + size.width > width {
                 x = 0
                 y += rowHeight + spacing
@@ -292,15 +304,22 @@ struct ChipFlowLayout: Layout {
     func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
         for subview in subviews {
-            let size = subview.sizeThatFits(.unspecified)
+            let size = Self.fittedSize(subview, maxWidth: bounds.width)
             if x > bounds.minX, x + size.width > bounds.maxX {
                 x = bounds.minX
                 y += rowHeight + spacing
                 rowHeight = 0
             }
-            subview.place(at: CGPoint(x: x, y: y), proposal: .unspecified)
+            subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
         }
+    }
+
+    /// A chip wider than the row wraps its text instead of spilling past the edge.
+    private static func fittedSize(_ subview: LayoutSubview, maxWidth: CGFloat) -> CGSize {
+        let natural = subview.sizeThatFits(.unspecified)
+        guard maxWidth.isFinite, natural.width > maxWidth else { return natural }
+        return subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
     }
 }
