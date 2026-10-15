@@ -31,7 +31,7 @@ struct WatchCollectionApp: App {
 
 struct RootView: View {
     @ObservedObject var store: AppStore
-    @AppStorage("selectedTab") private var selectedTab = AppTab.collection.rawValue
+    @AppStorage("selectedTabV3") private var selectedTab = AppTab.today.rawValue
     @State private var showSettings = false
 
     var body: some View {
@@ -89,21 +89,19 @@ struct RootView: View {
 
     private var tabs: some View {
         TabView(selection: $selectedTab) {
+            TodayScreen(store: store, showSettings: { showSettings = true })
+                .tag(AppTab.today.rawValue)
+                .tabItem { Label("Today", systemImage: "watch.analog") }
             CollectionScreen(store: store, showSettings: { showSettings = true })
                 .tag(AppTab.collection.rawValue)
-                .tabItem { Label("Collection", systemImage: "square.grid.2x2") }
-            PastScreen(store: store, showSettings: { showSettings = true })
-                .tag(AppTab.past.rawValue)
-                .tabItem { Label("Past", systemImage: "clock.arrow.circlepath") }
+                .tabItem { Label("Collection", systemImage: "square.stack") }
             StatsScreen(store: store, showSettings: { showSettings = true })
                 .tag(AppTab.stats.rawValue)
-                .tabItem { Label("Stats", systemImage: "chart.bar.xaxis") }
+                .tabItem { Label("Insights", systemImage: "chart.line.uptrend.xyaxis") }
             WishlistScreen(store: store, showSettings: { showSettings = true })
                 .tag(AppTab.wishlist.rawValue)
                 .tabItem { Label("Wishlist", systemImage: "sparkles") }
         }
-        .toolbarBackground(WatchTheme.card, for: .tabBar)
-        .toolbarBackground(.visible, for: .tabBar)
     }
 
     private var errorBinding: Binding<Bool> {

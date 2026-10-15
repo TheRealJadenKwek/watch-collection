@@ -86,13 +86,13 @@ struct WearTodaySheet: View {
     }
 }
 
-private struct WearDaySelection: Identifiable {
+struct WearDaySelection: Identifiable {
     let id = UUID()
     let watch: Watch
     let date: Date
 }
 
-private struct WearDayEditorSheet: View {
+struct WearDayEditorSheet: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: AppStore
     let selection: WearDaySelection
@@ -128,7 +128,7 @@ private struct WearDayEditorSheet: View {
                         .shadow(color: .black.opacity(0.25), radius: 20, y: 10)
 
                         Text(selection.watch.name)
-                            .font(.title2.weight(.semibold))
+                            .font(.display(30))
                             .multilineTextAlignment(.center)
                     }
 

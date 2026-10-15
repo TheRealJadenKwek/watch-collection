@@ -24,13 +24,10 @@ struct StatsScreen: View {
         NavigationStack {
             RefreshableScreen(store: store) {
                 ScrollView {
-                    LazyVStack(spacing: 14) {
-                        Picker("Scope", selection: $scope) {
-                            Text("Current").tag("owned")
-                            Text("All-time").tag("all")
-                        }
-                        .pickerStyle(.segmented)
-                        .padding(.horizontal, 2)
+                    LazyVStack(spacing: 22) {
+                        ScreenHeader(eyebrow: "The numbers", title: "Insights")
+                        PillPicker(options: [("owned", "Current"), ("all", "All-time")], selection: $scope)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                         headlineTiles
                         rotationDashboard
                         maintenanceDashboard
@@ -47,17 +44,14 @@ struct StatsScreen: View {
                         varietyPanel(title: "Material variety", field: \Watch.material, values: store.data?.materials ?? [])
                         completeData
                     }
-                    .padding(.horizontal, 16)
-                    .padding(.top, 8)
-                    .padding(.bottom, 18)
+                    .padding(.horizontal, 20)
+                    .padding(.top, 6)
+                    .padding(.bottom, 40)
                 }
                 .background(WatchTheme.background)
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Text("Collection Stats").font(.headline).serifTitle()
-                }
                 ToolbarItem(placement: .topBarTrailing) { GearToolbarButton(action: showSettings) }
             }
             .sheet(item: $selectedWatch, onDismiss: advanceCompletionQueue) { watch in
@@ -94,7 +88,7 @@ struct StatsScreen: View {
             VStack(alignment: .leading, spacing: 6) {
                 Eyebrow(scope == "owned" ? "Current collection" : "All-time")
                 Text(cad(stats?.total ?? 0))
-                    .font(.system(size: 40, weight: .regular, design: .serif).monospacedDigit())
+                    .font(.display(46))
                     .foregroundStyle(WatchTheme.gold)
                     .minimumScaleFactor(0.7)
                     .lineLimit(1)
@@ -131,7 +125,7 @@ struct StatsScreen: View {
                     VStack(alignment: .leading, spacing: 4) {
                         Eyebrow(label, color: WatchTheme.secondary)
                         Text(value)
-                            .font(.system(size: 16, weight: .regular, design: .serif).monospacedDigit())
+                            .font(.display(16))
                             .foregroundStyle(WatchTheme.ivory)
                             .minimumScaleFactor(0.6)
                             .lineLimit(1)
@@ -1014,7 +1008,7 @@ private struct ActivityMetricTile: View {
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
             Text(value)
-                .font(.system(size: 22, weight: .regular, design: .serif).monospacedDigit())
+                .font(.display(22))
                 .foregroundStyle(warning ? WatchTheme.amber : WatchTheme.ivory)
                 .minimumScaleFactor(0.7)
                 .lineLimit(1)

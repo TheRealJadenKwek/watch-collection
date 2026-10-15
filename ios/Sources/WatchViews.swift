@@ -3,249 +3,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
 
-struct CollectionScreen: View {
-    @ObservedObject var store: AppStore
-    let showSettings: () -> Void
-    @State private var search = ""
-    @State private var presentedSheet: CollectionSheet?
-
-    private let columns = [
-        GridItem(.flexible(), spacing: 14),
-        GridItem(.flexible(), spacing: 14),
-    ]
-
-    private var watches: [Watch] {
-        guard let data = store.data else { return [] }
-        return data.watches
-            .filter { $0.status == "owned" }
-            .filter { search.isEmpty || "\($0.name) \($0.story)".localizedCaseInsensitiveContains(search) }
-            .sorted { $0.price > $1.price }
-    }
-
-    var body: some View {
-        NavigationStack {
-            RefreshableScreen(store: store) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        collectionHeader
-                        if watches.isEmpty {
-                            EmptyCollectionView(title: "No watches found", detail: "Try a different search.")
-                                .frame(minHeight: 360)
-                        } else {
-                            LazyVGrid(columns: columns, spacing: 14) {
-                                ForEach(watches) { watch in
-                                    Button { presentedSheet = .watch(watch) } label: {
-                                        WatchCardView(store: store, watch: watch, isPast: false)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .padding(.bottom, 12)
-                }
-                .background(WatchTheme.background)
-            }
-            .searchable(text: $search, prompt: "Name or story")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Text("My Collection").font(.headline).serifTitle()
-                }
-                ToolbarItemGroup(placement: .topBarTrailing) {
-                    Button { presentedSheet = .addWatch } label: { Image(systemName: "plus") }
-                        .disabled(store.isOffline)
-                    GearToolbarButton(action: showSettings)
-                }
-            }
-            .sheet(item: $presentedSheet) { sheet in
-                switch sheet {
-                case let .watch(watch):
-                    WatchDetailScreen(store: store, watch: watch)
-                case .addWatch:
-                    WatchDetailScreen(store: store, watch: .newDraft, isNew: true)
-                case .wearToday:
-                    WearTodaySheet(store: store)
-                }
-            }
-        }
-    }
-
-    private var todayKey: String { calendarDayKey() }
-    private var wornToday: [Watch] { watches.filter { wearMinutes(for: $0, on: todayKey) > 0 } }
-
-    private var collectionHeader: some View {
-        let total = watches.reduce(0) { $0 + $1.price }
-        let todayMinutes = wornToday.reduce(0) { $0 + wearMinutes(for: $1, on: todayKey) }
-        return VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 8) {
-                Eyebrow("Current rotation")
-                HStack(alignment: .firstTextBaseline) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text("\(watches.count)")
-                            .font(.system(size: 46, weight: .regular, design: .serif).monospacedDigit())
-                            .foregroundStyle(WatchTheme.ivory)
-                        Text(watches.count == 1 ? "watch" : "watches")
-                            .font(.system(size: 19, weight: .regular, design: .serif))
-                            .foregroundStyle(WatchTheme.secondary)
-                    }
-                    Spacer()
-                    VStack(alignment: .trailing, spacing: 2) {
-                        Text(cadWhole(total))
-                            .font(.system(size: 20, weight: .regular, design: .serif).monospacedDigit())
-                            .foregroundStyle(WatchTheme.gold)
-                        Text("invested")
-                            .font(.system(size: 11, weight: .medium))
-                            .foregroundStyle(WatchTheme.secondary)
-                    }
-                }
-            }
-
-            Button {
-                presentedSheet = .wearToday
-            } label: {
-                HStack(spacing: 12) {
-                    ZStack {
-                        Circle().fill(WatchTheme.gold.opacity(0.14))
-                        Image(systemName: "watch.analog")
-                            .font(.system(size: 16, weight: .medium))
-                            .foregroundStyle(WatchTheme.gold)
-                    }
-                    .frame(width: 38, height: 38)
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(wornToday.isEmpty ? "Today’s wrist" : wornToday.map(\.name).joined(separator: ", "))
-                            .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(WatchTheme.ivory)
-                            .lineLimit(1)
-                        Text(wornToday.isEmpty ? "Nothing logged yet" : "\(wearDurationLabel(todayMinutes)) logged today")
-                            .font(.caption)
-                            .foregroundStyle(WatchTheme.secondary)
-                    }
-                    Spacer(minLength: 8)
-                    Text(wornToday.isEmpty ? "Log wear" : "Update")
-                        .font(.caption.weight(.bold))
-                        .foregroundStyle(WatchTheme.background)
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 7)
-                        .background(WatchTheme.gold, in: Capsule())
-                }
-                .padding(12)
-                .watchCard(cornerRadius: 18)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .disabled(watches.isEmpty || store.isOffline)
-        }
-        .padding(.top, 4)
-    }
-}
-
-private enum CollectionSheet: Identifiable {
-    case watch(Watch)
-    case addWatch
-    case wearToday
-
-    var id: String {
-        switch self {
-        case let .watch(watch): "watch-\(watch.id)"
-        case .addWatch: "add-watch"
-        case .wearToday: "wear-today"
-        }
-    }
-}
-
-struct PastScreen: View {
-    @ObservedObject var store: AppStore
-    let showSettings: () -> Void
-    @State private var search = ""
-    @State private var statusFilter = ""
-    @State private var selectedWatch: Watch?
-
-    private let columns = [
-        GridItem(.flexible(), spacing: 14),
-        GridItem(.flexible(), spacing: 14),
-    ]
-
-    private var statuses: [String] {
-        Array(Set(store.data?.watches.filter { $0.status != "owned" }.map(\Watch.status) ?? [])).sorted()
-    }
-
-    private var watches: [Watch] {
-        guard let data = store.data else { return [] }
-        return data.watches
-            .filter { $0.status != "owned" }
-            .filter { statusFilter.isEmpty || $0.status == statusFilter }
-            .filter { search.isEmpty || "\($0.name) \($0.story) \($0.statusNote)".localizedCaseInsensitiveContains(search) }
-            .sorted { ($0.purchased ?? "") > ($1.purchased ?? "") }
-    }
-
-    var body: some View {
-        NavigationStack {
-            RefreshableScreen(store: store) {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 16) {
-                        HStack {
-                            VStack(alignment: .leading, spacing: 8) {
-                                Eyebrow("The archive")
-                                HStack(alignment: .firstTextBaseline, spacing: 6) {
-                                    Text("\(watches.count)")
-                                        .font(.system(size: 46, weight: .regular, design: .serif).monospacedDigit())
-                                        .foregroundStyle(WatchTheme.ivory)
-                                    Text("past watches")
-                                        .font(.system(size: 19, weight: .regular, design: .serif))
-                                        .foregroundStyle(WatchTheme.secondary)
-                                }
-                            }
-                            Spacer()
-                            Menu {
-                                Picker("Status", selection: $statusFilter) {
-                                    Text("All outcomes").tag("")
-                                    ForEach(statuses, id: \.self) { status in
-                                        Text(statusLabel(status)).tag(status)
-                                    }
-                                }
-                            } label: {
-                                Label(statusFilter.isEmpty ? "All" : statusLabel(statusFilter), systemImage: "line.3.horizontal.decrease.circle")
-                                    .font(.caption.weight(.semibold))
-                            }
-                        }
-                        if watches.isEmpty {
-                            EmptyCollectionView(title: "No past watches found", detail: "Change the search or status filter.")
-                                .frame(minHeight: 360)
-                        } else {
-                            LazyVGrid(columns: columns, spacing: 14) {
-                                ForEach(watches) { watch in
-                                    Button { selectedWatch = watch } label: {
-                                        WatchCardView(store: store, watch: watch, isPast: true)
-                                    }
-                                    .buttonStyle(.plain)
-                                }
-                            }
-                        }
-                    }
-                    .padding(.horizontal, 16)
-                    .padding(.vertical, 12)
-                    .padding(.bottom, 12)
-                }
-                .background(WatchTheme.background)
-            }
-            .searchable(text: $search, prompt: "Name, story, or note")
-            .navigationBarTitleDisplayMode(.inline)
-            .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Text("Past Watches").font(.headline).serifTitle()
-                }
-                ToolbarItem(placement: .topBarTrailing) { GearToolbarButton(action: showSettings) }
-            }
-            .sheet(item: $selectedWatch) { watch in
-                WatchDetailScreen(store: store, watch: watch)
-            }
-        }
-    }
-}
-
 struct WatchCardView: View {
     @ObservedObject var store: AppStore
     let watch: Watch
@@ -286,7 +43,7 @@ struct WatchCardView: View {
                 .overlay(alignment: .bottomLeading) {
                     VStack(alignment: .leading, spacing: 3) {
                         Text(watch.name)
-                            .font(.system(size: 15, weight: .semibold, design: .serif))
+                            .font(.display(15))
                             .foregroundStyle(WatchTheme.ivory)
                             .lineLimit(2)
                             .multilineTextAlignment(.leading)
@@ -554,8 +311,8 @@ struct WatchDetailScreen: View {
                     asset: store.photoAsset(itemID: draft.id, filename: target.filename, wishlist: false),
                     allowsRemoteFetch: !store.isOffline,
                     initialFocus: draft.focus(for: target.filename),
-                    aspect: WatchCardView.photoAspect,
-                    previews: [("Gallery", 1.45), ("Wear log", 1)]
+                    aspect: PhotoShape.plate,
+                    previews: [("Watch page", PhotoShape.dossier), ("Grid", PhotoShape.square), ("Portrait", PhotoShape.square)]
                 ) { focus in
                     await store.setPhotoFocus(itemID: draft.id, filename: target.filename, wishlist: false, focus: focus)
                     // Only pull the saved framing so unsaved form edits survive.
@@ -758,7 +515,7 @@ private enum WatchActivitySheet: String, Identifiable {
     var id: String { rawValue }
 }
 
-private extension Watch {
+extension Watch {
     static var newDraft: Watch {
         Watch(
             id: "new",

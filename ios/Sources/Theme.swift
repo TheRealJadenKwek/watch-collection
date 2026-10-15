@@ -1,18 +1,38 @@
 import SwiftUI
 
 enum WatchTheme {
-    // Warm near-black base with champagne accents; ivory text instead of pure white.
-    static let background = Color(red: 12 / 255, green: 11 / 255, blue: 9 / 255)
-    static let card = Color(red: 22 / 255, green: 20 / 255, blue: 16 / 255)
-    static let raised = Color(red: 31 / 255, green: 28 / 255, blue: 22 / 255)
+    // Near-black with a warm undertone, champagne gold used sparingly, ivory type.
+    static let background = Color(red: 8 / 255, green: 7 / 255, blue: 6 / 255)
+    static let card = Color(red: 19 / 255, green: 17 / 255, blue: 14 / 255)
+    static let raised = Color(red: 29 / 255, green: 26 / 255, blue: 21 / 255)
     static let gold = Color(red: 212 / 255, green: 180 / 255, blue: 120 / 255)
     static let goldDeep = Color(red: 166 / 255, green: 134 / 255, blue: 78 / 255)
-    static let ivory = Color(red: 238 / 255, green: 232 / 255, blue: 218 / 255)
-    static let secondary = Color(red: 164 / 255, green: 156 / 255, blue: 142 / 255)
-    static let hairline = Color.white.opacity(0.07)
+    static let ivory = Color(red: 240 / 255, green: 234 / 255, blue: 220 / 255)
+    static let secondary = Color(red: 158 / 255, green: 150 / 255, blue: 136 / 255)
+    static let hairline = Color.white.opacity(0.08)
     static let green = Color(red: 110 / 255, green: 160 / 255, blue: 126 / 255)
     static let amber = Color(red: 214 / 255, green: 150 / 255, blue: 84 / 255)
     static let red = Color(red: 200 / 255, green: 102 / 255, blue: 96 / 255)
+}
+
+extension Font {
+    /// Didot (bundled with iOS) for display type: titles, watch names and big numerals.
+    static func display(_ size: CGFloat, relativeTo style: Font.TextStyle = .title) -> Font {
+        .custom("Didot", size: size, relativeTo: style)
+    }
+
+    static func displayItalic(_ size: CGFloat, relativeTo style: Font.TextStyle = .body) -> Font {
+        .custom("Didot-Italic", size: size, relativeTo: style)
+    }
+}
+
+/// Thin full-width rule used to open editorial sections.
+struct GoldRule: View {
+    var opacity: Double = 0.35
+
+    var body: some View {
+        Rectangle().fill(WatchTheme.gold.opacity(opacity)).frame(height: 0.75)
+    }
 }
 
 extension View {

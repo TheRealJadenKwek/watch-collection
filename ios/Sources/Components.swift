@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import ImageIO
 
 struct WatchPlaceholder: View {
     var body: some View {
@@ -51,10 +52,18 @@ struct RemoteWatchImage: View {
                 isLoading = false
                 return
             }
+            if let cached = DisplayImageCache.image(for: asset.key) {
+                image = cached
+                isLoading = false
+                return
+            }
             isLoading = true
             let data = await PhotoStore.shared.load(asset, allowDownload: allowsRemoteFetch)
             if !Task.isCancelled, let data {
-                image = UIImage(data: data)
+                let key = asset.key
+                image = await Task.detached(priority: .userInitiated) {
+                    DisplayImageCache.decode(data, key: key)
+                }.value
             }
             isLoading = false
         }
@@ -63,6 +72,39 @@ struct RemoteWatchImage: View {
     private struct LoadID: Hashable {
         let asset: PhotoAsset?
         let allowsRemoteFetch: Bool
+    }
+}
+
+/// Downsampled, cached images for display. Full 12 MP originals are only decoded by
+/// the framing editor; every list, grid and page draws a ~1600 px version from here.
+enum DisplayImageCache {
+    private static let cache: NSCache<NSString, UIImage> = {
+        let cache = NSCache<NSString, UIImage>()
+        cache.totalCostLimit = 160 * 1024 * 1024
+        return cache
+    }()
+
+    private static func cacheKey(_ key: PhotoKey) -> NSString {
+        "\(key.directory)/\(key.filename)" as NSString
+    }
+
+    static func image(for key: PhotoKey) -> UIImage? {
+        cache.object(forKey: cacheKey(key))
+    }
+
+    static func decode(_ data: Data, key: PhotoKey, maxPixel: Int = 1600) -> UIImage? {
+        let options: [CFString: Any] = [
+            kCGImageSourceCreateThumbnailFromImageAlways: true,
+            kCGImageSourceCreateThumbnailWithTransform: true,
+            kCGImageSourceShouldCacheImmediately: true,
+            kCGImageSourceThumbnailMaxPixelSize: maxPixel,
+        ]
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
+        else { return UIImage(data: data) }
+        let image = UIImage(cgImage: cgImage)
+        cache.setObject(image, forKey: cacheKey(key), cost: cgImage.bytesPerRow * cgImage.height)
+        return image
     }
 }
 
@@ -148,18 +190,19 @@ struct SectionCard<Content: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            VStack(alignment: .leading, spacing: 6) {
+        // Editorial section: a gold rule, small label and Didot title, no box.
+        VStack(alignment: .leading, spacing: 16) {
+            GoldRule()
+            VStack(alignment: .leading, spacing: 8) {
                 if let eyebrow { Eyebrow(eyebrow) }
                 Text(title)
-                    .font(.system(size: 22, weight: .regular, design: .serif))
+                    .font(.display(30))
                     .foregroundStyle(WatchTheme.ivory)
             }
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(18)
-        .watchCard()
+        .padding(.vertical, 14)
     }
 }
 

@@ -253,8 +253,8 @@ struct FitInfo: Hashable {
 }
 
 enum AppTab: String, CaseIterable {
+    case today
     case collection
-    case past
     case stats
     case wishlist
 }

@@ -36,7 +36,18 @@ struct WishlistScreen: View {
                                 EmptyCollectionView(title: "Wishlist empty", detail: "Add a candidate to start comparing fit.")
                                     .frame(minHeight: 320)
                             } else {
-                                ForEach(ranked) { item in
+                                if let top = ranked.first, top.status == "considering" {
+                                    TopPickView(
+                                        store: store,
+                                        item: top,
+                                        score: store.scores[top.id],
+                                        edit: { editingItem = top },
+                                        bought: { boughtItem = top }
+                                    )
+                                    .id("wishlist-\(top.id)")
+                                    .padding(.bottom, 10)
+                                }
+                                ForEach(ranked.first?.status == "considering" ? Array(ranked.dropFirst()) : ranked) { item in
                                     WishlistCard(
                                         store: store,
                                         item: item,
@@ -54,18 +65,15 @@ struct WishlistScreen: View {
                             }
                             radarStrip
                         }
-                        .padding(.horizontal, 16)
-                        .padding(.top, 8)
-                        .padding(.bottom, 18)
+                        .padding(.horizontal, 20)
+                        .padding(.top, 6)
+                        .padding(.bottom, 40)
                     }
                     .background(WatchTheme.background)
                 }
             }
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .principal) {
-                    Text("Wishlist").font(.headline).serifTitle()
-                }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button { prefilledBrand = ""; addingItem = true } label: { Image(systemName: "plus") }
                         .disabled(store.isOffline)
@@ -86,22 +94,11 @@ struct WishlistScreen: View {
 
     private var wishlistHeader: some View {
         let count = ranked.filter { $0.status == "considering" }.count
-        return VStack(alignment: .leading, spacing: 8) {
-            Eyebrow("Purchase decision engine")
-            HStack(alignment: .firstTextBaseline, spacing: 6) {
-                Text("\(count)")
-                    .font(.system(size: 46, weight: .regular, design: .serif).monospacedDigit())
-                    .foregroundStyle(WatchTheme.ivory)
-                Text(count == 1 ? "candidate" : "candidates")
-                    .font(.system(size: 19, weight: .regular, design: .serif))
-                    .foregroundStyle(WatchTheme.secondary)
-            }
-            Text("Ranked by six lenses: category, brand, price, dial, size and material, against your wrist profile.")
-                .font(.footnote)
-                .foregroundStyle(WatchTheme.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.top, 4)
+        return ScreenHeader(
+            eyebrow: "Purchase decision engine",
+            title: "Wishlist",
+            subtitle: "\(count) candidate\(count == 1 ? "" : "s"), ranked by category, brand, price, dial, size and material."
+        )
         .padding(.bottom, 4)
     }
 
@@ -166,8 +163,8 @@ struct WishlistScreen: View {
                     .scrollTargetLayout()
                 }
                 .scrollTargetBehavior(.viewAligned)
-                .padding(.horizontal, -18)
-                .contentMargins(.horizontal, 18, for: .scrollContent)
+                .padding(.horizontal, -20)
+                .contentMargins(.horizontal, 20, for: .scrollContent)
             } else {
                 Text("No eligible category gaps. Adjust suggestion categories in Settings.")
                     .font(.subheadline)
@@ -217,7 +214,7 @@ struct NextMoveSuggestionCard: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
                 VStack(spacing: 0) {
                     Text("\(suggestion.score)")
-                        .font(.system(.title2, design: .serif, weight: .bold))
+                        .font(.display(26))
                         .foregroundStyle(WatchTheme.gold)
                     Text("/ 9")
                         .font(.caption2.weight(.bold))
@@ -303,7 +300,7 @@ struct WishlistCard: View {
                     .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
                 VStack(alignment: .leading, spacing: 6) {
                     Text(item.name)
-                        .font(.system(size: 17, weight: .semibold, design: .serif))
+                        .font(.display(17))
                         .foregroundStyle(WatchTheme.ivory)
                         .lineLimit(3)
                     Text(item.priceNote.isEmpty ? cad(item.priceExpected) : item.priceNote)
@@ -427,6 +424,89 @@ struct WishlistCard: View {
     }
 }
 
+/// The highest-scoring candidate, presented large.
+struct TopPickView: View {
+    @ObservedObject var store: AppStore
+    let item: WishlistItem
+    let score: WishlistScore?
+    let edit: () -> Void
+    let bought: () -> Void
+
+    private var highlights: [String] {
+        ["category", "brand", "price", "dial", "size", "material"].compactMap { name in
+            guard let lens = score?.lenses[name], lens.score > 0 else { return nil }
+            return lens.reason
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Button(action: edit) {
+                FramedPhoto(
+                    store: store,
+                    itemID: item.id,
+                    filename: item.photos.first,
+                    focus: item.focus(for: item.photos.first),
+                    wishlist: true,
+                    aspect: PhotoShape.plate
+                )
+                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .overlay(alignment: .topLeading) {
+                    PhotoTag(text: "Top pick", color: WatchTheme.gold).padding(14)
+                }
+                .overlay(alignment: .topTrailing) {
+                    ScoreRing(score: score?.total, maximum: score?.max ?? 14)
+                        .padding(8)
+                        .background(.ultraThinMaterial, in: Circle())
+                        .environment(\.colorScheme, .dark)
+                        .padding(12)
+                }
+            }
+            .buttonStyle(.plain)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(item.name)
+                    .font(.display(32))
+                    .foregroundStyle(WatchTheme.ivory)
+                    .fixedSize(horizontal: false, vertical: true)
+                Text(item.priceNote.isEmpty ? cad(item.priceExpected) : item.priceNote)
+                    .font(.display(20))
+                    .foregroundStyle(WatchTheme.gold)
+            }
+            if !highlights.isEmpty {
+                VStack(alignment: .leading, spacing: 8) {
+                    ForEach(highlights.prefix(4), id: \.self) { reason in
+                        HStack(alignment: .firstTextBaseline, spacing: 9) {
+                            Image(systemName: "plus")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(WatchTheme.gold)
+                            Text(reason)
+                                .font(.subheadline)
+                                .foregroundStyle(WatchTheme.ivory.opacity(0.85))
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
+                    }
+                }
+            }
+            HStack(spacing: 12) {
+                Button(action: bought) {
+                    Text("Bought it")
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(WatchTheme.background)
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 11)
+                        .background(WatchTheme.gold, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                Button("Details", action: edit)
+                    .font(.subheadline.weight(.semibold))
+                Spacer()
+            }
+            .disabled(store.isOffline)
+        }
+    }
+}
+
 struct ScoreRing: View {
     let score: Int?
     let maximum: Int
@@ -445,7 +525,7 @@ struct ScoreRing: View {
                 .rotationEffect(.degrees(-90))
             VStack(spacing: -2) {
                 Text(score.map(String.init) ?? "—")
-                    .font(.system(size: 20, weight: .regular, design: .serif).monospacedDigit())
+                    .font(.display(20))
                     .foregroundStyle(WatchTheme.ivory)
                 Text("/\(maximum)")
                     .font(.system(size: 9, weight: .semibold))
