@@ -13,7 +13,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.jadenkwek.watchcollection
         DEVELOPMENT_TEAM: RLC58VS9R6
         MARKETING_VERSION: "2.6"
-        CURRENT_PROJECT_VERSION: "9"
+        CURRENT_PROJECT_VERSION: "10"
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
