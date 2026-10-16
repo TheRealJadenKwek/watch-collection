@@ -30,48 +30,6 @@ func catalogueLabel(_ number: Int?) -> String {
     return String(format: "Nº %02d", number)
 }
 
-func daysSince(_ day: String?) -> Int? {
-    guard let date = calendarDayDate(day) else { return nil }
-    return Calendar.current.dateComponents([.day], from: Calendar.current.startOfDay(for: date), to: Calendar.current.startOfDay(for: Date())).day
-}
-
-func lastWornLabel(_ watch: Watch) -> String {
-    guard let days = daysSince(lastWearDate(for: watch)) else { return "Never logged" }
-    switch days {
-    case 0: return "Worn today"
-    case 1: return "Worn yesterday"
-    default: return "Last worn \(days) days ago"
-    }
-}
-
-/// Owned watches not worn today, longest-resting first (never-worn first of all).
-func restingOrder(_ watches: [Watch]) -> [Watch] {
-    let today = calendarDayKey()
-    return watches
-        .filter { wearMinutes(for: $0, on: today) == 0 }
-        .sorted {
-            let left = lastWearDate(for: $0) ?? ""
-            let right = lastWearDate(for: $1) ?? ""
-            if left == right { return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-            return left < right
-        }
-}
-
-/// Minutes worn per day for the last `days` days, oldest first.
-func dailyMinutes(_ watches: [Watch], days: Int) -> [(date: Date, minutes: Int)] {
-    let calendar = Calendar.current
-    let today = calendar.startOfDay(for: Date())
-    return (0..<max(1, days)).reversed().compactMap { offset in
-        guard let date = calendar.date(byAdding: .day, value: -offset, to: today) else { return nil }
-        let key = calendarDayKey(date)
-        return (date, watches.reduce(0) { $0 + wearMinutes(for: $1, on: key) })
-    }
-}
-
-func wearDayCount(_ watch: Watch) -> Int {
-    Set(wearSessions(for: watch).map(\.date)).count
-}
-
 // MARK: - Views
 
 /// Full-bleed framed photo at a fixed aspect ratio.
@@ -119,38 +77,6 @@ struct WatchPortrait: View {
         .overlay {
             if highlighted { Circle().stroke(WatchTheme.gold.opacity(0.35), lineWidth: 1) }
         }
-    }
-}
-
-/// One slim bar per day; gold where wear was logged.
-struct WearStrip: View {
-    let days: [(date: Date, minutes: Int)]
-    var height: CGFloat = 44
-
-    var body: some View {
-        VStack(spacing: 6) {
-            HStack(alignment: .bottom, spacing: 3) {
-                ForEach(Array(days.enumerated()), id: \.offset) { _, day in
-                    let fraction = min(Double(day.minutes) / (14 * 60), 1)
-                    Capsule()
-                        .fill(day.minutes > 0 ? WatchTheme.gold : Color.white.opacity(0.08))
-                        .frame(height: day.minutes > 0 ? max(6, height * fraction) : 4)
-                        .frame(maxWidth: .infinity)
-                }
-            }
-            .frame(height: height, alignment: .bottom)
-            if let first = days.first?.date, let last = days.last?.date {
-                HStack {
-                    Text(first.formatted(.dateTime.month(.abbreviated).day()))
-                    Spacer()
-                    Text(Calendar.current.isDateInToday(last) ? "Today" : last.formatted(.dateTime.month(.abbreviated).day()))
-                }
-                .font(.system(size: 10, weight: .medium))
-                .foregroundStyle(WatchTheme.secondary)
-            }
-        }
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(days.filter { $0.minutes > 0 }.count) of \(days.count) days with wear logged")
     }
 }
 

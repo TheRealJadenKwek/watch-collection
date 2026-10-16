@@ -31,7 +31,7 @@ struct WatchCollectionApp: App {
 
 struct RootView: View {
     @ObservedObject var store: AppStore
-    @AppStorage("selectedTabV3") private var selectedTab = AppTab.today.rawValue
+    @AppStorage("selectedTabV4") private var selectedTab = AppTab.collection.rawValue
     @State private var showSettings = false
 
     var body: some View {
@@ -89,9 +89,6 @@ struct RootView: View {
 
     private var tabs: some View {
         TabView(selection: $selectedTab) {
-            TodayScreen(store: store, showSettings: { showSettings = true })
-                .tag(AppTab.today.rawValue)
-                .tabItem { Label("Today", systemImage: "watch.analog") }
             CollectionScreen(store: store, showSettings: { showSettings = true })
                 .tag(AppTab.collection.rawValue)
                 .tabItem { Label("Collection", systemImage: "square.stack") }

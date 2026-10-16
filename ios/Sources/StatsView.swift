@@ -29,7 +29,6 @@ struct StatsScreen: View {
                         PillPicker(options: [("owned", "Current"), ("all", "All-time")], selection: $scope)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         headlineTiles
-                        rotationDashboard
                         maintenanceDashboard
                         costChart
                         priceLedger
@@ -136,110 +135,6 @@ struct StatsScreen: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(20)
         .watchCard(cornerRadius: 22)
-    }
-
-    private var rotationDashboard: some View {
-        let points = wearActivityPoints(owned, days: 30)
-        let events = wearEvents(owned, since: points.first?.date)
-        let recentMinutes = events.reduce(0) { $0 + $1.session.durationMinutes }
-        let distinctCount = Set(events.map { $0.watch.id }).count
-        let coverage = owned.isEmpty ? 0 : Double(distinctCount) / Double(owned.count) * 100
-        let leaders = wearLeaders(owned, since: points.first?.date)
-        let suggestion = nextWearSuggestion(owned)
-        return SectionCard(eyebrow: "Daily rotation", title: "Wrist time") {
-            LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 9) {
-                ActivityMetricTile(label: "30-day wrist time", value: wearDurationLabel(recentMinutes))
-                ActivityMetricTile(label: "Rotation coverage", value: "\(Int(coverage.rounded()))%")
-                ActivityMetricTile(label: "Watches worn", value: "\(distinctCount) of \(owned.count)")
-                ActivityMetricTile(
-                    label: "Today",
-                    value: wearDurationLabel(events.filter { Calendar.current.isDateInToday($0.date) }.reduce(0) {
-                        $0 + $1.session.durationMinutes
-                    })
-                )
-            }
-
-            if let suggestion {
-                Button {
-                    selectedWatch = suggestion
-                } label: {
-                    HStack(spacing: 12) {
-                        Image(systemName: "sparkles")
-                            .font(.title3)
-                            .foregroundStyle(WatchTheme.gold)
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text("NEXT ON WRIST")
-                                .font(.caption2.weight(.bold))
-                                .tracking(1)
-                                .foregroundStyle(WatchTheme.gold)
-                            Text(suggestion.name)
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(.primary)
-                            Text(lastWearDate(for: suggestion).map {
-                                "Last worn \(calendarDayLabel($0).lowercased())"
-                            } ?? "No wear logged yet")
-                            .font(.caption)
-                            .foregroundStyle(WatchTheme.secondary)
-                        }
-                        Spacer()
-                        Image(systemName: "chevron.right")
-                            .foregroundStyle(WatchTheme.secondary)
-                    }
-                    .padding(12)
-                    .background(WatchTheme.raised)
-                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
-                }
-                .buttonStyle(.plain)
-            }
-
-            if events.isEmpty {
-                Text("Log what you wear from Collection and a 30-day rotation chart will build here.")
-                    .font(.subheadline)
-                    .foregroundStyle(WatchTheme.secondary)
-            } else {
-                Chart(points) { point in
-                    BarMark(
-                        x: .value("Day", point.date, unit: .day),
-                        y: .value("Hours", point.hours)
-                    )
-                    .foregroundStyle(point.minutes > 0 ? WatchTheme.goldDeep.opacity(0.7).gradient : WatchTheme.raised.gradient)
-                    .cornerRadius(2)
-                }
-                .frame(height: 145)
-                .chartXAxis {
-                    AxisMarks(values: .stride(by: .day, count: 7)) { value in
-                        AxisGridLine().foregroundStyle(Color.white.opacity(0.05))
-                        AxisValueLabel(format: .dateTime.month(.abbreviated).day())
-                    }
-                }
-                .chartYAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
-
-                VStack(spacing: 0) {
-                    ForEach(leaders.prefix(5)) { leader in
-                        Button {
-                            selectedWatch = leader.watch
-                        } label: {
-                            HStack {
-                                Text(leader.watch.name)
-                                    .font(.subheadline.weight(.medium))
-                                    .foregroundStyle(.primary)
-                                    .lineLimit(1)
-                                Spacer()
-                                Text(wearDurationLabel(leader.minutes))
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(WatchTheme.green)
-                                Text("· \(cad(leader.watch.price / (Double(leader.minutes) / 60)))/hour")
-                                    .font(.caption.monospacedDigit())
-                                    .foregroundStyle(WatchTheme.secondary)
-                            }
-                            .padding(.vertical, 8)
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-            }
-        }
     }
 
     private var maintenanceDashboard: some View {
@@ -1020,77 +915,6 @@ private struct ActivityMetricTile: View {
     }
 }
 
-private struct WearEvent: Identifiable {
-    var id: String { "\(watch.id)-\(session.id)" }
-    var watch: Watch
-    var session: WearSession
-    var date: Date
-}
-
-private struct WearDayPoint: Identifiable {
-    var id: String { calendarDayKey(date) }
-    var date: Date
-    var minutes: Int
-    var hours: Double { Double(minutes) / 60 }
-}
-
-private struct WearLeader: Identifiable {
-    var id: String { watch.id }
-    var watch: Watch
-    var minutes: Int
-}
-
-private func wearEvents(_ watches: [Watch], since: Date? = nil) -> [WearEvent] {
-    watches.flatMap { watch in
-        wearSessions(for: watch).compactMap { session in
-            guard let date = calendarDayDate(session.date), since.map({ date >= $0 }) ?? true else { return nil }
-            return WearEvent(watch: watch, session: session, date: date)
-        }
-    }
-}
-
-private func wearActivityPoints(_ watches: [Watch], days: Int) -> [WearDayPoint] {
-    let calendar = Calendar.current
-    let today = calendar.startOfDay(for: Date())
-    return (0..<max(1, days)).reversed().compactMap { offset in
-        guard let date = calendar.date(byAdding: .day, value: -offset, to: today) else { return nil }
-        let key = calendarDayKey(date)
-        return WearDayPoint(
-            date: date,
-            minutes: watches.reduce(0) { $0 + wearMinutes(for: $1, on: key) }
-        )
-    }
-}
-
-private func wearLeaders(_ watches: [Watch], since: Date?) -> [WearLeader] {
-    watches.compactMap { watch in
-        let minutes = wearSessions(for: watch).filter { session in
-            guard let since else { return true }
-            return calendarDayDate(session.date).map { $0 >= since } ?? false
-        }.reduce(0) { $0 + $1.durationMinutes }
-        return minutes > 0 ? WearLeader(watch: watch, minutes: minutes) : nil
-    }.sorted {
-        if $0.minutes == $1.minutes {
-            return $0.watch.name.localizedCaseInsensitiveCompare($1.watch.name) == .orderedAscending
-        }
-        return $0.minutes > $1.minutes
-    }
-}
-
-private func nextWearSuggestion(_ watches: [Watch]) -> Watch? {
-    let today = calendarDayKey()
-    return watches
-        .filter { wearMinutes(for: $0, on: today) == 0 }
-        .sorted {
-            let left = lastWearDate(for: $0) ?? ""
-            let right = lastWearDate(for: $1) ?? ""
-            if left == right {
-                return $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
-            }
-            return left < right
-        }
-        .first
-}
 
 private struct ServiceDueItem: Identifiable {
     var id: String { "\(watch.id)-\(record.id)" }

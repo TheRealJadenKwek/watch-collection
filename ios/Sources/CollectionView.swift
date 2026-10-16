@@ -12,7 +12,7 @@ struct CollectionScreen: View {
     @Namespace private var zoom
 
     enum Scope: String, CaseIterable { case owned = "Owned", archive = "Archive" }
-    enum Sort: String, CaseIterable { case value = "Value", newest = "Newest", oldest = "Oldest", worn = "Most worn", name = "Name" }
+    enum Sort: String, CaseIterable { case value = "Value", newest = "Newest", oldest = "Oldest", name = "Name" }
     enum Layout: String { case plates, grid }
 
     private var all: [Watch] { store.data?.watches ?? [] }
@@ -30,7 +30,6 @@ struct CollectionScreen: View {
         case .value: return a.price > b.price
         case .newest: return (a.purchased ?? "") > (b.purchased ?? "")
         case .oldest: return (a.purchased ?? "9999") < (b.purchased ?? "9999")
-        case .worn: return wearMinutes(for: a) > wearMinutes(for: b)
         case .name: return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
         }
     }

@@ -92,7 +92,7 @@ struct WatchCardView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .watchCard(cornerRadius: 18)
         // Clipping changes drawing only. Keep the scaled photo's hit area inside
-        // the visible card so it cannot intercept the wear button or nearby cards.
+        // the visible card so it cannot intercept nearby cards.
         .contentShape(.interaction, RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
@@ -182,8 +182,6 @@ struct WatchDetailScreen: View {
             }
             .sheet(item: $activitySheet, onDismiss: reloadDraft) { sheet in
                 switch sheet {
-                case .wearHistory:
-                    WearHistorySheet(store: store, watchID: draft.id)
                 case .maintenance:
                     MaintenanceSheet(store: store, watchID: draft.id)
                 }
@@ -412,31 +410,10 @@ struct WatchDetailScreen: View {
     }
 
     private var ownershipSection: some View {
-        let sessions = wearSessions(for: draft)
         let services = serviceRecords(for: draft)
         let serviceCost = services.compactMap(\.cost).reduce(0, +)
-        let totalMinutes = sessions.reduce(0) { $0 + $1.durationMinutes }
-        let todayMinutes = wearMinutes(for: draft, on: calendarDayKey())
         let nextDue = services.compactMap(\.nextDue).sorted().first
-        return Section("Wear & service") {
-            if draft.status == "owned" {
-                LabeledContent("Wear sessions", value: "\(sessions.count)")
-                LabeledContent("Total wrist time", value: wearDurationLabel(totalMinutes))
-                if todayMinutes > 0 {
-                    LabeledContent("Today", value: wearDurationLabel(todayMinutes))
-                }
-                LabeledContent("Last worn", value: lastWearDate(for: draft).map { calendarDayLabel($0) } ?? "Not logged")
-                Button {
-                    activitySheet = .wearHistory
-                } label: {
-                    Label("Log wear or view history", systemImage: "watch.analog")
-                }
-            } else {
-                Text("Wear logging is available while this watch is in your current collection.")
-                    .font(.caption)
-                    .foregroundStyle(WatchTheme.secondary)
-            }
-
+        return Section("Service") {
             LabeledContent("Service records", value: "\(services.count)")
             if serviceCost > 0 {
                 LabeledContent("Maintenance spent", value: cad(serviceCost))
@@ -509,7 +486,6 @@ struct WatchDetailScreen: View {
 }
 
 private enum WatchActivitySheet: String, Identifiable {
-    case wearHistory
     case maintenance
 
     var id: String { rawValue }

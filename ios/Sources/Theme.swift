@@ -197,22 +197,6 @@ func serviceRecords(for watch: Watch) -> [ServiceRecord] {
     }
 }
 
-func lastWearDate(for watch: Watch) -> String? {
-    wearSessions(for: watch).last?.date
-}
-
-func wearMinutes(for watch: Watch, on day: String? = nil) -> Int {
-    wearSessions(for: watch)
-        .filter { day == nil || $0.date == day }
-        .reduce(0) { $0 + $1.durationMinutes }
-}
-
-func wearDurationLabel(_ minutes: Int) -> String {
-    if minutes < 60 { return "\(minutes)m" }
-    if minutes % 60 == 0 { return "\(minutes / 60)h" }
-    return "\(minutes / 60)h \(minutes % 60)m"
-}
-
 func optionalNumberBinding(_ value: Binding<Double?>) -> Binding<String> {
     Binding(
         get: { value.wrappedValue.map(compactNumber) ?? "" },

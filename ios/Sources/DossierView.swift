@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// A watch's full page: full-bleed photography, spec sheet, wrist time, story and service.
+/// A watch's full page: full-bleed photography, spec sheet, story and service.
 /// Editing still happens in WatchDetailScreen, opened from the toolbar.
 struct WatchDossierView: View {
     @ObservedObject var store: AppStore
@@ -30,7 +30,6 @@ struct WatchDossierView: View {
                         if let filename = watch.photos[safe: page] ?? watch.photos.first {
                             Button { sheet = .frame(filename) } label: { Label("Frame this photo", systemImage: "crop") }
                         }
-                        Button { sheet = .history } label: { Label("Wear history", systemImage: "calendar") }
                         Button { sheet = .service } label: { Label("Service log", systemImage: "wrench.and.screwdriver") }
                     } label: {
                         Image(systemName: "ellipsis")
@@ -44,10 +43,6 @@ struct WatchDossierView: View {
                 switch item {
                 case .edit:
                     WatchDetailScreen(store: store, watch: watch)
-                case .wear:
-                    WearDayEditorSheet(store: store, selection: WearDaySelection(watch: watch, date: Date()))
-                case .history:
-                    WearHistorySheet(store: store, watchID: watch.id)
                 case .service:
                     MaintenanceSheet(store: store, watchID: watch.id)
                 case let .frame(filename):
@@ -73,7 +68,6 @@ struct WatchDossierView: View {
                     titleBlock(watch)
                     if watch.status != "owned" { statusNote(watch) }
                     specSheet(watch)
-                    wristTime(watch)
                     story(watch)
                     service(watch)
                 }
@@ -202,43 +196,6 @@ struct WatchDossierView: View {
         }
     }
 
-    private func wristTime(_ watch: Watch) -> some View {
-        let month = dailyMinutes([watch], days: 30)
-        return VStack(alignment: .leading, spacing: 18) {
-            GoldRule()
-            HStack(alignment: .firstTextBaseline) {
-                Eyebrow("Wrist time")
-                Spacer()
-                Button("History") { sheet = .history }
-                    .font(.caption.weight(.semibold))
-                    .disabled(store.isOffline)
-            }
-            HStack(alignment: .top, spacing: 0) {
-                Figure(value: wearDurationLabel(wearMinutes(for: watch)), label: "All-time")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Figure(value: "\(wearDayCount(watch))", label: "Days worn")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                Figure(value: daysSince(lastWearDate(for: watch)).map { $0 == 0 ? "Today" : "\($0)d" } ?? "—", label: "Since last")
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            WearStrip(days: month, height: 36)
-            if watch.status == "owned" {
-                Button {
-                    sheet = .wear
-                } label: {
-                    Label(wearMinutes(for: watch, on: calendarDayKey()) > 0 ? "Edit today’s hours" : "Wearing it today", systemImage: "watch.analog")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(WatchTheme.background)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 14)
-                        .background(WatchTheme.gold, in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .disabled(store.isOffline)
-            }
-        }
-    }
-
     @ViewBuilder
     private func story(_ watch: Watch) -> some View {
         let text = watch.story.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -299,14 +256,12 @@ struct WatchDossierView: View {
 }
 
 private enum DossierSheet: Identifiable {
-    case edit, wear, history, service
+    case edit, service
     case frame(String)
 
     var id: String {
         switch self {
         case .edit: "edit"
-        case .wear: "wear"
-        case .history: "history"
         case .service: "service"
         case let .frame(filename): "frame-\(filename)"
         }
