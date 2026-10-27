@@ -105,14 +105,19 @@ actor CollectionSyncClient {
 
     func exchange(base: CollectionData?, local: CollectionData, resolutions: [String: String], remote: SyncSnapshot) async throws -> SyncSnapshot {
         let existing = Set(remote.photos)
+        var local = local
+        var lost: Set<String> = []
         for asset in PhotoStore.assets(in: local, baseURL: nil) where !existing.contains(asset.directory + "/" + asset.filename) {
             try Task.checkCancellation()
             guard let file = PhotoStore.localURL(for: asset), let bytes = try? Data(contentsOf: file) else {
-                throw CollectionSyncError.missingPhoto
+                // Gone on both sides (e.g. a partial restore): drop the reference instead of blocking sync forever.
+                lost.insert(asset.directory + "/" + asset.filename)
+                continue
             }
             let body = try JSONEncoder().encode(["data": bytes.base64EncodedString()])
             _ = try await request("api/sync/photos/\(asset.directory)/\(asset.filename)", body: body)
         }
+        if !lost.isEmpty { local = Self.removingPhotos(lost, from: local) }
         let body = try JSONEncoder().encode(SyncRequest(base: base, local: local, resolutions: resolutions))
         return try JSONDecoder().decode(SyncSnapshot.self, from: await request("api/sync", body: body))
     }
@@ -121,10 +126,25 @@ actor CollectionSyncClient {
         // Download without garbage collection: local edits can happen during awaits.
         for asset in PhotoStore.assets(in: data, baseURL: baseURL.absoluteString) {
             try Task.checkCancellation()
-            guard await PhotoStore.shared.load(asset, allowDownload: true) != nil else {
-                throw CollectionSyncError.missingPhoto
-            }
+            if let file = PhotoStore.localURL(for: asset), FileManager.default.fileExists(atPath: file.path) { continue }
+            // A photo the Mac can't serve shows as a placeholder; it must not stall the whole sync.
+            _ = await PhotoStore.shared.load(asset, allowDownload: true)
         }
+    }
+
+    private static func removingPhotos(_ keys: Set<String>, from data: CollectionData) -> CollectionData {
+        var data = data
+        for i in data.watches.indices {
+            let dir = data.watches[i].id
+            data.watches[i].photos.removeAll { keys.contains(dir + "/" + $0) }
+            data.watches[i].photoFocus = data.watches[i].photoFocus?.filter { !keys.contains(dir + "/" + $0.key) }
+        }
+        for i in data.wishlist.indices {
+            let dir = "wl-" + data.wishlist[i].id
+            data.wishlist[i].photos.removeAll { keys.contains(dir + "/" + $0) }
+            data.wishlist[i].photoFocus = data.wishlist[i].photoFocus?.filter { !keys.contains(dir + "/" + $0.key) }
+        }
+        return data
     }
 
     private func request(_ path: String, body: Data? = nil) async throws -> Data {

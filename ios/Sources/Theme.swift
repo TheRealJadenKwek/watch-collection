@@ -197,11 +197,51 @@ func serviceRecords(for watch: Watch) -> [ServiceRecord] {
     }
 }
 
-func optionalNumberBinding(_ value: Binding<Double?>) -> Binding<String> {
-    Binding(
-        get: { value.wrappedValue.map(compactNumber) ?? "" },
-        set: { value.wrappedValue = Double($0.replacingOccurrences(of: ",", with: ".")) }
-    )
+/// Parses what someone typed as a number: ignores grouping commas and spaces,
+/// accepts a comma decimal ("38,5"). Empty or unparseable gives nil.
+func parseTypedNumber(_ text: String) -> Double? {
+    var cleaned = text.trimmingCharacters(in: .whitespaces).replacingOccurrences(of: " ", with: "")
+    if cleaned.contains(".") || cleaned.filter({ $0 == "," }).count > 1 || cleaned.range(of: #",\d{3}$"#, options: .regularExpression) != nil {
+        cleaned = cleaned.replacingOccurrences(of: ",", with: "")
+    } else {
+        cleaned = cleaned.replacingOccurrences(of: ",", with: ".")
+    }
+    return Double(cleaned)
+}
+
+/// Text field for a number that keeps the typed text while editing (no reformatting
+/// mid-keystroke) and writes the parsed value on every change, so Save never sees a stale value.
+struct NumberField: View {
+    let title: String
+    @Binding var value: Double?
+    @State private var text: String
+
+    init(_ title: String, value: Binding<Double?>) {
+        self.title = title
+        _value = value
+        _text = State(initialValue: value.wrappedValue.map(plainNumber) ?? "")
+    }
+
+    init(_ title: String, value: Binding<Double>) {
+        self.init(title, value: Binding<Double?>(
+            get: { value.wrappedValue },
+            set: { value.wrappedValue = $0 ?? 0 }
+        ))
+    }
+
+    var body: some View {
+        TextField(title, text: $text)
+            .keyboardType(.decimalPad)
+            .onChange(of: text) { _, new in value = parseTypedNumber(new) }
+            .onChange(of: value) { _, new in
+                // Treat empty and 0 alike so clearing a required price doesn't snap back to "0".
+                if (parseTypedNumber(text) ?? 0) != (new ?? 0) { text = new.map(plainNumber) ?? "" }
+            }
+    }
+}
+
+private func plainNumber(_ value: Double) -> String {
+    value.formatted(.number.grouping(.never).precision(.fractionLength(0...2)))
 }
 
 func optionalSelectionBinding(_ value: Binding<String?>) -> Binding<String> {
@@ -225,7 +265,7 @@ func fitInfo(for diameter: Double?, lugToLug: Double?, wrist: WristProfile) -> F
     if abs(diameter - wrist.perfect) <= 1 {
         return FitInfo(key: "perfect", label: "perfect · \(compactNumber(diameter))mm", basis: "diameter")
     }
-    if wrist.sweetSpotMin...wrist.sweetSpotMax ~= diameter {
+    if diameter >= wrist.sweetSpotMin && diameter <= wrist.sweetSpotMax {
         return FitInfo(key: "sweet", label: "sweet spot · \(compactNumber(diameter))mm", basis: "diameter")
     }
     if diameter < wrist.sweetSpotMin {

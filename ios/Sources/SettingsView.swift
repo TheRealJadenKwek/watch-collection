@@ -66,7 +66,7 @@ struct SettingsView: View {
             .alert(item: $pendingImport) { imported in
                 Alert(
                     title: Text("Replace current collection?"),
-                    message: Text("\(imported.sourceName) contains \(imported.summary) Your current on-phone collection will be replaced."),
+                    message: Text("\(imported.sourceName) contains \(imported.summary) Your current on-phone collection will be replaced, and if Mac sync is on, the Mac copy will follow."),
                     primaryButton: .destructive(Text("Restore")) {
                         restore(imported)
                     },
@@ -179,7 +179,7 @@ struct SettingsView: View {
                 Task {
                     backupResult = await store.backup()
                     backingUp = false
-                    if let settings = store.data?.settings { draftSettings = settings }
+                    draftSettings.lastBackup = store.data?.settings.lastBackup
                 }
             } label: {
                 Label(backingUp ? "Backing up…" : "Back up data & photos now", systemImage: "externaldrive.badge.timemachine")
@@ -274,8 +274,7 @@ struct SettingsView: View {
 
     private func numberField(_ title: String, value: Binding<Double>) -> some View {
         LabeledContent(title) {
-            TextField("Value", value: value, format: .number.precision(.fractionLength(0...1)))
-                .keyboardType(.decimalPad)
+            NumberField("Value", value: value)
                 .multilineTextAlignment(.trailing)
                 .frame(minWidth: 52, maxWidth: 72)
         }

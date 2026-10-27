@@ -101,6 +101,7 @@ struct WatchDetailScreen: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: AppStore
     let isNew: Bool
+    var onSaved: () -> Void = {}
     @State private var draft: Watch
     @State private var baseline: Watch
     @State private var selectedPhotoIndex = 0
@@ -112,9 +113,10 @@ struct WatchDetailScreen: View {
     @State private var confirmDelete = false
     @State private var activitySheet: WatchActivitySheet?
 
-    init(store: AppStore, watch: Watch, isNew: Bool = false) {
+    init(store: AppStore, watch: Watch, isNew: Bool = false, onSaved: @escaping () -> Void = {}) {
         self.store = store
         self.isNew = isNew
+        self.onSaved = onSaved
         var initial = watch
         if isNew {
             initial.purchased = initial.purchased ?? currentPurchaseMonth()
@@ -153,6 +155,7 @@ struct WatchDetailScreen: View {
             .scrollContentBackground(.hidden)
             .background(WatchTheme.background)
             .navigationBarTitleDisplayMode(.inline)
+            .storeErrorAlert(store)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
                 ToolbarItem(placement: .principal) {
@@ -351,10 +354,8 @@ struct WatchDetailScreen: View {
 
     private var sizingSection: some View {
         Section("Sizing & fit") {
-            TextField("Diameter (mm)", text: optionalNumberBinding($draft.diameter))
-                .keyboardType(.decimalPad)
-            TextField("Lug-to-lug (mm)", text: optionalNumberBinding($draft.lugToLug))
-                .keyboardType(.decimalPad)
+            NumberField("Diameter (mm)", value: $draft.diameter)
+            NumberField("Lug-to-lug (mm)", value: $draft.lugToLug)
             if let wrist = store.data?.settings.wrist,
                let fit = fitInfo(for: draft.diameter, lugToLug: draft.lugToLug, wrist: wrist) {
                 HStack { Text("Fit"); Spacer(); FitChip(info: fit) }
@@ -371,8 +372,7 @@ struct WatchDetailScreen: View {
                 Text("Purchase").tag("purchase")
                 Text("Trade").tag("trade")
             }
-            TextField(draft.costSourceWatchID == nil ? "Price paid (CAD)" : "Original purchase cost (CAD)", value: $draft.price, format: .number)
-                .keyboardType(.decimalPad)
+            NumberField(draft.costSourceWatchID == nil ? "Price paid (CAD)" : "Original purchase cost (CAD)", value: $draft.price)
             if let sourceID = draft.costSourceWatchID {
                 Text("Carried over from \(store.data?.watches.first(where: { $0.id == sourceID })?.name ?? "the traded watch"). Counted once in all-time spending.")
                     .font(.caption).foregroundStyle(WatchTheme.secondary)
@@ -435,6 +435,7 @@ struct WatchDetailScreen: View {
             }
             if let saved = await store.saveWatch(normalized, isNew: isNew, initialPhotos: uploads, baseline: baseline) {
                 rememberSelections(from: saved)
+                onSaved()
                 dismiss()
             }
             isSaving = false
@@ -442,12 +443,15 @@ struct WatchDetailScreen: View {
     }
 
     private func importPhoto(_ item: PhotosPickerItem) async {
-        guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+        defer { photoItem = nil }
+        guard let data = try? await item.loadTransferable(type: Data.self) else {
+            store.notice = "Couldn't load that photo."
+            return
+        }
         let type = item.supportedContentTypes.first
         let ext = type?.preferredFilenameExtension ?? "jpg"
         let mime = type?.preferredMIMEType ?? "image/jpeg"
         await upload(data: data, filename: "photo-\(UUID().uuidString).\(ext)", mimeType: mime)
-        photoItem = nil
     }
 
     private func upload(data: Data, filename: String, mimeType: String) async {
@@ -480,8 +484,15 @@ struct WatchDetailScreen: View {
         if let material = watch.material { UserDefaults.standard.set(material, forKey: WatchEditorDefaults.material) }
     }
 
+    /// Pull only what photo and service actions change, so unsaved form edits survive.
     private func reloadDraft() {
-        if let updated = store.data?.watches.first(where: { $0.id == draft.id }) { draft = updated }
+        guard let updated = store.data?.watches.first(where: { $0.id == draft.id }) else { return }
+        draft.photos = updated.photos
+        baseline.photos = updated.photos
+        draft.photoFocus = updated.photoFocus
+        baseline.photoFocus = updated.photoFocus
+        draft.serviceRecords = updated.serviceRecords
+        baseline.serviceRecords = updated.serviceRecords
     }
 }
 

@@ -52,6 +52,7 @@ struct FramedPhoto: View {
                 )
             }
             .clipped()
+            .contentShape(Rectangle())
     }
 }
 

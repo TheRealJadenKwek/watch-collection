@@ -569,8 +569,7 @@ struct WishlistDetailScreen: View {
                             Text("Unset").tag("")
                             ForEach(store.data?.categories ?? [], id: \.self) { Text($0).tag($0) }
                         }
-                        TextField("Expected price (CAD)", text: optionalNumberBinding($draft.priceExpected))
-                            .keyboardType(.decimalPad)
+                        NumberField("Expected price (CAD)", value: $draft.priceExpected)
                         TextField("Quote text", text: $draft.priceNote)
                         TextField("Added (YYYY-MM)", text: $draft.added)
                         Picker("Status", selection: $draft.status) {
@@ -588,8 +587,8 @@ struct WishlistDetailScreen: View {
                             Text("Unset").tag("")
                             ForEach(store.data?.materials ?? [], id: \.self) { Text($0).tag($0) }
                         }
-                        TextField("Diameter (mm)", text: optionalNumberBinding($draft.diameter)).keyboardType(.decimalPad)
-                        TextField("Lug-to-lug (mm)", text: optionalNumberBinding($draft.lugToLug)).keyboardType(.decimalPad)
+                        NumberField("Diameter (mm)", value: $draft.diameter)
+                        NumberField("Lug-to-lug (mm)", value: $draft.lugToLug)
                         if let wrist = store.data?.settings.wrist,
                            let fit = fitInfo(for: draft.diameter, lugToLug: draft.lugToLug, wrist: wrist) {
                             HStack { Text("Fit"); Spacer(); FitChip(info: fit) }
@@ -608,6 +607,7 @@ struct WishlistDetailScreen: View {
             .scrollContentBackground(.hidden)
             .background(WatchTheme.background)
             .navigationBarTitleDisplayMode(.inline)
+            .storeErrorAlert(store)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
                 ToolbarItem(placement: .principal) { Text(isNew ? "Add Candidate" : "Edit Candidate").font(.headline).serifTitle() }
@@ -696,7 +696,11 @@ struct WishlistDetailScreen: View {
     }
 
     private func importPhoto(_ item: PhotosPickerItem) async {
-        guard let data = try? await item.loadTransferable(type: Data.self) else { return }
+        defer { photoItem = nil }
+        guard let data = try? await item.loadTransferable(type: Data.self) else {
+            store.notice = "Couldn't load that photo."
+            return
+        }
         let type = item.supportedContentTypes.first
         await store.uploadPhoto(
             data: data,
@@ -706,11 +710,15 @@ struct WishlistDetailScreen: View {
             wishlist: true
         )
         reloadDraft()
-        photoItem = nil
     }
 
+    /// Pull only what photo actions change, so unsaved form edits survive.
     private func reloadDraft() {
-        if let updated = store.data?.wishlist.first(where: { $0.id == draft.id }) { draft = updated }
+        guard let updated = store.data?.wishlist.first(where: { $0.id == draft.id }) else { return }
+        draft.photos = updated.photos
+        draft.photoFocus = updated.photoFocus
+        baseline.photos = updated.photos
+        baseline.photoFocus = updated.photoFocus
     }
 }
 
@@ -733,7 +741,7 @@ struct BoughtSheet: View {
             Form {
                 Group {
                     Section(item.name) {
-                        TextField("Final price paid (CAD)", value: $price, format: .number).keyboardType(.decimalPad)
+                        NumberField("Final price paid (CAD)", value: $price)
                         MonthYearPicker(value: $purchased, allowsUnknown: false)
                     }
                 }
@@ -743,6 +751,7 @@ struct BoughtSheet: View {
             .background(WatchTheme.background)
             .navigationTitle("Mark Bought")
             .navigationBarTitleDisplayMode(.inline)
+            .storeErrorAlert(store)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {

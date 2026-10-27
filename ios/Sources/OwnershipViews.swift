@@ -40,8 +40,7 @@ struct MaintenanceSheet: View {
                             ForEach(kinds, id: \.self) { Text($0).tag($0) }
                         }
                         DatePicker("Completed", selection: $serviceDate, in: ...Date(), displayedComponents: .date)
-                        TextField("Cost (CAD)", text: optionalNumberBinding($cost))
-                            .keyboardType(.decimalPad)
+                        NumberField("Cost (CAD)", value: $cost)
                         TextField("Notes", text: $notes, axis: .vertical)
                             .lineLimit(2...5)
                         Toggle("Remind me when next due", isOn: $hasReminder)

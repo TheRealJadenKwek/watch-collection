@@ -142,6 +142,24 @@ actor PhotoStore {
         }
     }
 
+    /// Copies a wishlist candidate's photos into a watch's folder (used when it's bought).
+    /// Returns the filenames that made it across; a missing source is skipped.
+    nonisolated static func copyPhotos(_ filenames: [String], fromWishlist itemID: String, toWatch watchID: String) -> [String] {
+        filenames.filter { filename in
+            guard let source = asset(itemID: itemID, filename: filename, wishlist: true, baseURL: nil).flatMap(localURL),
+                  let target = asset(itemID: watchID, filename: filename, wishlist: false, baseURL: nil).flatMap(localURL),
+                  FileManager.default.fileExists(atPath: source.path) else { return false }
+            if FileManager.default.fileExists(atPath: target.path) { return true }
+            do {
+                try FileManager.default.createDirectory(at: target.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try FileManager.default.copyItem(at: source, to: target)
+                return true
+            } catch {
+                return false
+            }
+        }
+    }
+
     nonisolated static func localURL(for asset: PhotoAsset) -> URL? {
         guard isSafePathComponent(asset.directory), isSafePathComponent(asset.filename) else { return nil }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

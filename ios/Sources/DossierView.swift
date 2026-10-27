@@ -6,6 +6,7 @@ struct WatchDossierView: View {
     @ObservedObject var store: AppStore
     let watchID: String
     @State private var page = 0
+    @Environment(\.dismiss) private var dismiss
     @State private var sheet: DossierSheet?
 
     private var watch: Watch? { store.data?.watches.first { $0.id == watchID } }
@@ -20,7 +21,6 @@ struct WatchDossierView: View {
         }
         .background(WatchTheme.background.ignoresSafeArea())
         .navigationBarTitleDisplayMode(.inline)
-        .toolbar(.hidden, for: .tabBar)
         .toolbar {
             if let watch {
                 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -37,6 +37,12 @@ struct WatchDossierView: View {
                     .disabled(store.isOffline)
                 }
             }
+        }
+        .onChange(of: watch == nil) { _, removed in
+            // Deleted here or by a sync: close any open sheet and leave the page.
+            guard removed else { return }
+            sheet = nil
+            dismiss()
         }
         .sheet(item: $sheet) { item in
             if let watch {

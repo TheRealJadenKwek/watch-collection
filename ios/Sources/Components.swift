@@ -46,6 +46,8 @@ struct RemoteWatchImage: View {
             }
         }
         .clipped()
+        // clipped() trims drawing only; without this a zoomed photo steals taps above its frame.
+        .contentShape(Rectangle())
         .task(id: loadID) {
             image = nil
             guard let asset else {
@@ -364,5 +366,19 @@ struct ChipFlowLayout: Layout {
         let natural = subview.sizeThatFits(.unspecified)
         guard maxWidth.isFinite, natural.width > maxWidth else { return natural }
         return subview.sizeThatFits(ProposedViewSize(width: maxWidth, height: nil))
+    }
+}
+
+extension View {
+    /// Shows store errors inside a sheet; the root alert can't present over one.
+    func storeErrorAlert(_ store: AppStore) -> some View {
+        alert("Couldn't save", isPresented: Binding(
+            get: { store.errorMessage != nil },
+            set: { if !$0 { store.errorMessage = nil } }
+        )) {
+            Button("OK", role: .cancel) { store.errorMessage = nil }
+        } message: {
+            Text(store.errorMessage ?? "")
+        }
     }
 }

@@ -78,7 +78,7 @@ struct RootView: View {
                     .overlay { Capsule().stroke(WatchTheme.gold.opacity(0.35)) }
                     .padding(.bottom, 72)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .task {
+                    .task(id: notice) {
                         try? await Task.sleep(for: .seconds(2.5))
                         if store.notice == notice { store.notice = nil }
                     }

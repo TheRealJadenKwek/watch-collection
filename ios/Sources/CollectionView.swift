@@ -48,7 +48,8 @@ struct CollectionScreen: View {
                         if watches.isEmpty {
                             EmptyCollectionView(
                                 title: search.isEmpty ? "Nothing here yet" : "No matches",
-                                detail: search.isEmpty ? "Watches you part with appear in the archive." : "Try a different search."
+                                detail: !search.isEmpty ? "Try a different search."
+                                    : scope == Scope.owned.rawValue ? "Tap + to add your first watch." : "Watches you part with appear in the archive."
                             )
                             .frame(minHeight: 320)
                         } else if layout == Layout.grid.rawValue {
@@ -74,6 +75,10 @@ struct CollectionScreen: View {
             .navigationDestination(for: WatchRoute.self) { route in
                 WatchDossierView(store: store, watchID: route.id)
                     .navigationTransition(.zoom(sourceID: route.id, in: zoom))
+            }
+            .onAppear {
+                // "Most worn" went away with wear logging; fall back to a real option.
+                if Sort(rawValue: sort) == nil { sort = Sort.value.rawValue }
             }
             .sheet(isPresented: $addingWatch) {
                 WatchDetailScreen(store: store, watch: .newDraft, isNew: true)

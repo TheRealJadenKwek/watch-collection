@@ -1,0 +1,54 @@
+default_platform(:ios)
+
+KEY_PATH = "/Users/jadenkwek/.appstoreconnect/private_keys/AuthKey_93RU83ZB8C.p8"
+APP_ID = "com.jadenkwek.watchcollection"
+
+platform :ios do
+  before_all do
+    app_store_connect_api_key(
+      key_id: "93RU83ZB8C",
+      issuer_id: "b9aceb46-4ef8-4e04-818a-a62f670aede9",
+      key_filepath: KEY_PATH
+    )
+  end
+
+  desc "Build and upload Watch Collection to TestFlight"
+  lane :beta do
+    sh("cd .. && xcodegen generate")
+    # App Store profile from the existing Apple Distribution cert;
+    # the API key cannot use Xcode's cloud-managed signing.
+    get_provisioning_profile(app_identifier: APP_ID, provisioning_name: "#{APP_ID} AppStore")
+    build = (latest_testflight_build_number(app_identifier: APP_ID, initial_build_number: 0) rescue 0) + 1
+    build = [build, 13].max
+    build_app(
+      project: "WatchCollection.xcodeproj",
+      scheme: "WatchCollection",
+      configuration: "Release",
+      export_method: "app-store",
+      xcargs: "CURRENT_PROJECT_VERSION=#{build} -allowProvisioningUpdates " \
+              "-authenticationKeyPath #{KEY_PATH} -authenticationKeyID 93RU83ZB8C " \
+              "-authenticationKeyIssuerID b9aceb46-4ef8-4e04-818a-a62f670aede9",
+      export_options: {
+        signingStyle: "manual",
+        provisioningProfiles: { APP_ID => lane_context[SharedValues::SIGH_NAME] }
+      },
+      output_directory: "./build",
+      output_name: "WatchCollection.ipa"
+    )
+    if Spaceship::ConnectAPI::App.find(APP_ID).nil?
+      UI.user_error!("Built build/WatchCollection.ipa, but there is no App Store Connect app for #{APP_ID} yet. Create it, then rerun `fastlane beta`.")
+    end
+    upload_to_testflight(skip_waiting_for_build_processing: true)
+  end
+
+  desc "Show the latest TestFlight build's processing state (waits while processing)"
+  lane :status do
+    app = Spaceship::ConnectAPI::App.find(APP_ID)
+    40.times do
+      b = Spaceship::ConnectAPI::Build.all(app_id: app.id).first
+      UI.message("build #{b&.version}: #{b&.processing_state}")
+      break if b && b.processing_state != "PROCESSING"
+      sleep 20
+    end
+  end
+end

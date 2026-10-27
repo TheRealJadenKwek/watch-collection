@@ -8,6 +8,7 @@ struct StatsScreen: View {
     @State private var originalsOnly = true
     @State private var selectedWatch: Watch?
     @State private var completionQueue: [Watch] = []
+    @State private var savedInSequence = false
     @State private var selectedCostTier: String?
     @State private var selectedSizeX: Double?
     @State private var selectedSpendYear: String?
@@ -54,7 +55,7 @@ struct StatsScreen: View {
                 ToolbarItem(placement: .topBarTrailing) { GearToolbarButton(action: showSettings) }
             }
             .sheet(item: $selectedWatch, onDismiss: advanceCompletionQueue) { watch in
-                WatchDetailScreen(store: store, watch: watch)
+                WatchDetailScreen(store: store, watch: watch, onSaved: { savedInSequence = true })
             }
             .onChange(of: scope) { _, _ in
                 selectedCostTier = nil
@@ -71,7 +72,7 @@ struct StatsScreen: View {
         let measured = owned.filter { $0.diameter != nil }
         let inRange = measured.filter { watch in
             guard let diameter = watch.diameter else { return false }
-            return wrist.sweetSpotMin...wrist.sweetSpotMax ~= diameter
+            return diameter >= wrist.sweetSpotMin && diameter <= wrist.sweetSpotMax
         }.count
         let fraction = measured.isEmpty ? 0 : Double(inRange) / Double(measured.count)
         let count = Int(stats?.count ?? 0)
@@ -782,8 +783,13 @@ struct StatsScreen: View {
         }
     }
 
+    /// Moves to the next incomplete watch only after a save; Close ends the sequence.
     private func advanceCompletionQueue() {
-        guard !completionQueue.isEmpty else { return }
+        defer { savedInSequence = false }
+        guard savedInSequence, !completionQueue.isEmpty else {
+            completionQueue = []
+            return
+        }
         selectedWatch = completionQueue.removeFirst()
     }
 

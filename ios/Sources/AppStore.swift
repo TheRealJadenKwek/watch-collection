@@ -102,7 +102,9 @@ final class AppStore: ObservableObject {
 
     func resolveSyncConflict(_ id: String, choice: String) async {
         syncResolutions[id] = choice
-        if syncConflicts.allSatisfy({ syncResolutions[$0.id] != nil }) { await syncNow() }
+        guard syncConflicts.allSatisfy({ syncResolutions[$0.id] != nil }) else { return }
+        while isSyncing { try? await Task.sleep(for: .milliseconds(200)) }
+        await syncNow()
     }
 
     func sceneChanged(_ phase: ScenePhase) {
@@ -199,8 +201,28 @@ final class AppStore: ObservableObject {
 
     func saveWatch(_ watch: Watch, isNew: Bool = false, initialPhotos: [LocalPhotoUpload] = [], baseline: Watch? = nil) async -> Watch? {
         do {
-            var updated = try requireData()
             var saved = watch
+            saved.name = saved.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !saved.name.isEmpty else { throw LocalStoreError.invalidOperation }
+            saved.diameter = positiveOrNil(saved.diameter)
+            saved.lugToLug = positiveOrNil(saved.lugToLug)
+            guard saved.price.isFinite, saved.price >= 0 else { throw LocalStoreError.invalidOperation }
+            // Photo writes await; re-read the collection afterwards so a sync landing meanwhile isn't reverted.
+            var stored: [String] = []
+            let newID = isNew ? uniqueID(for: saved.name, existing: try requireData().watches.map(\.id)) : saved.id
+            for photo in isNew ? initialPhotos : [] {
+                let extensionName = safePhotoExtension(filename: photo.filename, mimeType: photo.mimeType)
+                let storedFilename = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased() + extensionName
+                guard let asset = PhotoStore.asset(
+                    itemID: newID,
+                    filename: storedFilename,
+                    wishlist: false,
+                    baseURL: nil
+                ) else { throw LocalStoreError.invalidOperation }
+                try await PhotoStore.shared.storeUploaded(photo.data, as: asset)
+                stored.append(storedFilename)
+            }
+            var updated = try requireData()
             if isNew || (baseline != nil && baseline?.purchased != watch.purchased) {
                 saved.purchasedText = purchaseMonthLabel(saved.purchased)
             }
@@ -208,38 +230,27 @@ final class AppStore: ObservableObject {
             saved.wearDates = nil
             saved.serviceRecords = serviceRecords(for: saved)
             if isNew {
+                guard !updated.watches.contains(where: { $0.id == newID }) else { throw LocalStoreError.duplicateValue }
                 saved = Watch(
-                    id: uniqueID(for: watch.name, existing: updated.watches.map(\.id)),
-                    name: watch.name.trimmingCharacters(in: .whitespacesAndNewlines),
+                    id: newID,
+                    name: saved.name,
                     story: watch.story,
                     purchased: watch.purchased,
                     purchasedText: purchaseMonthLabel(watch.purchased),
-                    diameter: watch.diameter,
+                    diameter: saved.diameter,
                     price: watch.price,
                     original: watch.original,
                     status: watch.status,
                     statusNote: watch.statusNote,
-                    photos: [],
+                    photos: stored,
                     category: watch.category,
                     dialColor: watch.dialColor,
-                    lugToLug: watch.lugToLug,
+                    lugToLug: saved.lugToLug,
                     material: watch.material,
                     brand: watch.brand,
                     acquisitionMethod: watch.acquisitionMethod,
                     costSourceWatchID: watch.costSourceWatchID
                 )
-                for photo in initialPhotos {
-                    let extensionName = safePhotoExtension(filename: photo.filename, mimeType: photo.mimeType)
-                    let storedFilename = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased() + extensionName
-                    guard let asset = PhotoStore.asset(
-                        itemID: saved.id,
-                        filename: storedFilename,
-                        wishlist: false,
-                        baseURL: nil
-                    ) else { throw LocalStoreError.invalidOperation }
-                    try await PhotoStore.shared.storeUploaded(photo.data, as: asset)
-                    saved.photos.append(storedFilename)
-                }
                 updated.watches.append(saved)
             } else if let index = updated.watches.firstIndex(where: { $0.id == watch.id }) {
                 if let baseline { saved = try mergeDraft(base: baseline, draft: saved, current: updated.watches[index]) }
@@ -260,20 +271,27 @@ final class AppStore: ObservableObject {
         do {
             var updated = try requireData()
             var saved = item
+            saved.name = saved.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !saved.name.isEmpty else { throw LocalStoreError.invalidOperation }
+            saved.diameter = positiveOrNil(saved.diameter)
+            saved.lugToLug = positiveOrNil(saved.lugToLug)
+            if saved.added.range(of: #"^\d{4}-(0[1-9]|1[0-2])$"#, options: .regularExpression) == nil {
+                saved.added = Self.currentMonth
+            }
             if isNew {
                 saved = WishlistItem(
                     id: uniqueID(for: item.name, existing: updated.wishlist.map(\.id)),
-                    name: item.name.trimmingCharacters(in: .whitespacesAndNewlines),
+                    name: saved.name,
                     brand: item.brand.trimmingCharacters(in: .whitespacesAndNewlines),
                     category: item.category,
                     priceExpected: item.priceExpected,
                     priceNote: item.priceNote,
                     notes: item.notes,
                     status: item.status,
-                    added: item.added,
+                    added: saved.added,
                     dialColor: item.dialColor,
-                    diameter: item.diameter,
-                    lugToLug: item.lugToLug,
+                    diameter: saved.diameter,
+                    lugToLug: saved.lugToLug,
                     material: item.material,
                     photos: []
                 )
@@ -321,7 +339,8 @@ final class AppStore: ObservableObject {
         await mutate { data in
             guard let index = data.wishlist.firstIndex(where: { $0.id == id }) else { throw LocalStoreError.itemNotFound }
             let item = data.wishlist[index]
-            let watch = Watch(
+            guard item.status != "bought" else { throw LocalStoreError.duplicateValue }
+            var watch = Watch(
                 id: self.uniqueID(for: item.name, existing: data.watches.map(\.id)),
                 name: item.name,
                 story: item.notes,
@@ -339,6 +358,8 @@ final class AppStore: ObservableObject {
                 material: item.material,
                 brand: item.brand
             )
+            watch.photos = PhotoStore.copyPhotos(item.photos, fromWishlist: item.id, toWatch: watch.id)
+            watch.photoFocus = item.photoFocus?.filter { watch.photos.contains($0.key) }
             data.watches.append(watch)
             data.wishlist[index].status = "bought"
             self.notice = "Moved into the collection."
@@ -394,19 +415,23 @@ final class AppStore: ObservableObject {
     func saveSettings(_ settings: CollectionSettings, baseline: CollectionSettings? = nil) async {
         await mutate { data in
             data.settings = try baseline.map { try mergeDraft(base: $0, draft: settings, current: data.settings) } ?? settings
+            let wrist = data.settings.wrist
+            if wrist.sweetSpotMin > wrist.sweetSpotMax {
+                (data.settings.wrist.sweetSpotMin, data.settings.wrist.sweetSpotMax) = (wrist.sweetSpotMax, wrist.sweetSpotMin)
+            }
             self.notice = "Settings saved."
         }
     }
 
     func backup() async -> String {
         do {
-            var updated = try requireData()
-            let timestamp = ISO8601DateFormatter().string(from: Date())
-            updated.settings.lastBackup = timestamp
-            try await commit(updated)
+            let snapshot = try requireData()
             _ = try await Task.detached(priority: .utility) {
-                try LocalBackup.createFullBackup(from: updated)
+                try LocalBackup.createFullBackup(from: snapshot)
             }.value
+            var updated = try requireData()
+            updated.settings.lastBackup = ISO8601DateFormatter().string(from: Date())
+            try await commit(updated)
             notice = "Backup saved in Files."
             return "Saved to On My iPhone / Watch Collection Backup."
         } catch {
@@ -514,13 +539,13 @@ final class AppStore: ObservableObject {
 
     func uploadPhoto(data photoData: Data, filename: String, mimeType: String, itemID: String, wishlist: Bool) async {
         do {
-            var updated = try requireData()
             let extensionName = safePhotoExtension(filename: filename, mimeType: mimeType)
             let storedFilename = UUID().uuidString.replacingOccurrences(of: "-", with: "").lowercased() + extensionName
             guard let asset = PhotoStore.asset(itemID: itemID, filename: storedFilename, wishlist: wishlist, baseURL: nil) else {
                 throw LocalStoreError.invalidOperation
             }
             try await PhotoStore.shared.storeUploaded(photoData, as: asset)
+            var updated = try requireData()
             if wishlist {
                 guard let index = updated.wishlist.firstIndex(where: { $0.id == itemID }) else { throw LocalStoreError.itemNotFound }
                 updated.wishlist[index].photos.insert(storedFilename, at: 0)
@@ -656,7 +681,6 @@ final class AppStore: ObservableObject {
         scores = DecisionEngine.scores(for: derived)
         suggestions = DecisionEngine.suggestions(for: derived)
         isOffline = false
-        errorMessage = nil
         if persist {
             CacheStore.save(derived)
             CacheStore.save(WishlistScoresResponse(scores: scores))
@@ -747,6 +771,11 @@ final class AppStore: ObservableObject {
         case .dialcolors: item.dialColor = value
         case .materials: item.material = value
         }
+    }
+
+    private func positiveOrNil(_ value: Double?) -> Double? {
+        guard let value, value.isFinite, value > 0 else { return nil }
+        return value
     }
 
     private func surface(_ error: Error) {
