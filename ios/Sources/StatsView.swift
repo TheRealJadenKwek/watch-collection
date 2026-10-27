@@ -480,10 +480,10 @@ struct StatsScreen: View {
         let purchases = uniqueCostRecords(scoped).filter { watch in
             !watch.isTrade || all.contains(where: { $0.id == watch.costSourceWatchID })
         }
-        let entries = purchaseTimelineEntries(purchases, all: all)
+        let entries = purchaseTimelineEntries(purchases, all: all, by: .acquisition)
         let datedIDs = Set(entries.map(\.id))
         let trades = scoped.filter { $0.isTrade && !datedIDs.contains($0.id) }
-        let missingCount = purchases.count - entries.count
+        let missingCount = purchases.filter { !$0.isTrade && !datedIDs.contains($0.id) }.count
         return SectionCard(eyebrow: scope == "owned" ? "Current collection" : "All-time", title: "Purchase timeline") {
             if entries.isEmpty {
                 ContentUnavailableView(
@@ -1038,12 +1038,21 @@ private struct PurchaseTimelineEntry: Identifiable {
     var year: String
 }
 
-private func purchaseTimelineEntries(_ watches: [Watch], all: [Watch]) -> [PurchaseTimelineEntry] {
+private enum TimelineDating {
+    /// When the watch arrived: a trade sits at its own trade date (undated trades are left out).
+    case acquisition
+    /// When the money was spent: a trade sits at the original purchase it carries the cost of.
+    case cost
+}
+
+private func purchaseTimelineEntries(_ watches: [Watch], all: [Watch], by dating: TimelineDating) -> [PurchaseTimelineEntry] {
     let monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+    let order = Dictionary(uniqueKeysWithValues: acquisitionOrder(all).enumerated().map { ($0.element.id, $0.offset) })
     return uniqueCostRecords(watches).compactMap { watch in
         let source = all.first { $0.id == watch.costSourceWatchID }
+        let dated = dating == .cost ? (source ?? watch) : watch
         guard !watch.isTrade || source != nil,
-              let purchased = (source ?? watch).purchased else { return nil }
+              let purchased = dated.purchased else { return nil }
         let parts = purchased.split(separator: "-")
         guard parts.count >= 2,
               let year = Int(parts[0]),
@@ -1058,13 +1067,13 @@ private func purchaseTimelineEntries(_ watches: [Watch], all: [Watch]) -> [Purch
             year: String(year)
         )
     }.sorted {
-        // Keep collection order for purchases recorded in the same month.
-        return $0.sortKey < $1.sortKey
+        // Same month: day when known, then the order watches were added (sorted isn't stable).
+        $0.sortKey == $1.sortKey ? order[$0.id, default: 0] < order[$1.id, default: 0] : $0.sortKey < $1.sortKey
     }
 }
 
 private func spendByYear(_ watches: [Watch], all: [Watch]) -> [YearSpend] {
-    let grouped = Dictionary(grouping: purchaseTimelineEntries(watches, all: all), by: \.year)
+    let grouped = Dictionary(grouping: purchaseTimelineEntries(watches, all: all, by: .cost), by: \.year)
     return grouped.map { YearSpend(year: $0.key, total: $0.value.reduce(0) { $0 + $1.watch.price }) }.sorted { $0.year < $1.year }
 }
 

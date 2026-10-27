@@ -19,17 +19,23 @@ struct CollectionScreen: View {
     private var numbers: [String: Int] { catalogueNumbers(all) }
 
     private var watches: [Watch] {
-        all
+        let shown = all
             .filter { scope == Scope.owned.rawValue ? $0.status == "owned" : $0.status != "owned" }
             .filter { search.isEmpty || "\($0.name) \($0.brand ?? "") \($0.story) \($0.statusNote)".localizedCaseInsensitiveContains(search) }
-            .sorted(by: sorter)
+        switch Sort(rawValue: sort) ?? .value {
+        case .oldest:
+            return acquisitionOrder(shown)
+        case .newest:
+            let ordered = acquisitionOrder(shown)
+            return ordered.filter { $0.purchased != nil }.reversed() + ordered.filter { $0.purchased == nil }
+        default:
+            return shown.sorted(by: sorter)
+        }
     }
 
     private func sorter(_ a: Watch, _ b: Watch) -> Bool {
         switch Sort(rawValue: sort) ?? .value {
-        case .value: return a.price > b.price
-        case .newest: return (a.purchased ?? "") > (b.purchased ?? "")
-        case .oldest: return (a.purchased ?? "9999") < (b.purchased ?? "9999")
+        case .value, .newest, .oldest: return a.price > b.price
         case .name: return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
         }
     }

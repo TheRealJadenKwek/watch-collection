@@ -17,12 +17,23 @@ enum PhotoShape {
 
 /// Catalogue number for every watch ever acquired, oldest first ("Nº 07").
 func catalogueNumbers(_ watches: [Watch]) -> [String: Int] {
-    let ordered = watches.enumerated().sorted { left, right in
-        let l = left.element.purchased ?? "9999-99"
-        let r = right.element.purchased ?? "9999-99"
-        return l == r ? left.offset < right.offset : l < r
-    }
-    return Dictionary(uniqueKeysWithValues: ordered.enumerated().map { ($0.element.element.id, $0.offset + 1) })
+    Dictionary(uniqueKeysWithValues: acquisitionOrder(watches).enumerated().map { ($0.element.id, $0.offset + 1) })
+}
+
+/// Day of the month from a label like "September 20, 2026"; 0 when the label has no day.
+func purchaseDay(_ text: String) -> Int {
+    guard let match = text.firstMatch(of: /\b(\d{1,2}),\s*\d{4}/), let day = Int(match.1) else { return 0 }
+    return day
+}
+
+/// Oldest first by purchase month, then day when known (month-only sorts first in its month),
+/// then the order the watches were added. Undated watches (e.g. trades with no date) go last.
+func acquisitionOrder(_ watches: [Watch]) -> [Watch] {
+    watches.enumerated().sorted { left, right in
+        let l = (left.element.purchased ?? "9999-99", purchaseDay(left.element.purchasedText), left.offset)
+        let r = (right.element.purchased ?? "9999-99", purchaseDay(right.element.purchasedText), right.offset)
+        return l < r
+    }.map(\.element)
 }
 
 func catalogueLabel(_ number: Int?) -> String {
