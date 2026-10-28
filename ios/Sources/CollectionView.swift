@@ -21,13 +21,28 @@ struct CollectionScreen: View {
             .filter { scope == Scope.owned.rawValue ? $0.status == "owned" : $0.status != "owned" }
         switch Sort(rawValue: sort) ?? .value {
         case .oldest:
-            return acquisitionOrder(shown)
+            return byPurchaseDate(shown)
         case .newest:
-            let ordered = acquisitionOrder(shown)
-            return ordered.filter { $0.purchased != nil }.reversed() + ordered.filter { $0.purchased == nil }
+            let ordered = byPurchaseDate(shown)
+            return ordered.filter { datedSource($0, in: all).purchased != nil }.reversed()
+                + ordered.filter { datedSource($0, in: all).purchased == nil }
         default:
             return shown.sorted(by: sorter)
         }
+    }
+
+    /// Acquisition order, with an undated trade placed at the date shown on its photo (the
+    /// watch it was traded from). Catalogue numbers and the timeline keep plain acquisitionOrder.
+    private func byPurchaseDate(_ shown: [Watch]) -> [Watch] {
+        let byID = Dictionary(uniqueKeysWithValues: shown.map { ($0.id, $0) })
+        let stand = shown.map { watch in
+            var copy = watch
+            let source = datedSource(watch, in: all)
+            copy.purchased = source.purchased
+            copy.purchasedText = source.purchasedText
+            return copy
+        }
+        return acquisitionOrder(stand).compactMap { byID[$0.id] }
     }
 
     private func sorter(_ a: Watch, _ b: Watch) -> Bool {
@@ -138,7 +153,7 @@ struct CollectionScreen: View {
                         focus: watch.focus(for: watch.photos.first),
                         aspect: PhotoShape.square
                     )
-                    .overlay(alignment: .bottomLeading) { PurchaseDateOverlay(watch: watch) }
+                    .overlay(alignment: .bottomLeading) { PurchaseDateOverlay(watch: watch, watches: all) }
                     .matchedTransitionSource(id: watch.id, in: zoom)
                 }
                 .buttonStyle(.plain)
@@ -168,7 +183,7 @@ struct WatchTile: View {
                         PhotoTag(text: "Replica").padding(8)
                     }
                 }
-                .overlay(alignment: .bottomLeading) { PurchaseDateOverlay(watch: watch) }
+                .overlay(alignment: .bottomLeading) { PurchaseDateOverlay(watch: watch, watches: store.data?.watches ?? []) }
                 .matchedTransitionSource(id: watch.id, in: zoom)
             VStack(alignment: .leading, spacing: 2) {
                 Text(watch.name)

@@ -27,10 +27,12 @@ func purchaseDay(_ text: String) -> Int {
 }
 
 /// Short purchase date for photo overlays: "Sep 20, 2026" when the day is known, else "Nov 2025".
-/// Nil for watches with no purchase month (e.g. undated trades).
-func purchaseShortLabel(_ watch: Watch) -> String? {
-    guard let parts = purchaseMonthParts(watch.purchased) else { return nil }
-    let day = purchaseDay(watch.purchasedText)
+/// A trade with no date of its own shows when the watch it came from was bought
+/// (Series 6 traded for the Series 8 shows the Series 8's Feb 2023). Nil when neither has a date.
+func purchaseShortLabel(_ watch: Watch, in watches: [Watch]) -> String? {
+    let dated = datedSource(watch, in: watches)
+    guard let parts = purchaseMonthParts(dated.purchased) else { return nil }
+    let day = purchaseDay(dated.purchasedText)
     guard let date = Calendar.current.date(from: DateComponents(year: parts.year, month: parts.month, day: max(day, 1)))
     else { return nil }
     return day > 0
@@ -38,12 +40,20 @@ func purchaseShortLabel(_ watch: Watch) -> String? {
         : date.formatted(.dateTime.month(.abbreviated).year())
 }
 
+/// The watch whose purchase date stands for this one: itself, or for a trade with no date
+/// of its own, the watch it was traded from.
+func datedSource(_ watch: Watch, in watches: [Watch]) -> Watch {
+    guard watch.purchased == nil else { return watch }
+    return watches.first { $0.id == watch.costSourceWatchID } ?? watch
+}
+
 /// Purchase date laid over the bottom-left of a photo, like the duration on a Photos thumbnail.
 struct PurchaseDateOverlay: View {
     let watch: Watch
+    let watches: [Watch]
 
     var body: some View {
-        if let label = purchaseShortLabel(watch) {
+        if let label = purchaseShortLabel(watch, in: watches) {
             Text(label)
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.white)
