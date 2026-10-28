@@ -352,7 +352,7 @@ struct WishlistCard: View {
             HStack(spacing: 8) {
                 if item.status == "considering" {
                     Button("Bought It", action: bought)
-                        .buttonStyle(.borderedProminent)
+                        .prominentButton()
                     Button("Pass", action: pass)
                         .buttonStyle(.bordered)
                 } else {
@@ -475,7 +475,7 @@ struct TopPickView: View {
             }
             HStack(spacing: 12) {
                 Button("Bought It", action: bought)
-                    .buttonStyle(.borderedProminent)
+                    .prominentButton()
                 Button("Details", action: edit)
                     .buttonStyle(.bordered)
                 Spacer()

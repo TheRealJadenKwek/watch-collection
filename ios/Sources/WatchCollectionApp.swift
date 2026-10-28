@@ -52,7 +52,7 @@ struct RootView: View {
                             detail: store.errorMessage ?? "No collection is stored on this iPhone yet."
                         )
                         Button("Open Settings") { showSettings = true }
-                            .buttonStyle(.borderedProminent)
+                            .prominentButton()
                     }
                 }
             }

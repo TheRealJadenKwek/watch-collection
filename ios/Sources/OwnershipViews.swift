@@ -44,6 +44,7 @@ struct MaintenanceSheet: View {
                         TextField("Notes", text: $notes, axis: .vertical)
                             .lineLimit(2...5)
                         Toggle("Remind me when next due", isOn: $hasReminder)
+                            .tint(.green)
                         if hasReminder {
                             DatePicker("Next due", selection: $nextDue, displayedComponents: .date)
                         }

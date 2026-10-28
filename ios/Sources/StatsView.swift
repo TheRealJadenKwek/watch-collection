@@ -487,7 +487,7 @@ struct StatsScreen: View {
         let datedIDs = Set(entries.map(\.id))
         let trades = scoped.filter { $0.isTrade && !datedIDs.contains($0.id) }
         let missingCount = purchases.filter { !$0.isTrade && !datedIDs.contains($0.id) }.count
-        return SectionCard("Purchase Timeline", systemImage: "clock.fill", color: .orange) {
+        return SectionCard("Purchase Timeline", systemImage: "clock.fill", color: .indigo) {
             if entries.isEmpty {
                 ContentUnavailableView(
                     "No purchase dates yet",
@@ -513,7 +513,7 @@ struct StatsScreen: View {
                                 VStack(alignment: .trailing, spacing: 2) {
                                     Text(entry.month.uppercased())
                                         .font(.caption2.weight(.bold))
-                                        .foregroundStyle(.orange)
+                                        .foregroundStyle(.indigo)
                                     Text(entry.year)
                                         .font(.caption.monospacedDigit())
                                         .foregroundStyle(Color.secondary)
@@ -522,12 +522,12 @@ struct StatsScreen: View {
 
                                 VStack(spacing: 0) {
                                     Circle()
-                                        .fill(.orange)
+                                        .fill(.indigo)
                                         .frame(width: 10, height: 10)
-                                        .overlay { Circle().stroke(Color.orange.opacity(0.25), lineWidth: 5) }
+                                        .overlay { Circle().stroke(Color.indigo.opacity(0.25), lineWidth: 5) }
                                     if index < entries.count - 1 {
                                         Rectangle()
-                                            .fill(Color.orange.opacity(0.3))
+                                            .fill(Color.indigo.opacity(0.3))
                                             .frame(width: 1)
                                             .frame(maxHeight: .infinity)
                                     }
@@ -570,7 +570,7 @@ struct StatsScreen: View {
                         systemImage: "exclamationmark.circle"
                     )
                     .font(.caption)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(.indigo)
                 }
             }
             if !trades.isEmpty {
@@ -680,6 +680,7 @@ struct StatsScreen: View {
         let gaps = biggestGaps(basis)
         return SectionCard("Price Ladder", systemImage: "chart.line.uptrend.xyaxis", color: .teal, detail: "Buying guide") {
             Toggle("Originals only", isOn: $originalsOnly)
+                .tint(.green)
                 .font(.subheadline.weight(.semibold))
             VStack(spacing: 8) {
                 ForEach(tiers) { tier in
@@ -779,7 +780,7 @@ struct StatsScreen: View {
                 completionQueue = Array(missing.dropFirst())
                 selectedWatch = first
             }
-            .buttonStyle(.borderedProminent)
+            .prominentButton()
             .disabled(missing.isEmpty || store.isOffline)
         }
     }

@@ -109,6 +109,7 @@ struct SettingsView: View {
     private var syncSection: some View {
         Section("Automatic sync") {
             Toggle("Sync with my Mac", isOn: $syncEnabled)
+                .tint(.green)
             TextField("http://your-mac:8931", text: $syncAddress)
                 .textInputAutocapitalization(.never)
                 .autocorrectionDisabled()
@@ -169,6 +170,7 @@ struct SettingsView: View {
     private var automationSection: some View {
         Section("Backups & recovery") {
             Toggle("Keep JSON backup in Files", isOn: $draftSettings.autoBackup)
+                .tint(.green)
             LabeledContent("Destination", value: "On My iPhone / Watch Collection Backup")
             if let lastBackup = draftSettings.lastBackup {
                 LabeledContent("Last backup", value: lastBackup)

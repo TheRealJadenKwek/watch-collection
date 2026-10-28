@@ -1,7 +1,8 @@
 import SwiftUI
 
 /// System colours, so the app follows Light and Dark Mode the way Apple's own apps do.
-/// The tint is the asset catalog's AccentColor: system orange, like the icon's seconds hand.
+/// The tint is the asset catalog's AccentColor: monochrome (black in Light Mode, white in Dark),
+/// so the watch photos carry the colour. Switches use system green so they stay readable.
 enum WatchTheme {
     /// Named directly: Color.accentColor resolves to system blue with the iOS 27 SDK on iOS 26.
     static let accent = Color("AccentColor")
@@ -19,6 +20,15 @@ extension Font {
     /// SF Pro Rounded for figures, as Health and Fitness show their numbers.
     static func figure(_ style: Font.TextStyle = .title, weight: Font.Weight = .bold) -> Font {
         .system(style, design: .rounded, weight: weight)
+    }
+}
+
+extension View {
+    /// Filled button in the accent. The accent is black or white, so the label takes the
+    /// background colour instead of the default white, which vanished on a white fill.
+    func prominentButton() -> some View {
+        buttonStyle(.borderedProminent)
+            .foregroundStyle(Color(.systemBackground))
     }
 }
 

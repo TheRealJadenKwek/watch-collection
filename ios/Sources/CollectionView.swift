@@ -41,7 +41,9 @@ struct CollectionScreen: View {
         NavigationStack {
             RefreshableScreen(store: store) {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 18) {
+                    // Lazy, not VStack: a LazyVGrid inside an eager VStack re-measures as rows load,
+                    // which bounced the scroll position back and forth on every drag from the top.
+                    LazyVStack(alignment: .leading, spacing: 18) {
                         Picker("Show", selection: $scope) {
                             ForEach(Scope.allCases, id: \.self) { Text($0.rawValue).tag($0.rawValue) }
                         }

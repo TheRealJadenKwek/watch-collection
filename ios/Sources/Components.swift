@@ -138,7 +138,7 @@ func fitColor(_ info: FitInfo) -> Color {
     case "perfect", "great": .green
     case "sweet": .teal
     case "over": .red
-    default: .orange
+    default: .yellow
     }
 }
 
