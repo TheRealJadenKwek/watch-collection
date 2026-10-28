@@ -47,17 +47,17 @@ struct SettingsView: View {
                     taxonomySection
                     aboutSection
                 }
-                .listRowBackground(WatchTheme.card)
             }
-            .scrollContentBackground(.hidden)
-            .background(WatchTheme.background)
+            .navigationTitle("Settings")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
-                ToolbarItem(placement: .principal) { Text("Settings").font(.headline).serifTitle() }
+                ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(saving ? "Saving…" : "Save") { save() }
-                        .disabled(saving)
+                    if saving {
+                        ProgressView()
+                    } else {
+                        Button(role: .confirm) { save() }
+                    }
                 }
             }
             .alert("Watch Collection", isPresented: errorBinding) {
@@ -102,7 +102,7 @@ struct SettingsView: View {
             LabeledContent("Connection required", value: "No")
             Text("Your collection and photos stay on this iPhone and work offline. Sync shares changes when your Mac is reachable through Tailscale.")
                 .font(.caption)
-                .foregroundStyle(WatchTheme.secondary)
+                .foregroundStyle(Color.secondary)
         }
     }
 
@@ -130,7 +130,7 @@ struct SettingsView: View {
             .disabled(store.isSyncing || !store.syncEnabled)
             Text("Sync runs when you open the app, after edits, and when a connection returns. iOS chooses when background refresh runs. Keep your Mac awake and Tailscale connected on both devices.")
                 .font(.caption)
-                .foregroundStyle(WatchTheme.secondary)
+                .foregroundStyle(Color.secondary)
             ForEach(store.syncConflicts) { conflict in
                 VStack(alignment: .leading, spacing: 8) {
                     Text(conflict.title).font(.caption.weight(.semibold))
@@ -162,7 +162,7 @@ struct SettingsView: View {
             numberField("Lug-to-lug ceiling — mm", value: $draftSettings.wrist.lugMax)
             Text("Fit chips prefer lug-to-lug when known, then fall back to diameter.")
                 .font(.caption)
-                .foregroundStyle(WatchTheme.secondary)
+                .foregroundStyle(Color.secondary)
         }
     }
 
@@ -213,17 +213,17 @@ struct SettingsView: View {
                     Text("Preparing collection…")
                 }
                 .font(.caption)
-                .foregroundStyle(WatchTheme.secondary)
+                .foregroundStyle(Color.secondary)
             }
             if !backupResult.isEmpty {
                 Text(backupResult)
                     .font(.caption.monospaced())
-                    .foregroundStyle(WatchTheme.secondary)
+                    .foregroundStyle(Color.secondary)
                     .textSelection(.enabled)
             }
             Text("The portable backup includes your JSON and photos in one file. Save it to iCloud Drive for off-phone recovery. Restore always shows a summary and asks before replacing anything.")
                 .font(.caption)
-                .foregroundStyle(WatchTheme.secondary)
+                .foregroundStyle(Color.secondary)
         }
     }
 
@@ -237,7 +237,7 @@ struct SettingsView: View {
                     } label: {
                         CapsuleChip(
                             text: category,
-                            color: allowed ? WatchTheme.gold : WatchTheme.secondary,
+                            color: allowed ? WatchTheme.accent : .secondary,
                             filled: allowed
                         )
                     }
@@ -247,7 +247,7 @@ struct SettingsView: View {
             }
             Text("Selected categories can appear in Next move. Turn off styles you do not want suggested.")
                 .font(.caption)
-                .foregroundStyle(WatchTheme.secondary)
+                .foregroundStyle(Color.secondary)
         }
     }
 
@@ -260,7 +260,7 @@ struct SettingsView: View {
             }
             Text("Renames propagate to every watch and candidate. In-use values cannot be deleted until records are reassigned.")
                 .font(.caption)
-                .foregroundStyle(WatchTheme.secondary)
+                .foregroundStyle(Color.secondary)
         }
     }
 
@@ -273,11 +273,7 @@ struct SettingsView: View {
     }
 
     private func numberField(_ title: String, value: Binding<Double>) -> some View {
-        LabeledContent(title) {
-            NumberField("Value", value: value)
-                .multilineTextAlignment(.trailing)
-                .frame(minWidth: 52, maxWidth: 72)
-        }
+        NumberField(title, value: value)
     }
 
     private func toggleSuggestionCategory(_ category: String) {
@@ -404,8 +400,6 @@ struct TaxonomyManagerView: View {
                 }
             }
         }
-        .scrollContentBackground(.hidden)
-        .background(WatchTheme.background)
         .navigationTitle(route.title)
         .navigationBarTitleDisplayMode(.inline)
         .alert("Rename value", isPresented: Binding(

@@ -1,78 +1,50 @@
 import SwiftUI
 
+/// System colours, so the app follows Light and Dark Mode the way Apple's own apps do.
+/// The tint is the asset catalog's AccentColor: system orange, like the icon's seconds hand.
 enum WatchTheme {
-    // Near-black with a warm undertone, champagne gold used sparingly, ivory type.
-    static let background = Color(red: 8 / 255, green: 7 / 255, blue: 6 / 255)
-    static let card = Color(red: 19 / 255, green: 17 / 255, blue: 14 / 255)
-    static let raised = Color(red: 29 / 255, green: 26 / 255, blue: 21 / 255)
-    static let gold = Color(red: 212 / 255, green: 180 / 255, blue: 120 / 255)
-    static let goldDeep = Color(red: 166 / 255, green: 134 / 255, blue: 78 / 255)
-    static let ivory = Color(red: 240 / 255, green: 234 / 255, blue: 220 / 255)
-    static let secondary = Color(red: 158 / 255, green: 150 / 255, blue: 136 / 255)
-    static let hairline = Color.white.opacity(0.08)
-    static let green = Color(red: 110 / 255, green: 160 / 255, blue: 126 / 255)
-    static let amber = Color(red: 214 / 255, green: 150 / 255, blue: 84 / 255)
-    static let red = Color(red: 200 / 255, green: 102 / 255, blue: 96 / 255)
+    /// Named directly: Color.accentColor resolves to system blue with the iOS 27 SDK on iOS 26.
+    static let accent = Color("AccentColor")
+    static let background = Color(.systemGroupedBackground)
+    static let card = Color(.secondarySystemGroupedBackground)
+    static let raised = Color(.tertiarySystemGroupedBackground)
+    static let fill = Color(.tertiarySystemFill)
+    static let separator = Color(.separator)
+    static let warning = Color.red
+    /// Corner radius shared by cards and photos, close to iOS 26's grouped sections.
+    static let corner: CGFloat = 24
 }
 
 extension Font {
-    /// Didot (bundled with iOS) for display type: titles, watch names and big numerals.
-    static func display(_ size: CGFloat, relativeTo style: Font.TextStyle = .title) -> Font {
-        .custom("Didot", size: size, relativeTo: style)
-    }
-
-    static func displayItalic(_ size: CGFloat, relativeTo style: Font.TextStyle = .body) -> Font {
-        .custom("Didot-Italic", size: size, relativeTo: style)
-    }
-}
-
-/// Thin full-width rule used to open editorial sections.
-struct GoldRule: View {
-    var opacity: Double = 0.35
-
-    var body: some View {
-        Rectangle().fill(WatchTheme.gold.opacity(opacity)).frame(height: 0.75)
+    /// SF Pro Rounded for figures, as Health and Fitness show their numbers.
+    static func figure(_ style: Font.TextStyle = .title, weight: Font.Weight = .bold) -> Font {
+        .system(style, design: .rounded, weight: weight)
     }
 }
 
 extension View {
-    func watchCard(cornerRadius: CGFloat = 20) -> some View {
+    /// A rounded card on the grouped background, like a Health summary tile.
+    func groupedCard(padding: CGFloat = 16, cornerRadius: CGFloat = WatchTheme.corner) -> some View {
         self
-            .background {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .fill(WatchTheme.card)
-                    .overlay {
-                        // Faint top light so cards read as raised objects, not flat boxes.
-                        LinearGradient(colors: [Color.white.opacity(0.035), .clear], startPoint: .top, endPoint: .center)
-                            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                    }
-            }
-            .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                    .stroke(WatchTheme.hairline, lineWidth: 1)
-            }
-    }
-
-    func serifTitle() -> some View {
-        fontDesign(.serif)
+            .padding(padding)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(WatchTheme.card, in: RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
     }
 }
 
-/// Small tracked uppercase label used above titles and figures.
+/// Small secondary label above a title or figure.
 struct Eyebrow: View {
     let text: String
-    var color: Color = WatchTheme.gold
+    var color: Color = .secondary
 
-    init(_ text: String, color: Color = WatchTheme.gold) {
+    init(_ text: String, color: Color = .secondary) {
         self.text = text
         self.color = color
     }
 
     var body: some View {
-        Text(text.uppercased())
-            .font(.system(size: 10.5, weight: .semibold))
-            .tracking(1.8)
+        Text(text)
+            .font(.footnote.weight(.semibold))
             .foregroundStyle(color)
     }
 }
@@ -230,13 +202,17 @@ struct NumberField: View {
     }
 
     var body: some View {
-        TextField(title, text: $text)
-            .keyboardType(.decimalPad)
-            .onChange(of: text) { _, new in value = parseTypedNumber(new) }
-            .onChange(of: value) { _, new in
-                // Treat empty and 0 alike so clearing a required price doesn't snap back to "0".
-                if (parseTypedNumber(text) ?? 0) != (new ?? 0) { text = new.map(plainNumber) ?? "" }
-            }
+        // Label on the left, value on the right, as in Apple's own forms.
+        LabeledContent(title) {
+            TextField(title, text: $text, prompt: Text("None"))
+                .multilineTextAlignment(.trailing)
+        }
+        .keyboardType(.decimalPad)
+        .onChange(of: text) { _, new in value = parseTypedNumber(new) }
+        .onChange(of: value) { _, new in
+            // Treat empty and 0 alike so clearing a required price doesn't snap back to "0".
+            if (parseTypedNumber(text) ?? 0) != (new ?? 0) { text = new.map(plainNumber) ?? "" }
+        }
     }
 }
 
@@ -286,7 +262,7 @@ func dialColor(_ name: String?) -> Color {
     case "Blue": .blue
     case "Green": .green
     case "Grey": .gray
-    case "Gold/Champagne": WatchTheme.gold
+    case "Gold/Champagne": Color(red: 0.83, green: 0.71, blue: 0.47)
     case "Cream": Color(red: 0.88, green: 0.83, blue: 0.68)
     case "Orange": .orange
     case "Red": .red

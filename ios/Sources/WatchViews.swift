@@ -3,100 +3,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 import UIKit
 
-struct WatchCardView: View {
-    @ObservedObject var store: AppStore
-    let watch: Watch
-    let isPast: Bool
-
-    /// Width / height of the card photo. The framing editor uses the same ratio.
-    static let photoAspect: CGFloat = 0.82
-
-    private var wrist: WristProfile? { store.data?.settings.wrist }
-    private var coverAsset: PhotoAsset? {
-        watch.photos.first.flatMap { store.photoAsset(itemID: watch.id, filename: $0, wishlist: false) }
-    }
-    private var detailLine: String {
-        [watch.category, watch.diameter.map { "\(compactNumber($0))mm" }]
-            .compactMap { $0 }
-            .joined(separator: " · ")
-    }
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Color.clear
-                .aspectRatio(Self.photoAspect, contentMode: .fit)
-                .overlay {
-                    RemoteWatchImage(
-                        asset: coverAsset,
-                        allowsRemoteFetch: !store.isOffline,
-                        focus: watch.focus(for: watch.photos.first)
-                    )
-                }
-                .overlay(alignment: .bottom) {
-                    LinearGradient(
-                        colors: [.clear, Color.black.opacity(0.55), Color.black.opacity(0.85)],
-                        startPoint: .top,
-                        endPoint: .bottom
-                    )
-                    .frame(height: 96)
-                }
-                .overlay(alignment: .bottomLeading) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(watch.name)
-                            .font(.display(15))
-                            .foregroundStyle(WatchTheme.ivory)
-                            .lineLimit(2)
-                            .multilineTextAlignment(.leading)
-                            .shadow(color: .black.opacity(0.4), radius: 4, y: 1)
-                        Text(cad(watch.price))
-                            .font(.system(size: 12, weight: .semibold).monospacedDigit())
-                            .foregroundStyle(WatchTheme.gold)
-                    }
-                    .padding(11)
-                }
-                .overlay(alignment: .topLeading) {
-                    HStack(spacing: 5) {
-                        if isPast {
-                            CapsuleChip(text: statusLabel(watch.status), color: WatchTheme.gold, filled: true)
-                        }
-                        if watch.original == false {
-                            CapsuleChip(text: "REP", color: WatchTheme.ivory, filled: true)
-                        }
-                    }
-                    .padding(9)
-                }
-                .clipped()
-                .allowsHitTesting(false)
-
-            VStack(alignment: .leading, spacing: 5) {
-                Text(detailLine.isEmpty ? "Details unset" : detailLine)
-                    .font(.system(size: 11.5, weight: .medium))
-                    .foregroundStyle(WatchTheme.secondary)
-                    .lineLimit(1)
-                Group {
-                    if isPast {
-                        Text(watch.statusNote.isEmpty ? " " : watch.statusNote)
-                            .font(.system(size: 11))
-                            .foregroundStyle(WatchTheme.secondary.opacity(0.8))
-                            .lineLimit(1)
-                    } else if let wrist, let fit = fitInfo(for: watch.diameter, lugToLug: watch.lugToLug, wrist: wrist) {
-                        FitIndicator(info: fit)
-                    } else {
-                        Text(" ").font(.system(size: 11))
-                    }
-                }
-            }
-            .padding(.horizontal, 11)
-            .padding(.vertical, 10)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .watchCard(cornerRadius: 18)
-        // Clipping changes drawing only. Keep the scaled photo's hit area inside
-        // the visible card so it cannot intercept nearby cards.
-        .contentShape(.interaction, RoundedRectangle(cornerRadius: 18, style: .continuous))
-    }
-}
-
 struct WatchDetailScreen: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: AppStore
@@ -150,20 +56,19 @@ struct WatchDetailScreen: View {
                     if !isNew { ownershipSection }
                     storySection
                 }
-                .listRowBackground(WatchTheme.card)
             }
-            .scrollContentBackground(.hidden)
-            .background(WatchTheme.background)
+            .navigationTitle(isNew ? "New Watch" : "Edit Watch")
             .navigationBarTitleDisplayMode(.inline)
             .storeErrorAlert(store)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
-                ToolbarItem(placement: .principal) {
-                    Text(isNew ? "Add Watch" : "Watch Details").font(.headline).serifTitle()
-                }
+                ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isSaving ? "Saving…" : "Save") { save() }
-                        .disabled(store.isOffline || isSaving || !validationIssues.isEmpty)
+                    if isSaving {
+                        ProgressView()
+                    } else {
+                        Button(role: .confirm) { save() }
+                            .disabled(store.isOffline || !validationIssues.isEmpty)
+                    }
                 }
             }
             .onChange(of: photoItem) { _, item in
@@ -198,7 +103,6 @@ struct WatchDetailScreen: View {
                 Text("The record and its photos will be removed permanently.")
             }
         }
-        .preferredColorScheme(.dark)
     }
 
     private var photoSection: some View {
@@ -263,7 +167,7 @@ struct WatchDetailScreen: View {
                      ? "Add photos now; they will be saved with the new watch."
                      : "\(pendingPhotos.count) photo\(pendingPhotos.count == 1 ? "" : "s") ready to save. The first photo is the cover.")
                     .font(.caption)
-                    .foregroundStyle(WatchTheme.secondary)
+                    .foregroundStyle(Color.secondary)
             }
         }
     }
@@ -328,7 +232,7 @@ struct WatchDetailScreen: View {
             ForEach(validationIssues, id: \.self) { issue in
                 Label(issue, systemImage: "exclamationmark.circle")
                     .font(.caption)
-                    .foregroundStyle(WatchTheme.amber)
+                    .foregroundStyle(WatchTheme.warning)
             }
         }
     }
@@ -375,13 +279,13 @@ struct WatchDetailScreen: View {
             NumberField(draft.costSourceWatchID == nil ? "Price paid (CAD)" : "Original purchase cost (CAD)", value: $draft.price)
             if let sourceID = draft.costSourceWatchID {
                 Text("Carried over from \(store.data?.watches.first(where: { $0.id == sourceID })?.name ?? "the traded watch"). Counted once in all-time spending.")
-                    .font(.caption).foregroundStyle(WatchTheme.secondary)
+                    .font(.caption).foregroundStyle(Color.secondary)
             }
             MonthYearPicker(value: $draft.purchased, allowsUnknown: draft.status != "owned" || draft.isTrade)
             if !purchaseMonthLabel(draft.purchased).isEmpty {
                 LabeledContent("Timeline date", value: purchaseMonthLabel(draft.purchased))
                     .font(.caption)
-                    .foregroundStyle(WatchTheme.secondary)
+                    .foregroundStyle(Color.secondary)
             }
             Picker("Original design", selection: Binding(
                 get: { draft.original.map { $0 ? "true" : "false" } ?? "" },

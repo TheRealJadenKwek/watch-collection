@@ -95,13 +95,13 @@ struct PhotoFramingSheet: View {
                     editor
                     Text("Drag to reposition. Pinch to zoom. Double-tap to reset.")
                         .font(.caption)
-                        .foregroundStyle(WatchTheme.secondary)
+                        .foregroundStyle(Color.secondary)
                     if let image, !previews.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
                             Text("ALSO APPEARS AS")
                                 .font(.caption2.weight(.bold))
                                 .tracking(1.2)
-                                .foregroundStyle(WatchTheme.secondary)
+                                .foregroundStyle(Color.secondary)
                             HStack(alignment: .bottom, spacing: 12) {
                                 ForEach(previews.indices, id: \.self) { index in
                                     VStack(spacing: 6) {
@@ -110,7 +110,7 @@ struct PhotoFramingSheet: View {
                                             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
                                         Text(previews[index].label)
                                             .font(.caption2)
-                                            .foregroundStyle(WatchTheme.secondary)
+                                            .foregroundStyle(Color.secondary)
                                     }
                                 }
                             }
@@ -125,14 +125,14 @@ struct PhotoFramingSheet: View {
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(WatchTheme.background)
-            .navigationTitle("Frame photo")
+            .navigationTitle("Frame Photo")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { dismiss() }
+                    Button(role: .cancel) { dismiss() }
                 }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Save") {
+                    Button(role: .confirm) {
                         isSaving = true
                         Task {
                             await onSave(isCentered(focus) ? nil : focus)
@@ -162,7 +162,7 @@ struct PhotoFramingSheet: View {
                     if gestureStart != nil { ThirdsGrid().allowsHitTesting(false) }
                 } else {
                     WatchPlaceholder()
-                    ProgressView().tint(WatchTheme.gold)
+                    ProgressView()
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
@@ -174,7 +174,7 @@ struct PhotoFramingSheet: View {
             .gesture(framingGesture(frame: geo.size))
             .overlay(
                 RoundedRectangle(cornerRadius: 18, style: .continuous)
-                    .strokeBorder(WatchTheme.gold.opacity(0.6), lineWidth: 1)
+                    .strokeBorder(Color.white.opacity(0.6), lineWidth: 1)
             )
         }
         .aspectRatio(aspect, contentMode: .fit)

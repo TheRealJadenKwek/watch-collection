@@ -50,7 +50,7 @@ struct MaintenanceSheet: View {
                         if let validationIssue {
                             Label(validationIssue, systemImage: "exclamationmark.circle")
                                 .font(.caption)
-                                .foregroundStyle(WatchTheme.amber)
+                                .foregroundStyle(WatchTheme.warning)
                         }
                         Button {
                             addRecord()
@@ -63,7 +63,7 @@ struct MaintenanceSheet: View {
                     Section("History · \(records.count)") {
                         if records.isEmpty {
                             Text("No service records yet.")
-                                .foregroundStyle(WatchTheme.secondary)
+                                .foregroundStyle(Color.secondary)
                         } else {
                             ForEach(records) { record in
                                 VStack(alignment: .leading, spacing: 5) {
@@ -72,16 +72,16 @@ struct MaintenanceSheet: View {
                                         Spacer()
                                         Text(calendarDayLabel(record.date))
                                             .font(.caption)
-                                            .foregroundStyle(WatchTheme.secondary)
+                                            .foregroundStyle(Color.secondary)
                                     }
                                     if !record.notes.isEmpty {
                                         Text(record.notes)
                                             .font(.caption)
-                                            .foregroundStyle(WatchTheme.secondary)
+                                            .foregroundStyle(Color.secondary)
                                     }
                                     HStack(spacing: 10) {
                                         if let cost = record.cost {
-                                            Text(cad(cost)).foregroundStyle(WatchTheme.gold)
+                                            Text(cad(cost)).foregroundStyle(.secondary)
                                         }
                                         if let due = record.nextDue {
                                             Label("Due \(calendarDayLabel(due))", systemImage: "bell")
@@ -98,14 +98,11 @@ struct MaintenanceSheet: View {
                         }
                     }
                 }
-                .listRowBackground(WatchTheme.card)
             }
-            .scrollContentBackground(.hidden)
-            .background(WatchTheme.background)
             .navigationTitle(watch?.name ?? "Service History")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } }
             }
             .onChange(of: kind) { _, _ in
                 if hasReminder { nextDue = suggestedDueDate() }
@@ -117,7 +114,6 @@ struct MaintenanceSheet: View {
                 if enabled { nextDue = suggestedDueDate() }
             }
         }
-        .preferredColorScheme(.dark)
         .presentationDetents([.large])
     }
 

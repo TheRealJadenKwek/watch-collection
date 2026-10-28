@@ -1,27 +1,24 @@
 import SwiftUI
 
-/// The collection as an editorial catalogue: owned pieces and the archive in one place.
+/// The collection as a photo library: owned pieces and the archive in one place.
 struct CollectionScreen: View {
     @ObservedObject var store: AppStore
     let showSettings: () -> Void
-    @State private var search = ""
     @State private var addingWatch = false
     @AppStorage("collectionScope") private var scope = Scope.owned.rawValue
     @AppStorage("collectionSort") private var sort = Sort.value.rawValue
-    @AppStorage("collectionLayout") private var layout = Layout.plates.rawValue
+    @AppStorage("collectionLayout") private var layout = Layout.cards.rawValue
     @Namespace private var zoom
 
     enum Scope: String, CaseIterable { case owned = "Owned", archive = "Archive" }
     enum Sort: String, CaseIterable { case value = "Value", newest = "Newest", oldest = "Oldest", name = "Name" }
-    enum Layout: String { case plates, grid }
+    enum Layout: String { case cards, grid }
 
     private var all: [Watch] { store.data?.watches ?? [] }
-    private var numbers: [String: Int] { catalogueNumbers(all) }
 
     private var watches: [Watch] {
         let shown = all
             .filter { scope == Scope.owned.rawValue ? $0.status == "owned" : $0.status != "owned" }
-            .filter { search.isEmpty || "\($0.name) \($0.brand ?? "") \($0.story) \($0.statusNote)".localizedCaseInsensitiveContains(search) }
         switch Sort(rawValue: sort) ?? .value {
         case .oldest:
             return acquisitionOrder(shown)
@@ -44,38 +41,54 @@ struct CollectionScreen: View {
         NavigationStack {
             RefreshableScreen(store: store) {
                 ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        header
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 22)
-                        controls
-                            .padding(.horizontal, 20)
-                            .padding(.bottom, 22)
+                    VStack(alignment: .leading, spacing: 18) {
+                        Picker("Show", selection: $scope) {
+                            ForEach(Scope.allCases, id: \.self) { Text($0.rawValue).tag($0.rawValue) }
+                        }
+                        .pickerStyle(.segmented)
+                        .padding(.horizontal, 20)
+
                         if watches.isEmpty {
                             EmptyCollectionView(
-                                title: search.isEmpty ? "Nothing here yet" : "No matches",
-                                detail: !search.isEmpty ? "Try a different search."
-                                    : scope == Scope.owned.rawValue ? "Tap + to add your first watch." : "Watches you part with appear in the archive."
+                                title: "Nothing Here Yet",
+                                detail: scope == Scope.owned.rawValue ? "Tap + to add your first watch." : "Watches you part with appear in the archive."
                             )
-                            .frame(minHeight: 320)
+                            .frame(minHeight: 360)
                         } else if layout == Layout.grid.rawValue {
                             grid
                         } else {
-                            plates
+                            cards
                         }
                     }
-                    .padding(.top, 6)
-                    .padding(.bottom, 40)
+                    .padding(.top, 4)
+                    .padding(.bottom, 24)
                 }
-                .background(WatchTheme.background)
+                .containerBackground(WatchTheme.background, for: .navigation)
             }
-            .searchable(text: $search, prompt: "Name, brand or story")
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationTitle(scope == Scope.owned.rawValue ? "Collection" : "Archive")
+            .navigationSubtitle(subtitle)
             .toolbar {
+                ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
                 ToolbarItemGroup(placement: .topBarTrailing) {
+                    Menu {
+                        Section("Sort By") {
+                            Picker("Sort By", selection: $sort) {
+                                ForEach(Sort.allCases, id: \.self) { Text($0.rawValue).tag($0.rawValue) }
+                            }
+                        }
+                        Section("View As") {
+                            Picker("View As", selection: $layout) {
+                                Label("Cards", systemImage: "square.grid.2x2").tag(Layout.cards.rawValue)
+                                Label("Photos", systemImage: "square.grid.3x3").tag(Layout.grid.rawValue)
+                            }
+                        }
+                    } label: {
+                        Image(systemName: "line.3.horizontal.decrease")
+                    }
+                    .accessibilityLabel("Sort and view options")
                     Button { addingWatch = true } label: { Image(systemName: "plus") }
                         .disabled(store.isOffline)
-                    GearToolbarButton(action: showSettings)
+                        .accessibilityLabel("Add watch")
                 }
             }
             .navigationDestination(for: WatchRoute.self) { route in
@@ -83,8 +96,9 @@ struct CollectionScreen: View {
                     .navigationTransition(.zoom(sourceID: route.id, in: zoom))
             }
             .onAppear {
-                // "Most worn" went away with wear logging; fall back to a real option.
+                // "Most worn" went away with wear logging, and the one-up plates became cards.
                 if Sort(rawValue: sort) == nil { sort = Sort.value.rawValue }
+                if Layout(rawValue: layout) == nil { layout = Layout.cards.rawValue }
             }
             .sheet(isPresented: $addingWatch) {
                 WatchDetailScreen(store: store, watch: .newDraft, isNew: true)
@@ -92,54 +106,18 @@ struct CollectionScreen: View {
         }
     }
 
-    private var header: some View {
+    private var subtitle: String {
         let owned = all.filter { $0.status == "owned" }
-        let subtitle = scope == Scope.owned.rawValue
-            ? "\(owned.count) pieces · \(cadWhole(owned.reduce(0) { $0 + $1.price })) invested"
-            : "\(all.count - owned.count) watches that have moved on · \(all.count) all-time"
-        return ScreenHeader(eyebrow: "Watch Collection", title: scope == Scope.owned.rawValue ? "The Collection" : "The Archive", subtitle: subtitle)
+        return scope == Scope.owned.rawValue
+            ? "\(owned.count) watches · \(cadWhole(owned.reduce(0) { $0 + $1.price }))"
+            : "\(all.count - owned.count) moved on · \(all.count) all time"
     }
 
-    private var controls: some View {
-        HStack(spacing: 10) {
-            PillPicker(options: Scope.allCases.map { ($0.rawValue, $0.rawValue) }, selection: $scope)
-
-            Spacer()
-
-            Menu {
-                Picker("Sort", selection: $sort) {
-                    ForEach(Sort.allCases, id: \.self) { Text($0.rawValue).tag($0.rawValue) }
-                }
-            } label: {
-                Image(systemName: "arrow.up.arrow.down")
-                    .font(.system(size: 14, weight: .semibold))
-                    .frame(width: 38, height: 38)
-                    .background(WatchTheme.card, in: Circle())
-                    .overlay { Circle().stroke(WatchTheme.hairline) }
-            }
-            .accessibilityLabel("Sort by \(sort)")
-
-            Button {
-                withAnimation(.snappy) { layout = layout == Layout.plates.rawValue ? Layout.grid.rawValue : Layout.plates.rawValue }
-            } label: {
-                Image(systemName: layout == Layout.plates.rawValue ? "square.grid.3x3" : "rectangle.grid.1x2")
-                    .font(.system(size: 14, weight: .semibold))
-                    .frame(width: 38, height: 38)
-                    .background(WatchTheme.card, in: Circle())
-                    .overlay { Circle().stroke(WatchTheme.hairline) }
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(WatchTheme.gold)
-            .accessibilityLabel(layout == Layout.plates.rawValue ? "Show grid" : "Show large photos")
-        }
-    }
-
-    private var plates: some View {
-        LazyVStack(spacing: 34) {
+    private var cards: some View {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14, alignment: .top), count: 2), spacing: 24) {
             ForEach(watches) { watch in
                 NavigationLink(value: WatchRoute(id: watch.id)) {
-                    PlateView(store: store, watch: watch, number: numbers[watch.id])
-                        .matchedTransitionSource(id: watch.id, in: zoom)
+                    WatchTile(store: store, watch: watch, zoom: zoom)
                 }
                 .buttonStyle(.plain)
             }
@@ -148,7 +126,7 @@ struct CollectionScreen: View {
     }
 
     private var grid: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 3), count: 3), spacing: 3) {
+        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
             ForEach(watches) { watch in
                 NavigationLink(value: WatchRoute(id: watch.id)) {
                     FramedPhoto(
@@ -158,73 +136,48 @@ struct CollectionScreen: View {
                         focus: watch.focus(for: watch.photos.first),
                         aspect: PhotoShape.square
                     )
-                    .overlay(alignment: .bottomLeading) {
-                        Text(catalogueLabel(numbers[watch.id]))
-                            .font(.system(size: 9, weight: .bold).monospacedDigit())
-                            .tracking(1)
-                            .foregroundStyle(WatchTheme.ivory)
-                            .shadow(color: .black.opacity(0.7), radius: 3)
-                            .padding(6)
-                    }
                     .matchedTransitionSource(id: watch.id, in: zoom)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(watch.name)
             }
         }
-        .padding(.horizontal, 3)
     }
 }
 
-/// Large magazine plate: photo, catalogue number, name and the essentials.
-struct PlateView: View {
+/// Two-up card in the style of Apple's own libraries: rounded photo, name, then price and category.
+struct WatchTile: View {
     @ObservedObject var store: AppStore
     let watch: Watch
-    let number: Int?
+    let zoom: Namespace.ID
 
-    private var meta: String {
-        [watch.brand, watch.category, watch.diameter.map { "\(compactNumber($0)) mm" }]
-            .compactMap { $0 }
-            .joined(separator: " · ")
+    private var detail: String {
+        if watch.status != "owned" { return statusLabel(watch.status) }
+        return [cadWhole(watch.price), watch.category].compactMap { $0 }.joined(separator: " · ")
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: 8) {
             FramedPhoto(store: store, itemID: watch.id, filename: watch.photos.first, focus: watch.focus(for: watch.photos.first))
-                .clipShape(RoundedRectangle(cornerRadius: 26, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .overlay(alignment: .topLeading) {
-                    HStack(spacing: 6) {
-                        PhotoTag(text: catalogueLabel(number))
-                        if watch.status != "owned" { PhotoTag(text: statusLabel(watch.status), color: WatchTheme.gold) }
-                        if watch.original == false { PhotoTag(text: "Rep") }
+                    if watch.original == false {
+                        PhotoTag(text: "Replica").padding(8)
                     }
-                    .padding(14)
                 }
-            HStack(alignment: .firstTextBaseline, spacing: 12) {
-                VStack(alignment: .leading, spacing: 5) {
-                    Text(watch.name)
-                        .font(.display(26))
-                        .foregroundStyle(WatchTheme.ivory)
-                        .lineLimit(2)
-                        .multilineTextAlignment(.leading)
-                    Text(meta.isEmpty ? "Details unset" : meta)
-                        .font(.footnote)
-                        .foregroundStyle(WatchTheme.secondary)
-                        .lineLimit(1)
-                }
-                Spacer(minLength: 8)
-                Text(cadWhole(watch.price))
-                    .font(.display(20))
-                    .foregroundStyle(WatchTheme.gold)
-            }
-            if watch.status != "owned", !watch.statusNote.isEmpty {
-                Text(watch.statusNote)
+                .matchedTransitionSource(id: watch.id, in: zoom)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(watch.name)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2, reservesSpace: true)
+                    .multilineTextAlignment(.leading)
+                Text(detail)
                     .font(.footnote)
-                    .foregroundStyle(WatchTheme.secondary)
-            } else if watch.status == "owned", let wrist = store.data?.settings.wrist,
-                      let fit = fitInfo(for: watch.diameter, lugToLug: watch.lugToLug, wrist: wrist) {
-                FitIndicator(info: fit)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
+            .padding(.horizontal, 2)
         }
         .contentShape(Rectangle())
     }

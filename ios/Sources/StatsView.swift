@@ -25,10 +25,13 @@ struct StatsScreen: View {
         NavigationStack {
             RefreshableScreen(store: store) {
                 ScrollView {
-                    LazyVStack(spacing: 22) {
-                        ScreenHeader(eyebrow: "The numbers", title: "Insights")
-                        PillPicker(options: [("owned", "Current"), ("all", "All-time")], selection: $scope)
-                            .frame(maxWidth: .infinity, alignment: .leading)
+                    LazyVStack(spacing: 14) {
+                        Picker("Scope", selection: $scope) {
+                            Text("Current").tag("owned")
+                            Text("All Time").tag("all")
+                        }
+                        .pickerStyle(.segmented)
+                        .padding(.bottom, 4)
                         headlineTiles
                         maintenanceDashboard
                         costChart
@@ -40,19 +43,19 @@ struct StatsScreen: View {
                         categoryCoverage
                         priceLadder
                         brandBreadth
-                        varietyPanel(title: "Dial variety", field: \Watch.dialColor, values: store.data?.dialColors ?? [])
-                        varietyPanel(title: "Material variety", field: \Watch.material, values: store.data?.materials ?? [])
+                        varietyPanel(title: "Dials", symbol: "circle.lefthalf.filled", color: .cyan, field: \Watch.dialColor, values: store.data?.dialColors ?? [])
+                        varietyPanel(title: "Materials", symbol: "cube.fill", color: .brown, field: \Watch.material, values: store.data?.materials ?? [])
                         completeData
                     }
-                    .padding(.horizontal, 20)
-                    .padding(.top, 6)
-                    .padding(.bottom, 40)
+                    .padding(.horizontal, 16)
+                    .padding(.top, 4)
+                    .padding(.bottom, 24)
                 }
-                .background(WatchTheme.background)
+                .containerBackground(WatchTheme.background, for: .navigation)
             }
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Insights")
             .toolbar {
-                ToolbarItem(placement: .topBarTrailing) { GearToolbarButton(action: showSettings) }
+                ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
             }
             .sheet(item: $selectedWatch, onDismiss: advanceCompletionQueue) { watch in
                 WatchDetailScreen(store: store, watch: watch, onSaved: { savedInSequence = true })
@@ -79,63 +82,63 @@ struct StatsScreen: View {
         let figures: [(String, String)] = [
             ("Mean", cadWhole(stats?.mean ?? 0)),
             ("Median", cadWhole(stats?.median ?? 0)),
-            ("Std dev", cadWhole(stats?.stdDev ?? 0)),
+            ("Std Dev", cadWhole(stats?.stdDev ?? 0)),
             ("Lowest", cadWhole(stats?.min ?? 0)),
             ("Highest", cadWhole(stats?.max ?? 0)),
             ("Middle 50%", "\(cadWhole(stats?.q1 ?? 0))–\(cadWhole(stats?.q3 ?? 0))"),
         ]
         return VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 6) {
-                Eyebrow(scope == "owned" ? "Current collection" : "All-time")
-                Text(cad(stats?.total ?? 0))
-                    .font(.display(46))
-                    .foregroundStyle(WatchTheme.gold)
+            VStack(alignment: .leading, spacing: 4) {
+                Label("Total Spent", systemImage: "dollarsign.circle.fill")
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(.green)
+                Text(cadWhole(stats?.total ?? 0))
+                    .font(.figure(.largeTitle))
                     .minimumScaleFactor(0.7)
                     .lineLimit(1)
-                Text("spent across \(count) watch\(count == 1 ? "" : "es")")
+                    .padding(.top, 6)
+                Text("across \(count) watch\(count == 1 ? "" : "es")\(scope == "owned" ? " you own" : " ever owned")")
                     .font(.subheadline)
-                    .foregroundStyle(WatchTheme.secondary)
+                    .foregroundStyle(.secondary)
             }
 
             VStack(alignment: .leading, spacing: 7) {
                 HStack {
-                    Text("In your \(compactNumber(wrist.sweetSpotMin))–\(compactNumber(wrist.sweetSpotMax))mm sweet spot")
-                        .font(.caption.weight(.medium))
-                        .foregroundStyle(WatchTheme.ivory)
+                    Text("In your \(compactNumber(wrist.sweetSpotMin))–\(compactNumber(wrist.sweetSpotMax)) mm sweet spot")
+                        .font(.subheadline)
                     Spacer()
                     Text("\(inRange) of \(measured.count)")
-                        .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(WatchTheme.gold)
+                        .font(.subheadline.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(.teal)
                 }
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(Color.white.opacity(0.07))
+                        Capsule().fill(WatchTheme.fill)
                         Capsule()
-                            .fill(LinearGradient(colors: [WatchTheme.goldDeep, WatchTheme.gold], startPoint: .leading, endPoint: .trailing))
-                            .frame(width: max(6, geo.size.width * fraction))
+                            .fill(Color.teal.gradient)
+                            .frame(width: max(8, geo.size.width * fraction))
                     }
                 }
-                .frame(height: 6)
+                .frame(height: 8)
             }
 
-            Rectangle().fill(WatchTheme.hairline).frame(height: 1)
+            Divider()
 
             LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 3), alignment: .leading, spacing: 16) {
                 ForEach(figures, id: \.0) { label, value in
-                    VStack(alignment: .leading, spacing: 4) {
-                        Eyebrow(label, color: WatchTheme.secondary)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(label)
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
                         Text(value)
-                            .font(.display(16))
-                            .foregroundStyle(WatchTheme.ivory)
+                            .font(.figure(.headline, weight: .semibold))
                             .minimumScaleFactor(0.6)
                             .lineLimit(1)
                     }
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(20)
-        .watchCard(cornerRadius: 22)
+        .groupedCard()
     }
 
     private var maintenanceDashboard: some View {
@@ -143,7 +146,7 @@ struct StatsScreen: View {
         let totalCost = records.compactMap { $0.1.cost }.reduce(0, +)
         let dueItems = serviceDueItems(owned)
         let overdueCount = dueItems.filter { $0.daysUntilDue < 0 }.count
-        return SectionCard(eyebrow: "Ownership", title: "Service & maintenance") {
+        return SectionCard("Service", systemImage: "wrench.and.screwdriver.fill", color: .blue) {
             LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible())], spacing: 9) {
                 ActivityMetricTile(label: "Service records", value: "\(records.count)")
                 ActivityMetricTile(label: "Maintenance spent", value: cad(totalCost))
@@ -154,7 +157,7 @@ struct StatsScreen: View {
             if dueItems.isEmpty {
                 Text("Add a service record with a next-due date to see reminders here.")
                     .font(.subheadline)
-                    .foregroundStyle(WatchTheme.secondary)
+                    .foregroundStyle(Color.secondary)
             } else {
                 VStack(spacing: 0) {
                     ForEach(dueItems.prefix(6)) { item in
@@ -163,23 +166,23 @@ struct StatsScreen: View {
                         } label: {
                             HStack(alignment: .firstTextBaseline, spacing: 10) {
                                 Image(systemName: item.daysUntilDue < 0 ? "exclamationmark.circle.fill" : "bell")
-                                    .foregroundStyle(item.daysUntilDue < 0 ? WatchTheme.amber : WatchTheme.gold)
+                                    .foregroundStyle(item.daysUntilDue < 0 ? Color.red : Color.blue)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(item.watch.name)
                                         .font(.subheadline.weight(.semibold))
                                         .foregroundStyle(.primary)
                                     Text(item.record.kind)
                                         .font(.caption)
-                                        .foregroundStyle(WatchTheme.secondary)
+                                        .foregroundStyle(Color.secondary)
                                 }
                                 Spacer()
                                 VStack(alignment: .trailing, spacing: 3) {
                                     Text(calendarDayLabel(item.record.nextDue))
                                         .font(.caption.weight(.semibold))
-                                        .foregroundStyle(item.daysUntilDue < 0 ? WatchTheme.amber : WatchTheme.gold)
+                                        .foregroundStyle(item.daysUntilDue < 0 ? Color.red : Color.blue)
                                     Text(dueDistanceLabel(item.daysUntilDue))
                                         .font(.caption2)
-                                        .foregroundStyle(WatchTheme.secondary)
+                                        .foregroundStyle(Color.secondary)
                                 }
                             }
                             .padding(.vertical, 9)
@@ -197,14 +200,14 @@ struct StatsScreen: View {
         let headline = store.data?.headlineStats?[scope]
         let medianX = headline.map { costReferencePosition($0.median, maximumPrice: $0.max) }
         let meanX = headline.map { costReferencePosition($0.mean, maximumPrice: $0.max) }
-        return SectionCard(eyebrow: "Price tiers", title: "Cost histogram") {
+        return SectionCard("Price Tiers", systemImage: "chart.bar.fill", color: .green, detail: "Cost histogram") {
             HStack(spacing: 6) {
                 Capsule()
-                    .fill(WatchTheme.gold.opacity(0.68))
+                    .fill(Color.green.opacity(0.6))
                     .frame(width: 25, height: 2)
                 Text("shape")
                     .font(.caption2)
-                    .foregroundStyle(WatchTheme.secondary)
+                    .foregroundStyle(Color.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
             Chart {
@@ -214,7 +217,7 @@ struct StatsScreen: View {
                         y: .value("Watches", bin.count),
                         width: .fixed(24)
                     )
-                    .foregroundStyle(selectedCostTier == bin.id ? WatchTheme.gold.gradient : WatchTheme.goldDeep.opacity(0.55).gradient)
+                    .foregroundStyle(Color.green.gradient)
                     .opacity(selectedCostTier == nil || selectedCostTier == bin.id ? 1 : 0.42)
                     .cornerRadius(3)
                     .accessibilityLabel(bin.label)
@@ -231,28 +234,28 @@ struct StatsScreen: View {
                         y: .value("Shape", bin.count)
                     )
                     .interpolationMethod(.monotone)
-                    .foregroundStyle(WatchTheme.gold.opacity(0.68))
+                    .foregroundStyle(Color.green.opacity(0.6))
                     .lineStyle(StrokeStyle(lineWidth: 2))
                 }
                 if let medianX, let headline {
                     RuleMark(x: .value("Median", medianX))
-                        .foregroundStyle(Color(red: 0.93, green: 0.90, blue: 0.82))
+                        .foregroundStyle(Color.primary)
                         .lineStyle(StrokeStyle(lineWidth: 1.4))
                         .annotation(position: .top, alignment: .leading) {
                             Text("median \(cad(headline.median))")
                                 .font(.caption2.weight(.bold))
-                                .foregroundStyle(Color(red: 0.93, green: 0.90, blue: 0.82))
+                                .foregroundStyle(Color.primary)
                                 .fixedSize()
                         }
                 }
                 if let meanX, let headline {
                     RuleMark(x: .value("Mean", meanX))
-                        .foregroundStyle(WatchTheme.gold)
+                        .foregroundStyle(Color.secondary)
                         .lineStyle(StrokeStyle(lineWidth: 1.4, dash: [6, 5]))
                         .annotation(position: .top, alignment: .leading) {
                             Text("mean \(cad(headline.mean))")
                                 .font(.caption2.weight(.bold))
-                                .foregroundStyle(WatchTheme.gold)
+                                .foregroundStyle(Color.secondary)
                                 .fixedSize()
                                 .offset(y: 15)
                         }
@@ -262,8 +265,8 @@ struct StatsScreen: View {
             .chartXScale(domain: 0...Double(bins.count))
             .chartXAxis {
                 AxisMarks(values: bins.map(\.position)) { value in
-                    AxisGridLine().foregroundStyle(Color.white.opacity(0.05))
-                    AxisTick().foregroundStyle(Color.white.opacity(0.14))
+                    AxisGridLine()
+                    AxisTick()
                     AxisValueLabel {
                         if let position = value.as(Double.self),
                            let bin = bins.min(by: { abs($0.position - position) < abs($1.position - position) }) {
@@ -288,7 +291,7 @@ struct StatsScreen: View {
             if let headline {
                 Text("Mean \(cad(headline.mean)) vs median \(cad(headline.median)) — \(skewShape(headline.skewness)) (skew \(headline.skewness.formatted(.number.precision(.fractionLength(3)))))")
                     .font(.caption)
-                    .foregroundStyle(WatchTheme.secondary)
+                    .foregroundStyle(Color.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
@@ -297,10 +300,10 @@ struct StatsScreen: View {
     private var priceLedger: some View {
         let rows = ledgerRows(costScoped)
         let grandTotal = rows.last?.subtotalCents ?? 0
-        return SectionCard(eyebrow: "Total spent audit", title: "Price ledger") {
+        return SectionCard("Price Ledger", systemImage: "list.bullet.rectangle.fill", color: .green, detail: "Total spent audit") {
             if costScoped.count < scoped.count {
                 Text("The original purchase cost carried through a trade is counted once.")
-                    .font(.caption).foregroundStyle(WatchTheme.secondary)
+                    .font(.caption).foregroundStyle(Color.secondary)
             }
             DisclosureGroup(isExpanded: $priceLedgerExpanded) {
                 VStack(spacing: 0) {
@@ -314,37 +317,37 @@ struct StatsScreen: View {
                                     .font(.subheadline.monospacedDigit())
                                 Text("subtotal \(cad(cents: row.subtotalCents))")
                                     .font(.caption2.monospacedDigit())
-                                    .foregroundStyle(WatchTheme.secondary)
+                                    .foregroundStyle(Color.secondary)
                             }
                         }
                         .padding(.vertical, 9)
                         if row.id != rows.last?.id {
-                            Divider().overlay(Color.white.opacity(0.06))
+                            Divider()
                         }
                     }
-                    Divider().overlay(WatchTheme.gold.opacity(0.45))
+                    Divider()
                     HStack {
                         Text("Grand total")
                             .font(.headline)
                         Spacer()
                         Text(cad(cents: grandTotal))
                             .font(.headline.monospacedDigit())
-                            .foregroundStyle(WatchTheme.gold)
+                            .foregroundStyle(.green)
                     }
                     .padding(.top, 12)
                 }
                 .padding(.top, 8)
             } label: {
                 HStack {
-                    Text("Price ledger — tap to expand")
+                    Text("Every purchase")
                         .font(.subheadline.weight(.semibold))
                     Spacer()
                     Text("\(rows.count) watches")
                         .font(.caption)
-                        .foregroundStyle(WatchTheme.secondary)
+                        .foregroundStyle(Color.secondary)
                 }
             }
-            .tint(WatchTheme.gold)
+            .tint(.green)
         }
     }
 
@@ -354,7 +357,7 @@ struct StatsScreen: View {
         let selectedBin = selectedSizeX.flatMap { rawValue in
             bins.min(by: { abs($0.midpoint - rawValue) < abs($1.midpoint - rawValue) })
         }
-        return SectionCard(eyebrow: "Diameter", title: "Size distribution") {
+        return SectionCard("Case Size", systemImage: "ruler.fill", color: .purple, detail: "Diameter") {
             Chart {
                 RectangleMark(
                     xStart: .value("Sweet minimum", wrist.sweetSpotMin),
@@ -362,14 +365,14 @@ struct StatsScreen: View {
                     yStart: .value("Floor", 0),
                     yEnd: .value("Ceiling", ceiling)
                 )
-                .foregroundStyle(WatchTheme.gold.opacity(0.09))
+                .foregroundStyle(Color.purple.opacity(0.1))
                 ForEach(bins) { bin in
                     BarMark(
                         x: .value("Diameter", bin.midpoint),
                         y: .value("Watches", bin.count),
                         width: .fixed(13)
                     )
-                    .foregroundStyle(selectedBin?.lower == bin.lower ? WatchTheme.gold.gradient : WatchTheme.goldDeep.opacity(0.7).gradient)
+                    .foregroundStyle(Color.purple.gradient)
                     .opacity(selectedBin == nil || selectedBin?.lower == bin.lower ? 1 : 0.42)
                     .annotation(position: .top) {
                         if selectedBin?.lower == bin.lower {
@@ -378,7 +381,7 @@ struct StatsScreen: View {
                     }
                 }
                 RuleMark(x: .value("Perfect", wrist.perfect))
-                    .foregroundStyle(WatchTheme.gold)
+                    .foregroundStyle(Color.secondary)
                     .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4]))
             }
             .frame(height: 190)
@@ -411,13 +414,13 @@ struct StatsScreen: View {
     private var spendChart: some View {
         let values = spendByYear(scoped, all: all)
         let cumulative = cumulativeSpend(values)
-        return SectionCard(eyebrow: "Timeline", title: "Acquisition spend") {
+        return SectionCard("Spending", systemImage: "calendar", color: .green, detail: "By year") {
             Text("Annual spend")
                 .font(.caption.weight(.bold))
-                .foregroundStyle(WatchTheme.secondary)
+                .foregroundStyle(Color.secondary)
             Chart(values) { point in
                 BarMark(x: .value("Year", point.year), y: .value("CAD", point.total))
-                    .foregroundStyle(selectedSpendYear == point.year ? WatchTheme.gold.gradient : WatchTheme.goldDeep.opacity(0.7).gradient)
+                    .foregroundStyle(Color.green.gradient)
                     .opacity(selectedSpendYear == nil || selectedSpendYear == point.year ? 1 : 0.42)
                     .cornerRadius(4)
                     .annotation(position: .top) {
@@ -442,33 +445,33 @@ struct StatsScreen: View {
             }
 
             if !cumulative.isEmpty {
-                Divider().overlay(Color.white.opacity(0.06))
+                Divider()
                 HStack {
                     Text("Acquisition basis over time")
                         .font(.caption.weight(.bold))
-                        .foregroundStyle(WatchTheme.secondary)
+                        .foregroundStyle(Color.secondary)
                     Spacer()
                     Text(cad(cumulative.last?.total ?? 0))
                         .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(WatchTheme.gold)
+                        .foregroundStyle(.green)
                 }
                 Chart(cumulative) { point in
                     AreaMark(
                         x: .value("Year", point.year),
                         y: .value("Cumulative CAD", point.total)
                     )
-                    .foregroundStyle(WatchTheme.gold.opacity(0.12).gradient)
+                    .foregroundStyle(Color.green.opacity(0.15).gradient)
                     LineMark(
                         x: .value("Year", point.year),
                         y: .value("Cumulative CAD", point.total)
                     )
-                    .foregroundStyle(WatchTheme.gold)
+                    .foregroundStyle(Color.green)
                     .lineStyle(StrokeStyle(lineWidth: 2.2))
                     PointMark(
                         x: .value("Year", point.year),
                         y: .value("Cumulative CAD", point.total)
                     )
-                    .foregroundStyle(WatchTheme.gold)
+                    .foregroundStyle(Color.green)
                 }
                 .frame(height: 115)
                 .chartYAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
@@ -484,14 +487,14 @@ struct StatsScreen: View {
         let datedIDs = Set(entries.map(\.id))
         let trades = scoped.filter { $0.isTrade && !datedIDs.contains($0.id) }
         let missingCount = purchases.filter { !$0.isTrade && !datedIDs.contains($0.id) }.count
-        return SectionCard(eyebrow: scope == "owned" ? "Current collection" : "All-time", title: "Purchase timeline") {
+        return SectionCard("Purchase Timeline", systemImage: "clock.fill", color: .orange) {
             if entries.isEmpty {
                 ContentUnavailableView(
                     "No purchase dates yet",
                     systemImage: "calendar.badge.clock",
                     description: Text("Purchases with a known month appear here. Trades are listed separately.")
                 )
-                .foregroundStyle(WatchTheme.secondary)
+                .foregroundStyle(Color.secondary)
             } else {
                 HStack {
                     Label("\(entries.count) purchases", systemImage: "watch.analog")
@@ -499,7 +502,7 @@ struct StatsScreen: View {
                     Text("\(entries.first?.year ?? "") – \(entries.last?.year ?? "")")
                 }
                 .font(.caption.weight(.semibold))
-                .foregroundStyle(WatchTheme.secondary)
+                .foregroundStyle(Color.secondary)
 
                 VStack(spacing: 0) {
                     ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
@@ -510,22 +513,21 @@ struct StatsScreen: View {
                                 VStack(alignment: .trailing, spacing: 2) {
                                     Text(entry.month.uppercased())
                                         .font(.caption2.weight(.bold))
-                                        .tracking(0.7)
-                                        .foregroundStyle(WatchTheme.gold)
+                                        .foregroundStyle(.orange)
                                     Text(entry.year)
                                         .font(.caption.monospacedDigit())
-                                        .foregroundStyle(WatchTheme.secondary)
+                                        .foregroundStyle(Color.secondary)
                                 }
                                 .frame(width: 54, alignment: .trailing)
 
                                 VStack(spacing: 0) {
                                     Circle()
-                                        .fill(WatchTheme.gold)
+                                        .fill(.orange)
                                         .frame(width: 10, height: 10)
-                                        .overlay { Circle().stroke(WatchTheme.gold.opacity(0.25), lineWidth: 5) }
+                                        .overlay { Circle().stroke(Color.orange.opacity(0.25), lineWidth: 5) }
                                     if index < entries.count - 1 {
                                         Rectangle()
-                                            .fill(WatchTheme.gold.opacity(0.28))
+                                            .fill(Color.orange.opacity(0.3))
                                             .frame(width: 1)
                                             .frame(maxHeight: .infinity)
                                     }
@@ -539,16 +541,16 @@ struct StatsScreen: View {
                                         .multilineTextAlignment(.leading)
                                     HStack(spacing: 8) {
                                         Text(cad(entry.watch.price))
-                                            .foregroundStyle(WatchTheme.gold)
+                                            .foregroundStyle(.primary)
                                         if let category = entry.watch.category {
                                             Text(category)
-                                                .foregroundStyle(WatchTheme.secondary)
+                                                .foregroundStyle(Color.secondary)
                                         }
                                     }
                                     .font(.caption)
                                     if let source = entry.source {
                                         Text("Original \(source.name) purchase · \(source.purchasedText) · carried over through trade")
-                                            .font(.caption).foregroundStyle(WatchTheme.secondary)
+                                            .font(.caption).foregroundStyle(Color.secondary)
                                     }
                                 }
                                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -568,20 +570,20 @@ struct StatsScreen: View {
                         systemImage: "exclamationmark.circle"
                     )
                     .font(.caption)
-                    .foregroundStyle(WatchTheme.amber)
+                    .foregroundStyle(.orange)
                 }
             }
             if !trades.isEmpty {
                 Divider()
                 Text("Acquired by trade")
                     .font(.caption.weight(.semibold))
-                    .foregroundStyle(WatchTheme.secondary)
+                    .foregroundStyle(Color.secondary)
                 ForEach(trades) { watch in
                     Button { selectedWatch = watch } label: {
                         VStack(alignment: .leading, spacing: 4) {
                             Text(watch.name).font(.subheadline.weight(.semibold))
                             Text(watch.costSourceWatchID == nil ? "No separate purchase" : "\(cad(watch.price)) original purchase cost carried over")
-                                .font(.caption).foregroundStyle(WatchTheme.secondary)
+                                .font(.caption).foregroundStyle(Color.secondary)
                         }
                     }
                     .buttonStyle(.plain)
@@ -595,7 +597,7 @@ struct StatsScreen: View {
             guard let value = watch.lugToLug else { return nil }
             return LugMeasurement(watch: watch, value: value)
         }
-        return SectionCard(eyebrow: "Wearability", title: "Lug-to-lug") {
+        return SectionCard("Lug to Lug", systemImage: "arrow.left.and.right", color: .purple, detail: "Wearability") {
             if measurements.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     HStack {
@@ -605,19 +607,19 @@ struct StatsScreen: View {
                     }
                     Chart {
                         RuleMark(x: .value("Comfort ceiling", wrist.lugMax))
-                            .foregroundStyle(WatchTheme.amber)
+                            .foregroundStyle(Color.red)
                             .lineStyle(StrokeStyle(lineWidth: 2, dash: [4]))
-                            .annotation(position: .top) { Text("\(compactNumber(wrist.lugMax))mm ceiling").font(.caption2).foregroundStyle(WatchTheme.amber) }
+                            .annotation(position: .top) { Text("\(compactNumber(wrist.lugMax))mm ceiling").font(.caption2).foregroundStyle(Color.red) }
                     }
                     .chartXScale(domain: (wrist.lugMax - 10)...(wrist.lugMax + 5))
                     .frame(height: 62)
                 }
                 .font(.subheadline)
-                .foregroundStyle(WatchTheme.secondary)
+                .foregroundStyle(Color.secondary)
             } else {
                 Chart(measurements) { measurement in
                     BarMark(x: .value("L2L", measurement.value), y: .value("Watch", measurement.id))
-                        .foregroundStyle(selectedLugWatchID == measurement.id ? WatchTheme.gold.gradient : WatchTheme.goldDeep.opacity(0.7).gradient)
+                        .foregroundStyle(Color.purple.gradient)
                         .opacity(selectedLugWatchID == nil || selectedLugWatchID == measurement.id ? 1 : 0.42)
                         .annotation(position: .trailing) {
                             if selectedLugWatchID == measurement.id {
@@ -625,7 +627,7 @@ struct StatsScreen: View {
                             }
                         }
                     RuleMark(x: .value("Ceiling", wrist.lugMax))
-                        .foregroundStyle(WatchTheme.amber)
+                        .foregroundStyle(Color.red)
                 }
                 .frame(height: 150)
                 .chartYAxis(.hidden)
@@ -652,7 +654,7 @@ struct StatsScreen: View {
             let lifetime = all.filter { $0.category == category }.count
             return CoverageRow(category: category, owned: current, allTime: lifetime)
         }.sorted { ($0.rank, categories.firstIndex(of: $0.category) ?? 0) < ($1.rank, categories.firstIndex(of: $1.category) ?? 0) }
-        return SectionCard(eyebrow: "Buying guide", title: "Category coverage") {
+        return SectionCard("Categories", systemImage: "square.grid.2x2.fill", color: .indigo, detail: "Buying guide") {
             VStack(spacing: 0) {
                 ForEach(rows) { row in
                     HStack {
@@ -660,13 +662,13 @@ struct StatsScreen: View {
                             Text(row.category).font(.subheadline.weight(.semibold))
                             Text("\(row.owned) owned · \(row.allTime) all-time")
                                 .font(.caption)
-                                .foregroundStyle(WatchTheme.secondary)
+                                .foregroundStyle(Color.secondary)
                         }
                         Spacer()
-                        CapsuleChip(text: row.verdict, color: row.owned == 0 ? WatchTheme.gold : row.owned >= 3 ? WatchTheme.amber : WatchTheme.green)
+                        CapsuleChip(text: row.verdict, color: row.owned == 0 ? .indigo : row.owned >= 3 ? .secondary : .green)
                     }
                     .padding(.vertical, 9)
-                    if row.id != rows.last?.id { Divider().overlay(Color.white.opacity(0.06)) }
+                    if row.id != rows.last?.id { Divider() }
                 }
             }
         }
@@ -676,7 +678,7 @@ struct StatsScreen: View {
         let basis = originalsOnly ? owned.filter { $0.original != false && $0.category != "Smartwatch" } : owned
         let tiers = PriceTier.all
         let gaps = biggestGaps(basis)
-        return SectionCard(eyebrow: "Money-side buying guide", title: "Price ladder") {
+        return SectionCard("Price Ladder", systemImage: "chart.line.uptrend.xyaxis", color: .teal, detail: "Buying guide") {
             Toggle("Originals only", isOn: $originalsOnly)
                 .font(.subheadline.weight(.semibold))
             VStack(spacing: 8) {
@@ -686,9 +688,9 @@ struct StatsScreen: View {
                         Text(tier.label).font(.subheadline.weight(.semibold)).frame(width: 88, alignment: .leading)
                         Text(matches.isEmpty ? "No owned watch" : matches.map(\.name).joined(separator: ", "))
                             .font(.caption)
-                            .foregroundStyle(WatchTheme.secondary)
+                            .foregroundStyle(Color.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        if matches.isEmpty { CapsuleChip(text: "GAP", color: WatchTheme.gold) }
+                        if matches.isEmpty { CapsuleChip(text: "Gap", color: .teal) }
                     }
                 }
             }
@@ -699,12 +701,11 @@ struct StatsScreen: View {
                         Text("Second hole: nothing between \(cad(gaps[1].low.price)) and \(cad(gaps[1].high.price))")
                     }
                 }
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(WatchTheme.gold)
-                .padding(10)
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.teal)
+                .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(WatchTheme.gold.opacity(0.08))
-                .clipShape(RoundedRectangle(cornerRadius: 10))
+                .background(Color.teal.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
             }
         }
     }
@@ -715,22 +716,22 @@ struct StatsScreen: View {
         let current = counts(realOwned.map(normalizedBrand))
         let lifetime = counts(realAll.map(normalizedBrand))
         let letGo = lifetime.filter { current[$0.key] == nil }.sorted { $0.value > $1.value }
-        return SectionCard(eyebrow: "Explore before repeating", title: "Brand breadth") {
+        return SectionCard("Brands", systemImage: "tag.fill", color: .pink, detail: "Explore before repeating") {
             Text("\(current.count) unique brands / \(owned.count) watches owned · \(lifetime.count) explored all-time")
                 .font(.subheadline.weight(.semibold))
             ForEach(current.sorted { $0.value > $1.value }, id: \.key) { brand, count in
                 HStack {
                     Text(brand)
                     Spacer()
-                    Text("\(count)").foregroundStyle(WatchTheme.secondary)
-                    if count >= 2 { CapsuleChip(text: "saturated", color: WatchTheme.amber) }
+                    Text("\(count)").foregroundStyle(Color.secondary)
+                    if count >= 2 { CapsuleChip(text: "Saturated") }
                 }
                 .font(.subheadline)
             }
             if !letGo.isEmpty {
                 Text("Explored & let go")
                     .font(.caption.weight(.bold))
-                    .foregroundStyle(WatchTheme.secondary)
+                    .foregroundStyle(Color.secondary)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack { ForEach(letGo, id: \.key) { CapsuleChip(text: "\($0.key) · \($0.value)") } }
                 }
@@ -738,17 +739,17 @@ struct StatsScreen: View {
             if let radar = store.data?.brandWatchlist, !radar.isEmpty {
                 Text("Brands on radar")
                     .font(.caption.weight(.bold))
-                    .foregroundStyle(WatchTheme.secondary)
+                    .foregroundStyle(Color.secondary)
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack { ForEach(radar, id: \.brand) { CapsuleChip(text: $0.brand, color: WatchTheme.gold) } }
+                    HStack { ForEach(radar, id: \.brand) { CapsuleChip(text: $0.brand, color: .pink) } }
                 }
             }
         }
     }
 
-    private func varietyPanel(title: String, field: KeyPath<Watch, String?>, values: [String]) -> some View {
+    private func varietyPanel(title: String, symbol: String, color: Color, field: KeyPath<Watch, String?>, values: [String]) -> some View {
         let current = counts(owned.compactMap { $0[keyPath: field] })
-        return SectionCard(eyebrow: "Variety", title: title) {
+        return SectionCard(title, systemImage: symbol, color: color, detail: "Variety") {
             ForEach(values, id: \.self) { value in
                 let count = current[value] ?? 0
                 HStack {
@@ -757,8 +758,8 @@ struct StatsScreen: View {
                     Spacer()
                     Text(count == 0 ? "not represented" : "\(count) owned")
                         .font(.caption)
-                        .foregroundStyle(WatchTheme.secondary)
-                    if count >= 2 { CapsuleChip(text: "saturated", color: WatchTheme.amber) }
+                        .foregroundStyle(Color.secondary)
+                    if count >= 2 { CapsuleChip(text: "Saturated") }
                 }
             }
         }
@@ -769,10 +770,10 @@ struct StatsScreen: View {
         let dial = owned.filter { $0.dialColor == nil }.count
         let material = owned.filter { $0.material == nil }.count
         let lug = owned.filter { $0.lugToLug == nil }.count
-        return SectionCard(eyebrow: "Collection quality", title: "Complete your data") {
+        return SectionCard("Complete Your Data", systemImage: "checklist", color: .blue) {
             Text("\(dial) dial colours · \(material) materials · \(lug) lug-to-lug measurements missing")
                 .font(.subheadline)
-                .foregroundStyle(WatchTheme.secondary)
+                .foregroundStyle(Color.secondary)
             Button("Fill in sequence") {
                 guard let first = missing.first else { return }
                 completionQueue = Array(missing.dropFirst())
@@ -904,20 +905,22 @@ private struct ActivityMetricTile: View {
     var warning = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            Eyebrow(label, color: WatchTheme.secondary)
+        VStack(alignment: .leading, spacing: 3) {
+            Text(label)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
             Text(value)
-                .font(.display(22))
-                .foregroundStyle(warning ? WatchTheme.amber : WatchTheme.ivory)
+                .font(.figure(.title2))
+                .foregroundStyle(warning ? Color.red : Color.primary)
                 .minimumScaleFactor(0.7)
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 12)
-        .padding(.horizontal, 13)
-        .background(WatchTheme.raised.opacity(0.6), in: RoundedRectangle(cornerRadius: 14, style: .continuous))
+        .padding(.horizontal, 14)
+        .background(WatchTheme.raised, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
     }
 }
 
@@ -1105,17 +1108,11 @@ private struct ChartAnnotationBubble: View {
 
     var body: some View {
         Text(text)
-            .font(.caption2.weight(.bold))
-            .foregroundStyle(WatchTheme.background)
+            .font(.caption.weight(.semibold))
             .lineLimit(1)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 5)
-            .background(WatchTheme.gold)
-            .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(Color.white.opacity(0.28), lineWidth: 0.5)
-            }
+            .padding(.horizontal, 9)
+            .padding(.vertical, 6)
+            .background(Color(.systemGray5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     }
 }
 

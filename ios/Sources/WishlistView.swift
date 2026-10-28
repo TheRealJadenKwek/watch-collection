@@ -31,7 +31,6 @@ struct WishlistScreen: View {
                 RefreshableScreen(store: store) {
                     ScrollView {
                         LazyVStack(spacing: 14) {
-                            wishlistHeader
                             if ranked.isEmpty {
                                 EmptyCollectionView(title: "Wishlist empty", detail: "Add a candidate to start comparing fit.")
                                     .frame(minHeight: 320)
@@ -65,19 +64,21 @@ struct WishlistScreen: View {
                             }
                             radarStrip
                         }
-                        .padding(.horizontal, 20)
-                        .padding(.top, 6)
-                        .padding(.bottom, 40)
+                        .padding(.horizontal, 16)
+                        .padding(.top, 4)
+                        .padding(.bottom, 24)
                     }
-                    .background(WatchTheme.background)
+                    .containerBackground(WatchTheme.background, for: .navigation)
                 }
             }
-            .navigationBarTitleDisplayMode(.inline)
+            .navigationTitle("Wishlist")
+            .navigationSubtitle(subtitle)
             .toolbar {
-                ToolbarItemGroup(placement: .topBarTrailing) {
+                ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
+                ToolbarItem(placement: .topBarTrailing) {
                     Button { prefilledBrand = ""; addingItem = true } label: { Image(systemName: "plus") }
                         .disabled(store.isOffline)
-                    GearToolbarButton(action: showSettings)
+                        .accessibilityLabel("Add candidate")
                 }
             }
             .sheet(item: $editingItem) { item in
@@ -92,18 +93,13 @@ struct WishlistScreen: View {
         }
     }
 
-    private var wishlistHeader: some View {
+    private var subtitle: String {
         let count = ranked.filter { $0.status == "considering" }.count
-        return ScreenHeader(
-            eyebrow: "Purchase decision engine",
-            title: "Wishlist",
-            subtitle: "\(count) candidate\(count == 1 ? "" : "s"), ranked by category, brand, price, dial, size and material."
-        )
-        .padding(.bottom, 4)
+        return "\(count) candidate\(count == 1 ? "" : "s"), ranked for your collection"
     }
 
     private var radarStrip: some View {
-        SectionCard(eyebrow: "Explore before repeating", title: "Brands on the radar") {
+        SectionCard("On the Radar", systemImage: "scope", color: .pink, detail: "Brands to explore") {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(store.data?.brandWatchlist ?? [], id: \.brand) { entry in
@@ -116,22 +112,24 @@ struct WishlistScreen: View {
                                 Task { await store.deleteRadarBrand(entry.brand) }
                             }
                         } label: {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(entry.brand).font(.caption.weight(.bold))
-                                Text(radarStatus(entry.brand)).font(.caption2)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(entry.brand).font(.subheadline.weight(.semibold))
+                                Text(radarStatus(entry.brand)).font(.caption).foregroundStyle(.secondary)
                             }
-                            .foregroundStyle(WatchTheme.gold)
-                            .padding(.horizontal, 10)
-                            .padding(.vertical, 8)
-                            .background(WatchTheme.gold.opacity(0.1))
-                            .clipShape(RoundedRectangle(cornerRadius: 10))
+                            .foregroundStyle(.pink)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .background(Color.pink.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
                     }
                 }
             }
             HStack {
-                TextField("Add brand", text: $radarBrand)
+                TextField("Add a brand", text: $radarBrand)
                     .textInputAutocapitalization(.words)
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 9)
+                    .background(WatchTheme.raised, in: Capsule())
                 Button("Add") {
                     let brand = radarBrand.trimmingCharacters(in: .whitespacesAndNewlines)
                     guard !brand.isEmpty else { return }
@@ -144,10 +142,10 @@ struct WishlistScreen: View {
     }
 
     private func nextMoveSection(scrollTo: @escaping (String) -> Void) -> some View {
-        SectionCard(eyebrow: "Collection gaps", title: "Next move") {
+        SectionCard("Next Move", systemImage: "sparkles", color: .purple, detail: "Collection gaps") {
             Text(saturationLine)
                 .font(.caption)
-                .foregroundStyle(WatchTheme.secondary)
+                .foregroundStyle(Color.secondary)
             if let suggestions = store.suggestions?.suggestions, !suggestions.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: 10) {
@@ -163,12 +161,12 @@ struct WishlistScreen: View {
                     .scrollTargetLayout()
                 }
                 .scrollTargetBehavior(.viewAligned)
-                .padding(.horizontal, -20)
-                .contentMargins(.horizontal, 20, for: .scrollContent)
+                .padding(.horizontal, -16)
+                .contentMargins(.horizontal, 16, for: .scrollContent)
             } else {
                 Text("No eligible category gaps. Adjust suggestion categories in Settings.")
                     .font(.subheadline)
-                    .foregroundStyle(WatchTheme.secondary)
+                    .foregroundStyle(Color.secondary)
             }
         }
     }
@@ -209,26 +207,25 @@ struct NextMoveSuggestionCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
                 Text(suggestion.headline)
-                    .font(.subheadline.weight(.semibold))
-                    .serifTitle()
+                    .font(.headline)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 VStack(spacing: 0) {
                     Text("\(suggestion.score)")
-                        .font(.display(26))
-                        .foregroundStyle(WatchTheme.gold)
+                        .font(.figure(.title2))
+                        .foregroundStyle(.purple)
                     Text("/ 9")
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(WatchTheme.secondary)
+                        .foregroundStyle(Color.secondary)
                 }
             }
             if let brands = suggestion.brands, !brands.isEmpty {
                 VStack(alignment: .leading, spacing: 6) {
-                    Eyebrow("Brands to explore", color: WatchTheme.secondary)
+                    Eyebrow("Brands to explore")
                     ChipFlowLayout(spacing: 5) {
                         ForEach(brands, id: \.name) { brand in
                             CapsuleChip(
                                 text: "\(brand.name) · \(brand.status)",
-                                color: brand.status == "radar" ? WatchTheme.gold : WatchTheme.secondary
+                                color: brand.status == "radar" ? .pink : .secondary
                             )
                             .accessibilityLabel("\(brand.name), \(brand.status)")
                         }
@@ -238,10 +235,10 @@ struct NextMoveSuggestionCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(suggestion.reasons.enumerated()), id: \.offset) { _, reason in
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Circle().fill(WatchTheme.gold.opacity(0.7)).frame(width: 4, height: 4)
+                        Circle().fill(Color.purple.opacity(0.7)).frame(width: 5, height: 5)
                         Text(reason)
                             .font(.caption)
-                            .foregroundStyle(WatchTheme.secondary)
+                            .foregroundStyle(Color.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -257,15 +254,14 @@ struct NextMoveSuggestionCard: View {
                                 .font(.caption.weight(.semibold))
                         }
                         .buttonStyle(.plain)
-                        .foregroundStyle(WatchTheme.gold)
+                        .foregroundStyle(.purple)
                     }
                 }
             }
         }
-        .padding(14)
+        .padding(16)
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(WatchTheme.raised.opacity(0.7), in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .overlay { RoundedRectangle(cornerRadius: 16, style: .continuous).stroke(WatchTheme.hairline) }
+        .background(WatchTheme.raised, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
     }
 }
 
@@ -297,20 +293,19 @@ struct WishlistCard: View {
             HStack(alignment: .top, spacing: 14) {
                 RemoteWatchImage(asset: imageAsset, allowsRemoteFetch: !store.isOffline, focus: item.focus(for: item.photos.first))
                     .frame(width: 96, height: 120)
-                    .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 VStack(alignment: .leading, spacing: 6) {
                     Text(item.name)
-                        .font(.display(17))
-                        .foregroundStyle(WatchTheme.ivory)
+                        .font(.headline)
                         .lineLimit(3)
                     Text(item.priceNote.isEmpty ? cad(item.priceExpected) : item.priceNote)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(WatchTheme.gold)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
                         .lineLimit(2)
                     if !detailLine.isEmpty {
                         Text(detailLine)
-                            .font(.caption)
-                            .foregroundStyle(WatchTheme.secondary)
+                            .font(.footnote)
+                            .foregroundStyle(Color.secondary)
                             .lineLimit(1)
                     }
                     if let wrist = store.data?.settings.wrist,
@@ -334,15 +329,15 @@ struct WishlistCard: View {
                         HStack(alignment: .firstTextBaseline) {
                             Text(name.capitalized)
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(WatchTheme.ivory)
+                                .foregroundStyle(Color.primary)
                                 .frame(width: 62, alignment: .leading)
                             Text(lens?.reason ?? "Waiting for score")
                                 .font(.caption)
-                                .foregroundStyle(WatchTheme.secondary)
+                                .foregroundStyle(Color.secondary)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                             Text(lens.map { $0.score >= 0 ? "+\($0.score)" : "\($0.score)" } ?? "—")
                                 .font(.caption.weight(.bold).monospacedDigit())
-                                .foregroundStyle((lens?.score ?? 0) > 0 ? WatchTheme.gold : WatchTheme.secondary)
+                                .foregroundStyle((lens?.score ?? 0) > 0 ? Color.green : Color.secondary)
                         }
                         .padding(.vertical, 6)
                     }
@@ -352,43 +347,37 @@ struct WishlistCard: View {
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
-            Rectangle().fill(WatchTheme.hairline).frame(height: 1)
+            Divider().padding(.leading, 14)
 
-            HStack(spacing: 10) {
+            HStack(spacing: 8) {
                 if item.status == "considering" {
-                    Button(action: bought) {
-                        Text("Bought it")
-                            .font(.caption.weight(.bold))
-                            .foregroundStyle(WatchTheme.background)
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 7)
-                            .background(WatchTheme.gold, in: Capsule())
-                    }
+                    Button("Bought It", action: bought)
+                        .buttonStyle(.borderedProminent)
                     Button("Pass", action: pass)
-                        .font(.caption.weight(.semibold))
-                        .foregroundStyle(WatchTheme.secondary)
+                        .buttonStyle(.bordered)
                 } else {
-                    CapsuleChip(text: item.status.capitalized, color: WatchTheme.secondary)
+                    CapsuleChip(text: item.status.capitalized)
                 }
                 Spacer()
                 Button("Edit", action: edit)
-                    .font(.caption.weight(.semibold))
+                    .buttonStyle(.bordered)
                 Menu {
-                    Button(action: findImage) { Label("Find image online", systemImage: "photo.badge.magnifyingglass") }
+                    Button(action: findImage) { Label("Find Image Online", systemImage: "photo.badge.magnifyingglass") }
                 } label: {
                     Image(systemName: "ellipsis")
-                        .font(.system(size: 14, weight: .semibold))
-                        .frame(width: 30, height: 26)
-                        .contentShape(Rectangle())
+                        .frame(height: 20)
                 }
+                .buttonStyle(.bordered)
+                .buttonBorderShape(.circle)
+                .accessibilityLabel("More")
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(WatchTheme.gold)
+            .controlSize(.small)
+            .buttonBorderShape(.capsule)
             .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .padding(.vertical, 12)
             .disabled(store.isOffline)
         }
-        .watchCard()
+        .background(WatchTheme.card, in: RoundedRectangle(cornerRadius: WatchTheme.corner, style: .continuous))
         .opacity(item.status == "passed" ? 0.55 : 1)
     }
 
@@ -402,18 +391,18 @@ struct WishlistCard: View {
                     let value = score?.lenses[name]?.score ?? 0
                     VStack(spacing: 4) {
                         Capsule()
-                            .fill(value > 0 ? WatchTheme.gold.opacity(min(1, 0.45 + Double(value) * 0.18)) : Color.white.opacity(0.08))
+                            .fill(value > 0 ? Color.green.opacity(min(1, 0.45 + Double(value) * 0.18)) : WatchTheme.fill)
                             .frame(height: 4)
                         Text(name.capitalized)
-                            .font(.system(size: 9, weight: .semibold))
+                            .font(.system(size: 10, weight: .medium))
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
-                            .foregroundStyle(value > 0 ? WatchTheme.gold : WatchTheme.secondary.opacity(0.7))
+                            .foregroundStyle(value > 0 ? Color.primary : Color.secondary)
                     }
                 }
                 Image(systemName: "chevron.down")
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(WatchTheme.secondary)
+                    .foregroundStyle(Color.secondary)
                     .rotationEffect(.degrees(showsLenses ? 180 : 0))
                     .padding(.leading, 2)
             }
@@ -450,15 +439,14 @@ struct TopPickView: View {
                     wishlist: true,
                     aspect: PhotoShape.plate
                 )
-                .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+                .clipShape(RoundedRectangle(cornerRadius: WatchTheme.corner, style: .continuous))
                 .overlay(alignment: .topLeading) {
-                    PhotoTag(text: "Top pick", color: WatchTheme.gold).padding(14)
+                    PhotoTag(text: "Top Pick").padding(14)
                 }
                 .overlay(alignment: .topTrailing) {
                     ScoreRing(score: score?.total, maximum: score?.max ?? 14)
                         .padding(8)
-                        .background(.ultraThinMaterial, in: Circle())
-                        .environment(\.colorScheme, .dark)
+                        .glassEffect(.regular, in: .circle)
                         .padding(12)
                 }
             }
@@ -466,42 +454,34 @@ struct TopPickView: View {
 
             VStack(alignment: .leading, spacing: 6) {
                 Text(item.name)
-                    .font(.display(32))
-                    .foregroundStyle(WatchTheme.ivory)
+                    .font(.title2.bold())
                     .fixedSize(horizontal: false, vertical: true)
                 Text(item.priceNote.isEmpty ? cad(item.priceExpected) : item.priceNote)
-                    .font(.display(20))
-                    .foregroundStyle(WatchTheme.gold)
+                    .font(.body)
+                    .foregroundStyle(.secondary)
             }
             if !highlights.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(highlights.prefix(4), id: \.self) { reason in
                         HStack(alignment: .firstTextBaseline, spacing: 9) {
-                            Image(systemName: "plus")
-                                .font(.system(size: 9, weight: .bold))
-                                .foregroundStyle(WatchTheme.gold)
+                            Image(systemName: "checkmark.circle.fill")
+                                .foregroundStyle(.green)
                             Text(reason)
                                 .font(.subheadline)
-                                .foregroundStyle(WatchTheme.ivory.opacity(0.85))
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
                 }
             }
             HStack(spacing: 12) {
-                Button(action: bought) {
-                    Text("Bought it")
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(WatchTheme.background)
-                        .padding(.horizontal, 18)
-                        .padding(.vertical, 11)
-                        .background(WatchTheme.gold, in: Capsule())
-                }
-                .buttonStyle(.plain)
+                Button("Bought It", action: bought)
+                    .buttonStyle(.borderedProminent)
                 Button("Details", action: edit)
-                    .font(.subheadline.weight(.semibold))
+                    .buttonStyle(.bordered)
                 Spacer()
             }
+            .controlSize(.large)
+            .buttonBorderShape(.capsule)
             .disabled(store.isOffline)
         }
     }
@@ -518,18 +498,17 @@ struct ScoreRing: View {
 
     var body: some View {
         ZStack {
-            Circle().stroke(Color.white.opacity(0.08), lineWidth: 3)
+            Circle().stroke(Color.green.opacity(0.2), lineWidth: 6)
             Circle()
                 .trim(from: 0, to: fraction)
-                .stroke(WatchTheme.gold, style: StrokeStyle(lineWidth: 3, lineCap: .round))
+                .stroke(Color.green, style: StrokeStyle(lineWidth: 6, lineCap: .round))
                 .rotationEffect(.degrees(-90))
             VStack(spacing: -2) {
                 Text(score.map(String.init) ?? "—")
-                    .font(.display(20))
-                    .foregroundStyle(WatchTheme.ivory)
+                    .font(.figure(.headline))
                 Text("/\(maximum)")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(WatchTheme.secondary)
+                    .foregroundStyle(Color.secondary)
             }
         }
         .frame(width: 52, height: 52)
@@ -602,18 +581,19 @@ struct WishlistDetailScreen: View {
                         }
                     }
                 }
-                .listRowBackground(WatchTheme.card)
             }
-            .scrollContentBackground(.hidden)
-            .background(WatchTheme.background)
+            .navigationTitle(isNew ? "New Candidate" : "Edit Candidate")
             .navigationBarTitleDisplayMode(.inline)
             .storeErrorAlert(store)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Close") { dismiss() } }
-                ToolbarItem(placement: .principal) { Text(isNew ? "Add Candidate" : "Edit Candidate").font(.headline).serifTitle() }
+                ToolbarItem(placement: .cancellationAction) { Button(role: .close) { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button(isSaving ? "Saving…" : "Save") { save() }
-                        .disabled(store.isOffline || isSaving || draft.name.isEmpty || draft.brand.isEmpty)
+                    if isSaving {
+                        ProgressView()
+                    } else {
+                        Button(role: .confirm) { save() }
+                            .disabled(store.isOffline || draft.name.isEmpty || draft.brand.isEmpty)
+                    }
                 }
             }
             .onChange(of: photoItem) { _, item in
@@ -629,7 +609,6 @@ struct WishlistDetailScreen: View {
                 Text("The wishlist record and its photos will be removed permanently.")
             }
         }
-        .preferredColorScheme(.dark)
     }
 
     private var photoSection: some View {
@@ -683,7 +662,7 @@ struct WishlistDetailScreen: View {
                 Label("Add from Photos", systemImage: "photo.on.rectangle")
             }
             .disabled(store.isOffline || isNew)
-            if isNew { Text("Save first, then reopen to add a photo.").font(.caption).foregroundStyle(WatchTheme.secondary) }
+            if isNew { Text("Save first, then reopen to add a photo.").font(.caption).foregroundStyle(Color.secondary) }
         }
     }
 
@@ -745,17 +724,14 @@ struct BoughtSheet: View {
                         MonthYearPicker(value: $purchased, allowsUnknown: false)
                     }
                 }
-                .listRowBackground(WatchTheme.card)
             }
-            .scrollContentBackground(.hidden)
-            .background(WatchTheme.background)
             .navigationTitle("Mark Bought")
             .navigationBarTitleDisplayMode(.inline)
             .storeErrorAlert(store)
             .toolbar {
-                ToolbarItem(placement: .cancellationAction) { Button("Cancel") { dismiss() } }
+                ToolbarItem(placement: .cancellationAction) { Button(role: .cancel) { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {
-                    Button("Add to Collection") {
+                    Button(role: .confirm) {
                         guard let purchased else { return }
                         Task { await store.markBought(id: item.id, price: price, purchased: purchased); dismiss() }
                     }

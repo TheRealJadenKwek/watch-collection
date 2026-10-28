@@ -256,4 +256,5 @@ enum AppTab: String, CaseIterable {
     case collection
     case stats
     case wishlist
+    case search
 }

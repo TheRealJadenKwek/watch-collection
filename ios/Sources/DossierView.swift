@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// A watch's full page: full-bleed photography, spec sheet, story and service.
+/// A watch's full page: full-bleed photography, then details, story and service like a product page.
 /// Editing still happens in WatchDetailScreen, opened from the toolbar.
 struct WatchDossierView: View {
     @ObservedObject var store: AppStore
@@ -8,6 +8,7 @@ struct WatchDossierView: View {
     @State private var page = 0
     @Environment(\.dismiss) private var dismiss
     @State private var sheet: DossierSheet?
+    @State private var titleInBar = false
 
     private var watch: Watch? { store.data?.watches.first { $0.id == watchID } }
 
@@ -19,7 +20,7 @@ struct WatchDossierView: View {
                 EmptyCollectionView(title: "Watch removed", detail: "This watch is no longer in the collection.")
             }
         }
-        .background(WatchTheme.background.ignoresSafeArea())
+        .navigationTitle(titleInBar ? watch?.name ?? "" : "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if let watch {
@@ -70,19 +71,26 @@ struct WatchDossierView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 hero(watch)
-                VStack(alignment: .leading, spacing: 34) {
+                VStack(alignment: .leading, spacing: 28) {
                     titleBlock(watch)
                     if watch.status != "owned" { statusNote(watch) }
-                    specSheet(watch)
+                    details(watch)
                     story(watch)
                     service(watch)
                 }
                 .padding(.horizontal, 20)
-                .padding(.top, 4)
-                .padding(.bottom, 48)
+                .padding(.top, 20)
+                .padding(.bottom, 40)
             }
         }
+        .containerBackground(WatchTheme.background, for: .navigation)
         .ignoresSafeArea(edges: .top)
+        // Once the large name has scrolled up under the bar, show it in the bar.
+        .onScrollGeometryChange(for: Bool.self) { geometry in
+            geometry.contentOffset.y > geometry.containerSize.width / PhotoShape.dossier + 60
+        } action: { _, past in
+            withAnimation(.easeInOut(duration: 0.2)) { titleInBar = past }
+        }
     }
 
     // MARK: Sections
@@ -107,11 +115,6 @@ struct WatchDossierView: View {
                     .tabViewStyle(.page(indexDisplayMode: watch.photos.count > 1 ? .always : .never))
                 }
             }
-            .overlay(alignment: .bottom) {
-                LinearGradient(colors: [.clear, WatchTheme.background], startPoint: .top, endPoint: .bottom)
-                    .frame(height: 120)
-                    .allowsHitTesting(false)
-            }
             .clipped()
             // Pulling down past the top stretches the photo instead of showing a gap.
             .visualEffect { content, proxy in
@@ -122,83 +125,73 @@ struct WatchDossierView: View {
     }
 
     private func titleBlock(_ watch: Watch) -> some View {
-        let number = catalogueNumbers(store.data?.watches ?? [])[watch.id]
-        let eyebrow = [catalogueLabel(number), watch.purchasedText.isEmpty ? nil : watch.purchasedText]
+        let summary = [cad(watch.price), watch.category, watch.diameter.map { "\(compactNumber($0)) mm" }]
             .compactMap { $0 }
             .joined(separator: " · ")
-        return VStack(alignment: .leading, spacing: 10) {
-            Eyebrow(eyebrow)
+        return VStack(alignment: .leading, spacing: 8) {
             Text(watch.name)
-                .font(.display(38, relativeTo: .largeTitle))
-                .foregroundStyle(WatchTheme.ivory)
+                .font(.title.bold())
                 .fixedSize(horizontal: false, vertical: true)
-            HStack(alignment: .firstTextBaseline, spacing: 10) {
-                Text(cad(watch.price))
-                    .font(.display(24))
-                    .foregroundStyle(WatchTheme.gold)
-                if watch.isTrade { PhotoTag(text: "Trade", color: WatchTheme.gold) }
-                if watch.original == false { PhotoTag(text: "Replica") }
-                Spacer()
-                if let wrist = store.data?.settings.wrist,
-                   let fit = fitInfo(for: watch.diameter, lugToLug: watch.lugToLug, wrist: wrist) {
-                    FitIndicator(info: fit)
+            Text(summary)
+                .font(.body)
+                .foregroundStyle(.secondary)
+            if watch.isTrade || watch.original == false || fit(watch) != nil {
+                HStack(spacing: 8) {
+                    if watch.isTrade { CapsuleChip(text: "Trade", color: WatchTheme.accent) }
+                    if watch.original == false { CapsuleChip(text: "Replica") }
+                    if let fit = fit(watch) { FitIndicator(info: fit) }
                 }
+                .padding(.top, 2)
             }
         }
+    }
+
+    private func fit(_ watch: Watch) -> FitInfo? {
+        guard let wrist = store.data?.settings.wrist else { return nil }
+        return fitInfo(for: watch.diameter, lugToLug: watch.lugToLug, wrist: wrist)
     }
 
     private func statusNote(_ watch: Watch) -> some View {
-        HStack(alignment: .top, spacing: 12) {
-            Image(systemName: "archivebox")
-                .foregroundStyle(WatchTheme.gold)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(statusLabel(watch.status))
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(WatchTheme.ivory)
-                if !watch.statusNote.isEmpty {
-                    Text(watch.statusNote)
-                        .font(.footnote)
-                        .foregroundStyle(WatchTheme.secondary)
+        GroupedSection {
+            HStack(alignment: .top, spacing: 12) {
+                Image(systemName: "archivebox.fill")
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(statusLabel(watch.status))
+                        .font(.body.weight(.semibold))
+                    if !watch.statusNote.isEmpty {
+                        Text(watch.statusNote)
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                Spacer(minLength: 0)
             }
-            Spacer()
+            .padding(16)
         }
-        .padding(14)
-        .watchCard(cornerRadius: 16)
     }
 
-    private func specSheet(_ watch: Watch) -> some View {
-        let specs: [(String, String, String?)] = [
-            ("Diameter", watch.diameter.map { "\(compactNumber($0)) mm" } ?? "—", nil),
-            ("Lug to lug", watch.lugToLug.map { "\(compactNumber($0)) mm" } ?? "—", nil),
-            ("Case", watch.material ?? "—", nil),
-            ("Dial", watch.dialColor ?? "—", watch.dialColor),
-            ("Category", watch.category ?? "—", nil),
-            ("Brand", watch.brand ?? "—", nil),
-        ]
-        return VStack(alignment: .leading, spacing: 16) {
-            GoldRule()
-            Eyebrow("Specification")
-            LazyVGrid(columns: [GridItem(.flexible(), alignment: .topLeading), GridItem(.flexible(), alignment: .topLeading)], alignment: .leading, spacing: 20) {
-                ForEach(specs, id: \.0) { label, value, dial in
-                    VStack(alignment: .leading, spacing: 5) {
-                        Eyebrow(label, color: WatchTheme.secondary)
-                        HStack(spacing: 7) {
-                            if let dial {
-                                Circle()
-                                    .fill(dialColor(dial))
-                                    .frame(width: 11, height: 11)
-                                    .overlay { Circle().stroke(Color.white.opacity(0.4), lineWidth: 0.5) }
-                            }
-                            Text(value)
-                                .font(.display(20))
-                                .foregroundStyle(WatchTheme.ivory)
-                                .lineLimit(2)
-                                .minimumScaleFactor(0.8)
-                        }
+    private func details(_ watch: Watch) -> some View {
+        let number = catalogueNumbers(store.data?.watches ?? [])[watch.id]
+        return GroupedSection("Details") {
+            if let brand = watch.brand { GroupedRow("Brand", value: brand) }
+            if let category = watch.category { GroupedRow("Category", value: category) }
+            if let diameter = watch.diameter { GroupedRow("Diameter", value: "\(compactNumber(diameter)) mm") }
+            if let lugToLug = watch.lugToLug { GroupedRow("Lug to Lug", value: "\(compactNumber(lugToLug)) mm") }
+            if let material = watch.material { GroupedRow("Case", value: material) }
+            if let dial = watch.dialColor {
+                GroupedRow("Dial") {
+                    HStack(spacing: 7) {
+                        Circle()
+                            .fill(dialColor(dial))
+                            .frame(width: 12, height: 12)
+                            .overlay { Circle().stroke(Color.primary.opacity(0.15), lineWidth: 0.5) }
+                        Text(dial)
                     }
                 }
             }
+            if !watch.purchasedText.isEmpty { GroupedRow(watch.isTrade ? "Acquired" : "Purchased", value: watch.purchasedText) }
+            GroupedRow("Catalogue", value: catalogueLabel(number))
         }
     }
 
@@ -206,14 +199,11 @@ struct WatchDossierView: View {
     private func story(_ watch: Watch) -> some View {
         let text = watch.story.trimmingCharacters(in: .whitespacesAndNewlines)
         if !text.isEmpty {
-            VStack(alignment: .leading, spacing: 14) {
-                GoldRule()
-                Eyebrow("The story")
-                Text("“\(text)”")
-                    .font(.displayItalic(22))
-                    .foregroundStyle(WatchTheme.ivory.opacity(0.92))
-                    .lineSpacing(4)
+            GroupedSection("Story") {
+                Text(text)
+                    .font(.body)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(16)
             }
         }
     }
@@ -221,41 +211,21 @@ struct WatchDossierView: View {
     private func service(_ watch: Watch) -> some View {
         let records = serviceRecords(for: watch)
         let nextDue = records.compactMap(\.nextDue).sorted().first
-        return VStack(alignment: .leading, spacing: 14) {
-            GoldRule()
-            HStack(alignment: .firstTextBaseline) {
-                Eyebrow("Service")
-                Spacer()
-                Button(records.isEmpty ? "Add record" : "Service log") { sheet = .service }
-                    .font(.caption.weight(.semibold))
-                    .disabled(store.isOffline)
-            }
+        return GroupedSection("Service") {
+            Button(records.isEmpty ? "Add" : "See All") { sheet = .service }
+                .disabled(store.isOffline)
+        } content: {
             if let latest = records.last {
-                HStack(alignment: .firstTextBaseline) {
-                    VStack(alignment: .leading, spacing: 3) {
-                        Text(latest.kind)
-                            .font(.display(20))
-                            .foregroundStyle(WatchTheme.ivory)
-                        Text(calendarDayLabel(latest.date))
-                            .font(.caption)
-                            .foregroundStyle(WatchTheme.secondary)
-                    }
-                    Spacer()
-                    if let nextDue {
-                        VStack(alignment: .trailing, spacing: 3) {
-                            Text("Next due")
-                                .font(.caption)
-                                .foregroundStyle(WatchTheme.secondary)
-                            Text(calendarDayLabel(nextDue))
-                                .font(.subheadline.weight(.semibold))
-                                .foregroundStyle(WatchTheme.gold)
-                        }
+                GroupedRow(latest.kind, value: calendarDayLabel(latest.date))
+                if let nextDue {
+                    GroupedRow("Next Due") {
+                        Text(calendarDayLabel(nextDue)).foregroundStyle(WatchTheme.accent)
                     }
                 }
             } else {
                 Text("No service history logged.")
-                    .font(.footnote)
-                    .foregroundStyle(WatchTheme.secondary)
+                    .foregroundStyle(.secondary)
+                    .padding(16)
             }
         }
     }

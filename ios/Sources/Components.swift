@@ -5,20 +5,10 @@ import ImageIO
 struct WatchPlaceholder: View {
     var body: some View {
         ZStack {
-            LinearGradient(
-                colors: [WatchTheme.raised, WatchTheme.card],
-                startPoint: .topLeading,
-                endPoint: .bottomTrailing
-            )
-            VStack(spacing: 4) {
-                Image(systemName: "applewatch.watchface")
-                    .font(.system(size: 34, weight: .thin))
-                    .foregroundStyle(WatchTheme.gold.opacity(0.78))
-                Text("NO PHOTO")
-                    .font(.system(size: 8, weight: .bold, design: .rounded))
-                    .tracking(1.5)
-                    .foregroundStyle(WatchTheme.secondary.opacity(0.65))
-            }
+            Color(.systemGray5)
+            Image(systemName: "watch.analog")
+                .font(.system(size: 30, weight: .light))
+                .foregroundStyle(.tertiary)
         }
     }
 }
@@ -42,7 +32,7 @@ struct RemoteWatchImage: View {
                 WatchPlaceholder()
             }
             if isLoading && image == nil {
-                ProgressView().tint(WatchTheme.gold)
+                ProgressView()
             }
         }
         .clipped()
@@ -112,17 +102,17 @@ enum DisplayImageCache {
 
 struct CapsuleChip: View {
     let text: String
-    var color: Color = WatchTheme.secondary
+    var color: Color = .secondary
     var filled = false
 
     var body: some View {
         Text(text)
-            .font(.system(size: 11, weight: .semibold))
+            .font(.caption.weight(.semibold))
             .lineLimit(1)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .foregroundStyle(filled ? WatchTheme.background : color)
-            .background(filled ? color : color.opacity(0.12), in: Capsule())
+            .foregroundStyle(filled ? .white : color)
+            .background(filled ? color : color.opacity(0.15), in: Capsule())
     }
 }
 
@@ -131,11 +121,11 @@ struct FitIndicator: View {
     let info: FitInfo
 
     var body: some View {
-        HStack(spacing: 5) {
-            Circle().fill(fitColor(info)).frame(width: 6, height: 6)
+        HStack(spacing: 6) {
+            Circle().fill(fitColor(info)).frame(width: 7, height: 7)
             Text(info.label)
-                .font(.system(size: 11, weight: .medium))
-                .foregroundStyle(WatchTheme.secondary)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
                 .lineLimit(1)
         }
         .accessibilityElement(children: .combine)
@@ -145,9 +135,10 @@ struct FitIndicator: View {
 
 func fitColor(_ info: FitInfo) -> Color {
     switch info.key {
-    case "perfect", "great": WatchTheme.gold
-    case "sweet": WatchTheme.green
-    default: WatchTheme.amber
+    case "perfect", "great": .green
+    case "sweet": .teal
+    case "over": .red
+    default: .orange
     }
 }
 
@@ -160,51 +151,116 @@ struct FitChip: View {
     }
 }
 
-struct DialChip: View {
-    let name: String
-
-    var body: some View {
-        HStack(spacing: 5) {
-            Circle()
-                .fill(dialColor(name))
-                .frame(width: 8, height: 8)
-                .overlay { Circle().stroke(Color.white.opacity(0.35), lineWidth: 0.5) }
-            Text(name).lineLimit(1)
-        }
-        .font(.caption2.weight(.semibold))
-        .foregroundStyle(WatchTheme.secondary)
-        .padding(.horizontal, 8)
-        .padding(.vertical, 5)
-        .background(WatchTheme.secondary.opacity(0.1))
-        .clipShape(Capsule())
-    }
-}
-
+/// Insights card in the style of Health's summary tiles: a coloured symbol and title,
+/// optional detail on the right. Content colours its own marks; a .tint here would leak
+/// into the tab bar's selection colour.
 struct SectionCard<Content: View>: View {
-    let eyebrow: String?
     let title: String
+    let systemImage: String
+    let color: Color
+    let detail: String?
     @ViewBuilder let content: Content
 
-    init(eyebrow: String? = nil, title: String, @ViewBuilder content: () -> Content) {
-        self.eyebrow = eyebrow
+    init(_ title: String, systemImage: String, color: Color = WatchTheme.accent, detail: String? = nil, @ViewBuilder content: () -> Content) {
         self.title = title
+        self.systemImage = systemImage
+        self.color = color
+        self.detail = detail
         self.content = content()
     }
 
     var body: some View {
-        // Editorial section: a gold rule, small label and Didot title, no box.
-        VStack(alignment: .leading, spacing: 16) {
-            GoldRule()
-            VStack(alignment: .leading, spacing: 8) {
-                if let eyebrow { Eyebrow(eyebrow) }
-                Text(title)
-                    .font(.display(30))
-                    .foregroundStyle(WatchTheme.ivory)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .firstTextBaseline) {
+                Label(title, systemImage: systemImage)
+                    .font(.subheadline.weight(.semibold))
+                    .foregroundStyle(color)
+                Spacer(minLength: 8)
+                if let detail {
+                    Text(detail)
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
             }
             content
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.vertical, 14)
+        .groupedCard()
+    }
+}
+
+/// Inset-grouped section like Settings or the App Store's Information block:
+/// a bold header, rows on a rounded card, inset dividers between rows.
+struct GroupedSection<Content: View, Accessory: View>: View {
+    let title: String?
+    @ViewBuilder let accessory: Accessory
+    @ViewBuilder let content: Content
+
+    init(_ title: String? = nil, @ViewBuilder accessory: () -> Accessory, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.accessory = accessory()
+        self.content = content()
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let title {
+                HStack(alignment: .firstTextBaseline) {
+                    Text(title).font(.title3.bold())
+                    Spacer()
+                    accessory.font(.body)
+                }
+                .padding(.horizontal, 4)
+            }
+            VStack(alignment: .leading, spacing: 0) {
+                Group(subviews: content) { rows in
+                    ForEach(rows) { row in
+                        row
+                        if row.id != rows.last?.id {
+                            Divider().padding(.leading, 16)
+                        }
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(WatchTheme.card, in: RoundedRectangle(cornerRadius: WatchTheme.corner, style: .continuous))
+        }
+    }
+}
+
+extension GroupedSection where Accessory == EmptyView {
+    init(_ title: String? = nil, @ViewBuilder content: () -> Content) {
+        self.init(title, accessory: { EmptyView() }, content: content)
+    }
+}
+
+/// One label/value row inside a GroupedSection.
+struct GroupedRow<Value: View>: View {
+    let label: String
+    @ViewBuilder let value: Value
+
+    init(_ label: String, @ViewBuilder value: () -> Value) {
+        self.label = label
+        self.value = value()
+    }
+
+    var body: some View {
+        HStack(spacing: 12) {
+            Text(label)
+            Spacer(minLength: 12)
+            value
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.trailing)
+        }
+        .padding(.horizontal, 16)
+        .padding(.vertical, 11)
+        .frame(minHeight: 44)
+    }
+}
+
+extension GroupedRow where Value == Text {
+    init(_ label: String, value: String) {
+        self.init(label) { Text(value) }
     }
 }
 
@@ -249,24 +305,23 @@ struct MonthYearPicker: View {
     }
 
     var body: some View {
-        HStack {
-            Picker("Purchase month", selection: month) {
-                if allowsUnknown { Text("Unknown").tag(nil as Int?) }
-                ForEach(1...12, id: \.self) { month in
-                    Text(monthNames[month - 1]).tag(Optional(month))
+        LabeledContent("Purchased") {
+            HStack(spacing: 0) {
+                Picker("Purchase month", selection: month) {
+                    if allowsUnknown { Text("Unknown").tag(nil as Int?) }
+                    ForEach(1...12, id: \.self) { month in
+                        Text(monthNames[month - 1]).tag(Optional(month))
+                    }
+                }
+                Picker("Purchase year", selection: year) {
+                    if allowsUnknown { Text("Unknown").tag(nil as Int?) }
+                    ForEach(years, id: \.self) { year in
+                        Text(String(year)).tag(Optional(year))
+                    }
                 }
             }
             .pickerStyle(.menu)
-
-            Spacer()
-
-            Picker("Purchase year", selection: year) {
-                if allowsUnknown { Text("Unknown").tag(nil as Int?) }
-                ForEach(years, id: \.self) { year in
-                    Text(String(year)).tag(Optional(year))
-                }
-            }
-            .pickerStyle(.menu)
+            .labelsHidden()
         }
         .onAppear {
             if !allowsUnknown, purchaseMonthParts(value) == nil {
@@ -284,10 +339,9 @@ struct EmptyCollectionView: View {
     var body: some View {
         ContentUnavailableView(
             title,
-            systemImage: "applewatch",
+            systemImage: "watch.analog",
             description: Text(detail)
         )
-        .foregroundStyle(WatchTheme.secondary)
     }
 }
 
@@ -297,7 +351,6 @@ struct GearToolbarButton: View {
     var body: some View {
         Button(action: action) {
             Image(systemName: "gearshape")
-                .foregroundStyle(WatchTheme.gold)
         }
         .accessibilityLabel("Settings")
     }
@@ -313,15 +366,9 @@ struct RefreshableScreen<Content: View>: View {
     }
 
     var body: some View {
+        // Pull-to-refresh shows the system spinner; no custom overlay, as in Apple's apps.
         content
             .refreshable { await store.refresh() }
-            .overlay(alignment: .top) {
-                if store.isRefreshing {
-                    ProgressView()
-                        .tint(WatchTheme.gold)
-                        .padding(.top, 4)
-                }
-            }
     }
 }
 

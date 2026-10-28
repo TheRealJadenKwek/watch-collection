@@ -16,8 +16,7 @@ struct WatchCollectionApp: App {
     var body: some Scene {
         WindowGroup {
             RootView(store: store)
-                .preferredColorScheme(.dark)
-                .tint(WatchTheme.gold)
+                .tint(WatchTheme.accent)
                 .task { await store.start() }
                 .onChange(of: scenePhase, initial: true) { _, phase in store.sceneChanged(phase) }
         }
@@ -42,9 +41,9 @@ struct RootView: View {
                     tabs
                 } else if store.isRefreshing {
                     VStack(spacing: 14) {
-                        ProgressView().tint(WatchTheme.gold)
+                        ProgressView()
                         Text("Opening the collection…")
-                            .foregroundStyle(WatchTheme.secondary)
+                            .foregroundStyle(.secondary)
                     }
                 } else {
                     VStack {
@@ -60,7 +59,6 @@ struct RootView: View {
         }
         .sheet(isPresented: $showSettings) {
             SettingsView(store: store)
-                .preferredColorScheme(.dark)
         }
         .alert("Watch Collection", isPresented: errorBinding) {
             Button("OK", role: .cancel) { store.errorMessage = nil }
@@ -70,13 +68,11 @@ struct RootView: View {
         .overlay(alignment: .bottom) {
             if let notice = store.notice {
                 Text(notice)
-                    .font(.footnote.weight(.semibold))
-                    .padding(.horizontal, 14)
-                    .padding(.vertical, 10)
-                    .background(WatchTheme.raised)
-                    .clipShape(Capsule())
-                    .overlay { Capsule().stroke(WatchTheme.gold.opacity(0.35)) }
-                    .padding(.bottom, 72)
+                    .font(.subheadline.weight(.semibold))
+                    .padding(.horizontal, 18)
+                    .padding(.vertical, 12)
+                    .glassEffect(.regular, in: .capsule)
+                    .padding(.bottom, 84)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
                     .task(id: notice) {
                         try? await Task.sleep(for: .seconds(2.5))
@@ -89,16 +85,20 @@ struct RootView: View {
 
     private var tabs: some View {
         TabView(selection: $selectedTab) {
-            CollectionScreen(store: store, showSettings: { showSettings = true })
-                .tag(AppTab.collection.rawValue)
-                .tabItem { Label("Collection", systemImage: "square.stack") }
-            StatsScreen(store: store, showSettings: { showSettings = true })
-                .tag(AppTab.stats.rawValue)
-                .tabItem { Label("Insights", systemImage: "chart.line.uptrend.xyaxis") }
-            WishlistScreen(store: store, showSettings: { showSettings = true })
-                .tag(AppTab.wishlist.rawValue)
-                .tabItem { Label("Wishlist", systemImage: "sparkles") }
+            Tab("Collection", systemImage: "watch.analog", value: AppTab.collection.rawValue) {
+                CollectionScreen(store: store, showSettings: { showSettings = true })
+            }
+            Tab("Insights", systemImage: "chart.bar.xaxis", value: AppTab.stats.rawValue) {
+                StatsScreen(store: store, showSettings: { showSettings = true })
+            }
+            Tab("Wishlist", systemImage: "star", value: AppTab.wishlist.rawValue) {
+                WishlistScreen(store: store, showSettings: { showSettings = true })
+            }
+            Tab(value: AppTab.search.rawValue, role: .search) {
+                SearchScreen(store: store)
+            }
         }
+        .tabBarMinimizeBehavior(.onScrollDown)
     }
 
     private var errorBinding: Binding<Bool> {

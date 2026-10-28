@@ -67,118 +67,15 @@ struct FramedPhoto: View {
     }
 }
 
-/// Circular watch portrait used in the watch box strip and lists.
-struct WatchPortrait: View {
-    @ObservedObject var store: AppStore
-    let watch: Watch
-    var size: CGFloat = 64
-    var highlighted = false
-
-    var body: some View {
-        RemoteWatchImage(
-            asset: watch.photos.first.flatMap { store.photoAsset(itemID: watch.id, filename: $0, wishlist: false) },
-            allowsRemoteFetch: !store.isOffline,
-            focus: watch.focus(for: watch.photos.first)
-        )
-        .frame(width: size, height: size)
-        .clipShape(Circle())
-        .overlay {
-            Circle().stroke(highlighted ? WatchTheme.gold : WatchTheme.hairline, lineWidth: highlighted ? 2 : 1)
-        }
-        .padding(highlighted ? 3 : 0)
-        .overlay {
-            if highlighted { Circle().stroke(WatchTheme.gold.opacity(0.35), lineWidth: 1) }
-        }
-    }
-}
-
-/// Big Didot figure with a small label underneath.
-struct Figure: View {
-    let value: String
-    let label: String
-    var size: CGFloat = 34
-    var color: Color = WatchTheme.ivory
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            Text(value)
-                .font(.display(size))
-                .foregroundStyle(color)
-                .lineLimit(1)
-                .minimumScaleFactor(0.6)
-            Eyebrow(label, color: WatchTheme.secondary)
-        }
-    }
-}
-
-/// Small dark-glass label laid over photos.
+/// Small Liquid Glass label laid over photos.
 struct PhotoTag: View {
     let text: String
-    var color: Color = WatchTheme.ivory
 
     var body: some View {
-        Text(text.uppercased())
-            .font(.system(size: 10, weight: .semibold))
-            .tracking(1.4)
-            .foregroundStyle(color)
-            .padding(.horizontal, 9)
+        Text(text)
+            .font(.caption.weight(.semibold))
+            .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .background(Color.black.opacity(0.42), in: Capsule())
-            .background(.ultraThinMaterial, in: Capsule())
-            .environment(\.colorScheme, .dark)
-    }
-}
-
-/// Screen header: small label above a large Didot title.
-struct ScreenHeader: View {
-    let eyebrow: String
-    let title: String
-    var subtitle: String?
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Eyebrow(eyebrow)
-            Text(title)
-                .font(.display(42, relativeTo: .largeTitle))
-                .foregroundStyle(WatchTheme.ivory)
-                .lineLimit(2)
-                .minimumScaleFactor(0.7)
-            if let subtitle {
-                Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(WatchTheme.secondary)
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-}
-
-/// Capsule segmented control in the editorial style.
-struct PillPicker: View {
-    let options: [(value: String, label: String)]
-    @Binding var selection: String
-
-    var body: some View {
-        HStack(spacing: 2) {
-            ForEach(options, id: \.value) { option in
-                let selected = selection == option.value
-                Button {
-                    withAnimation(.snappy) { selection = option.value }
-                } label: {
-                    Text(option.label)
-                        .font(.subheadline.weight(.semibold))
-                        .foregroundStyle(selected ? WatchTheme.background : WatchTheme.secondary)
-                        .padding(.horizontal, 16)
-                        .padding(.vertical, 8)
-                        .background(selected ? WatchTheme.ivory : .clear, in: Capsule())
-                        .contentShape(Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityAddTraits(selected ? .isSelected : [])
-            }
-        }
-        .padding(3)
-        .background(WatchTheme.card, in: Capsule())
-        .overlay { Capsule().stroke(WatchTheme.hairline) }
+            .glassEffect(.regular, in: .capsule)
     }
 }

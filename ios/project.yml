@@ -2,7 +2,7 @@ name: WatchCollection
 options:
   bundleIdPrefix: com.jadenkwek
   deploymentTarget:
-    iOS: "18.0"
+    iOS: "26.0"
 targets:
   WatchCollection:
     type: application
@@ -12,11 +12,12 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.jadenkwek.watchcollection
         DEVELOPMENT_TEAM: RLC58VS9R6
-        MARKETING_VERSION: "3.2"
+        MARKETING_VERSION: "4.0"
         CURRENT_PROJECT_VERSION: "13"
         CODE_SIGN_STYLE: Automatic
         INFOPLIST_KEY_UILaunchScreen_Generation: YES
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.9"
     info:
