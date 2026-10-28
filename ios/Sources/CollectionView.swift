@@ -138,6 +138,7 @@ struct CollectionScreen: View {
                         focus: watch.focus(for: watch.photos.first),
                         aspect: PhotoShape.square
                     )
+                    .overlay(alignment: .bottomLeading) { PurchaseDateOverlay(watch: watch) }
                     .matchedTransitionSource(id: watch.id, in: zoom)
                 }
                 .buttonStyle(.plain)
@@ -167,6 +168,7 @@ struct WatchTile: View {
                         PhotoTag(text: "Replica").padding(8)
                     }
                 }
+                .overlay(alignment: .bottomLeading) { PurchaseDateOverlay(watch: watch) }
                 .matchedTransitionSource(id: watch.id, in: zoom)
             VStack(alignment: .leading, spacing: 2) {
                 Text(watch.name)

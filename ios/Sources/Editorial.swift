@@ -26,6 +26,33 @@ func purchaseDay(_ text: String) -> Int {
     return day
 }
 
+/// Short purchase date for photo overlays: "Sep 20, 2026" when the day is known, else "Nov 2025".
+/// Nil for watches with no purchase month (e.g. undated trades).
+func purchaseShortLabel(_ watch: Watch) -> String? {
+    guard let parts = purchaseMonthParts(watch.purchased) else { return nil }
+    let day = purchaseDay(watch.purchasedText)
+    guard let date = Calendar.current.date(from: DateComponents(year: parts.year, month: parts.month, day: max(day, 1)))
+    else { return nil }
+    return day > 0
+        ? date.formatted(.dateTime.month(.abbreviated).day().year())
+        : date.formatted(.dateTime.month(.abbreviated).year())
+}
+
+/// Purchase date laid over the bottom-left of a photo, like the duration on a Photos thumbnail.
+struct PurchaseDateOverlay: View {
+    let watch: Watch
+
+    var body: some View {
+        if let label = purchaseShortLabel(watch) {
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.white)
+                .shadow(color: .black.opacity(0.6), radius: 3)
+                .padding(8)
+        }
+    }
+}
+
 /// Oldest first by purchase month, then day when known (month-only sorts first in its month),
 /// then the order the watches were added. Undated watches (e.g. trades with no date) go last.
 func acquisitionOrder(_ watches: [Watch]) -> [Watch] {
