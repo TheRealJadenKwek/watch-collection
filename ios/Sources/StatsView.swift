@@ -17,6 +17,12 @@ struct StatsScreen: View {
     @State private var asOfIndex: Int?
     @State private var playingTime = false
 
+    /// Mac only: measured column heights, so the purchase list can scroll inside its card and the two
+    /// columns end level instead of the right one running far past the left.
+    @State private var leftColumnHeight: CGFloat = 0
+    @State private var rightColumnHeight: CGFloat = 0
+    @State private var timelineViewport: CGFloat = 0
+
     private var everyWatch: [Watch] { store.data?.watches ?? [] }
     /// Every watch bought by the scrubber's month. Insights is built from this, so dragging back in time
     /// replays the stats as they stood then.
@@ -161,22 +167,27 @@ struct StatsScreen: View {
                                     sizeChart
                                     lugChart
                                     priceLadder
+                                    priceLedger
                                     varietyPanel(title: "Dials", symbol: "circle.lefthalf.filled", color: .cyan, field: \Watch.dialColor, values: store.data?.dialColors ?? [])
+                                    varietyPanel(title: "Materials", symbol: "cube.fill", color: .brown, field: \Watch.material, values: store.data?.materials ?? [])
                                     completeData
                                 }
                                 .frame(maxWidth: .infinity)
+                                .background(HeightReader(key: LeftColumnHeightKey.self))
                                 VStack(spacing: 16) {
                                     maintenanceDashboard
                                     spendChart
                                     countChart
                                     currentCollectionTimeline
                                     categoryCoverage
-                                    priceLedger
                                     brandBreadth
-                                    varietyPanel(title: "Materials", symbol: "cube.fill", color: .brown, field: \Watch.material, values: store.data?.materials ?? [])
                                 }
                                 .frame(maxWidth: .infinity)
+                                .background(HeightReader(key: RightColumnHeightKey.self))
                             }
+                            .onPreferenceChange(LeftColumnHeightKey.self) { update(&leftColumnHeight, to: $0) }
+                            .onPreferenceChange(RightColumnHeightKey.self) { update(&rightColumnHeight, to: $0) }
+                            .onPreferenceChange(TimelineViewportKey.self) { update(&timelineViewport, to: $0) }
                         } else {
                             headlineTiles
                             maintenanceDashboard
@@ -539,6 +550,20 @@ struct StatsScreen: View {
         }
     }
 
+    /// Ignores sub-point changes so measuring cannot loop.
+    private func update(_ value: inout CGFloat, to new: CGFloat) {
+        if abs(value - new) > 1 { value = new }
+    }
+
+    /// The height the purchase list may use on the Mac: whatever keeps the right column level with the
+    /// left, but never under 320 points. Everything else in the right column stays where it is.
+    private var timelineListLimit: CGFloat? {
+        guard Platform.isMac else { return nil }
+        guard leftColumnHeight > 0, rightColumnHeight > 0 else { return 600 }
+        let restOfRightColumn = rightColumnHeight - timelineViewport
+        return max(320, leftColumnHeight - restOfRightColumn)
+    }
+
     private var currentCollectionTimeline: some View {
         let purchases = uniqueCostRecords(scoped).filter { watch in
             !watch.isTrade || all.contains(where: { $0.id == watch.costSourceWatchID })
@@ -639,6 +664,7 @@ struct StatsScreen: View {
                         .hoverRow(clickable: true)
                     }
                 }
+                .modifier(ScrollWithin(limit: timelineListLimit))
 
                 if missingCount > 0 {
                     Label(
@@ -1737,4 +1763,56 @@ private func normalizedBrand(_ watch: Watch) -> String {
 
 private func counts(_ values: [String]) -> [String: Int] {
     values.reduce(into: [:]) { $0[$1, default: 0] += 1 }
+}
+
+// MARK: - Mac column fitting
+
+private struct LeftColumnHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct RightColumnHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct TimelineViewportKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct TimelineContentHeightKey: PreferenceKey {
+    static let defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
+}
+
+private struct HeightReader<Key: PreferenceKey>: View where Key.Value == CGFloat {
+    let key: Key.Type
+    var body: some View {
+        GeometryReader { proxy in Color.clear.preference(key: key, value: proxy.size.height) }
+    }
+}
+
+/// With a limit, the content scrolls inside a box no taller than the limit (shorter if the content is
+/// shorter). Without one it lays out as before.
+private struct ScrollWithin: ViewModifier {
+    let limit: CGFloat?
+    @State private var contentHeight: CGFloat = 0
+
+    func body(content: Content) -> some View {
+        if let limit {
+            ScrollView(.vertical) {
+                content.background(HeightReader(key: TimelineContentHeightKey.self))
+            }
+            .scrollIndicators(.visible)
+            .onPreferenceChange(TimelineContentHeightKey.self) { height in
+                if abs(contentHeight - height) > 1 { contentHeight = height }
+            }
+            .frame(height: contentHeight > 0 ? min(contentHeight, limit) : limit)
+            .background(HeightReader(key: TimelineViewportKey.self))
+        } else {
+            content
+        }
+    }
 }

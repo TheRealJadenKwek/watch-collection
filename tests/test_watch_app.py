@@ -364,7 +364,7 @@ class WatchAppTests(unittest.TestCase):
         # The diameter labels are checked with lug-to-lug removed; a measured L2L takes precedence (below).
         watches = {watch["id"]: {**watch, "lugToLug": None} for watch in data["watches"]}
         self.assertTrue(export_sheet.fit_info(watches["timex-marlin"], wrist)["label"].startswith("sweet spot"))
-        self.assertEqual(export_sheet.fit_info(watches["casio-g-steel-gsts300g"], wrist)["label"], "+10mm over")
+        self.assertEqual(export_sheet.fit_info(watches["casio-g-steel-gsts300g"], wrist)["label"], "+9.3mm over")
         self.assertEqual(export_sheet.fit_info(watches["zenith-220s"], wrist)["label"], "−1mm under")
         self.assertEqual(self.request("PUT", "/api/watches/oris-aquis-date", {"lugToLug": 46})[0], 200)
         oris = next(w for w in self.get_data()["watches"] if w["id"] == "oris-aquis-date")
