@@ -4,15 +4,20 @@ struct TimelineRoute: Hashable {
     let ownedOnly: Bool
 }
 
-/// The collection's history as a scroll-through presentation: a title card per year, then one page per
-/// purchase with a large photo, while a counter keeps the running number and total spent. Scroll page by
-/// page, use the arrow keys, click a year to jump, or press play to let it run.
+/// Every watch in order of arrival as a scroll-through presentation: a title card per year, then one page
+/// per watch with a large photo, while a counter keeps the running number and total spent. Scroll freely,
+/// use the arrow keys, click a year to jump, or press play to let it run.
 struct TimelinePresentationScreen: View {
     @ObservedObject var store: AppStore
-    let ownedOnly: Bool
+    @State private var ownedOnly: Bool
     @State private var position: String?
     @State private var playing = false
     @FocusState private var focused: Bool
+
+    init(store: AppStore, ownedOnly: Bool = false) {
+        self.store = store
+        _ownedOnly = State(initialValue: ownedOnly)
+    }
 
     private var all: [Watch] { store.data?.watches ?? [] }
 
@@ -29,10 +34,21 @@ struct TimelinePresentationScreen: View {
                 }
                 .scrollTargetLayout()
             }
-            .scrollTargetBehavior(.paging)
-            .scrollPosition(id: $position)
+            // Free scrolling: the page in the middle of the window counts as the current one.
+            .scrollPosition(id: $position, anchor: .center)
             .scrollIndicators(.hidden)
             .overlay(alignment: .top) { progressBar(index: index, count: slides.count) }
+            .overlay(alignment: .topLeading) {
+                Picker("Show", selection: $ownedOnly) {
+                    Text("Every watch").tag(false)
+                    Text("Current").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .padding(.leading, Platform.isMac ? 24 : 16)
+                .padding(.top, 18)
+            }
             .overlay(alignment: .trailing) { yearRail(slides: slides, current: slides[safe: index]) }
             .overlay(alignment: .bottom) { controls(slides: slides, index: index) }
         }
@@ -48,6 +64,10 @@ struct TimelinePresentationScreen: View {
         .onAppear {
             if position == nil { position = slides.first?.id }
             focused = true
+        }
+        .onChange(of: ownedOnly) { _, _ in
+            playing = false
+            position = "intro"
         }
         .task(id: playing) {
             // Play: move on a page every few seconds, and stop at the end.
@@ -70,28 +90,58 @@ struct TimelinePresentationScreen: View {
     // MARK: Building the story
 
     private func buildSlides() -> [TimelineSlide] {
-        let scoped = ownedOnly ? all.filter { $0.status == "owned" } : all
-        let purchases = uniqueCostRecords(scoped).filter { watch in
-            !watch.isTrade || all.contains(where: { $0.id == watch.costSourceWatchID })
-        }
-        let entries = purchaseTimelineEntries(purchases, all: all, by: .acquisition)
+        let entries = arrivals()
         guard let first = entries.first, let last = entries.last else { return [] }
         let numbers = catalogueNumbers(all)
-        let grandTotal = entries.reduce(0) { $0 + $1.watch.price }
-        var slides: [TimelineSlide] = [.intro(count: entries.count, total: grandTotal, from: first.year, to: last.year, photos: Array(entries.suffix(9)))]
+        let grandTotal = entries.reduce(0) { $0 + cost(of: $1.watch, among: entries) }
+        let label = "\(entries.count) \(entries.count == 1 ? "watch" : "watches")"
+        var slides: [TimelineSlide] = [.intro(label: label, total: grandTotal, from: first.year, to: last.year, photos: Array(entries.suffix(9)))]
         var running = 0.0
         var number = 0
         for (year, group) in groupedByYear(entries) {
-            let total = group.reduce(0) { $0 + $1.watch.price }
+            let total = group.reduce(0) { $0 + cost(of: $1.watch, among: entries) }
             slides.append(.year(year, count: group.count, total: total, photos: Array(group.prefix(7)), sinceStart: number))
             for entry in group {
                 number += 1
-                running += entry.watch.price
+                running += cost(of: entry.watch, among: entries)
                 slides.append(.purchase(entry, number: number, of: entries.count, runningTotal: running, catalogue: numbers[entry.watch.id]))
             }
         }
-        slides.append(.outro(count: entries.count, total: grandTotal, from: first.year, to: last.year))
+        slides.append(.outro(label: label, total: grandTotal, from: first.year, to: last.year))
         return slides
+    }
+
+    /// Every watch in the scope, in the order it arrived. A trade with no date of its own sits at the
+    /// date of the watch it came from, as on the Collection cards.
+    private func arrivals() -> [PurchaseTimelineEntry] {
+        let monthNames = Calendar.current.shortMonthSymbols
+        let scoped = ownedOnly ? all.filter { $0.status == "owned" } : all
+        let dated: [Watch] = scoped.map { watch in
+            var copy = watch
+            let source = datedSource(watch, in: all)
+            copy.purchased = source.purchased
+            copy.purchasedText = source.purchasedText
+            return copy
+        }
+        return acquisitionOrder(dated).compactMap { watch in
+            guard let parts = purchaseMonthParts(watch.purchased), monthNames.indices.contains(parts.month - 1),
+                  let original = scoped.first(where: { $0.id == watch.id })
+            else { return nil }
+            return PurchaseTimelineEntry(
+                watch: original,
+                source: original.isTrade ? all.first { $0.id == original.costSourceWatchID } : nil,
+                sortKey: String(format: "%04d-%02d", parts.year, parts.month),
+                month: monthNames[parts.month - 1],
+                year: String(parts.year)
+            )
+        }
+    }
+
+    /// What a watch adds to the running total. A watch whose cost is already counted through another one
+    /// (a trade's carried-over price, a piece of a lot) adds nothing, so the total matches Insights.
+    private func cost(of watch: Watch, among entries: [PurchaseTimelineEntry]) -> Double {
+        if let source = watch.costSourceWatchID, entries.contains(where: { $0.watch.id == source }) { return 0 }
+        return watch.price
     }
 
     private func groupedByYear(_ entries: [PurchaseTimelineEntry]) -> [(String, [PurchaseTimelineEntry])] {
@@ -117,9 +167,9 @@ struct TimelinePresentationScreen: View {
 
     @ViewBuilder
     private func page(_ slide: TimelineSlide, size: CGSize) -> some View {
-        let wide = size.width > 760
+        let wide = size.width >= 820
         switch slide {
-        case let .intro(count, total, from, to, photos):
+        case let .intro(label, total, from, to, photos):
             VStack(spacing: 22) {
                 Text(ownedOnly ? "The watches you own" : "Every watch you've bought")
                     .font(.title3.weight(.semibold))
@@ -127,7 +177,7 @@ struct TimelinePresentationScreen: View {
                 Text("\(from) – \(to)")
                     .font(.system(size: wide ? 92 : 56, weight: .bold, design: .rounded))
                     .monospacedDigit()
-                Text("\(count) \(count == 1 ? "purchase" : "purchases") · \(cadWhole(total))")
+                Text("\(label) · \(cadWhole(total))")
                     .font(.title2.weight(.medium))
                     .foregroundStyle(.secondary)
                 photoFan(photos, size: wide ? 92 : 58)
@@ -177,12 +227,12 @@ struct TimelinePresentationScreen: View {
         case let .purchase(entry, number, of, runningTotal, catalogue):
             purchasePage(entry, number: number, of: of, runningTotal: runningTotal, catalogue: catalogue, size: size, wide: wide)
 
-        case let .outro(count, total, from, to):
+        case let .outro(label, total, from, to):
             VStack(spacing: 18) {
                 Text("That's the story so far")
                     .font(.title3.weight(.semibold))
                     .foregroundStyle(.secondary)
-                Text("\(count) watches")
+                Text(label)
                     .font(.system(size: wide ? 92 : 56, weight: .bold, design: .rounded))
                 Text("\(cadWhole(total)) from \(from) to \(to)")
                     .font(.title2.weight(.medium))
@@ -214,23 +264,32 @@ struct TimelinePresentationScreen: View {
         wide: Bool
     ) -> some View {
         let watch = entry.watch
-        let photoHeight = wide ? min(size.height * 0.74, size.width * 0.42 / PhotoShape.plate) : min(size.height * 0.5, (size.width - 48) / PhotoShape.plate)
-        let photo = ZStack {
-            // A soft glow in the dial's colour, so each page takes on the watch's character.
+        // The year rail sits at the right edge, so the page keeps clear of it.
+        let rail: CGFloat = Platform.isMac ? 112 : 44
+        let inner = size.width - (wide ? 72 + rail : 24 + rail)
+        let detailsWidth = wide ? min(440, max(300, inner * 0.42)) : inner
+        let photoWidth = wide
+            ? max(160, min(inner - detailsWidth - 56, size.height * 0.72 * PhotoShape.plate))
+            : max(160, min(inner, size.height * 0.46 * PhotoShape.plate))
+        let photoHeight = photoWidth / PhotoShape.plate
+        let photo = RemoteWatchImage(
+            asset: watch.photos.first.flatMap { store.photoAsset(itemID: watch.id, filename: $0, wishlist: false) },
+            allowsRemoteFetch: !store.isOffline,
+            focus: watch.focus(for: watch.photos.first),
+            maxPixel: DisplayImageCache.page
+        )
+        .frame(width: photoWidth, height: photoHeight)
+        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        .shadow(color: .black.opacity(0.4), radius: 30, y: 18)
+        .background {
+            // A soft glow in the dial's colour, so each page takes on the watch's character. As a
+            // background it spreads past the photo without taking any room from the text.
             if let dial = watch.dialColor, dial != "Black", dial != "Other" {
                 RadialGradient(colors: [dialColor(dial).opacity(0.32), .clear], center: .center, startRadius: 10, endRadius: photoHeight * 0.75)
-                    .frame(width: photoHeight * 1.5, height: photoHeight * 1.3)
+                    .frame(width: photoWidth * 1.9, height: photoHeight * 1.3)
                     .blur(radius: 30)
+                    .allowsHitTesting(false)
             }
-            RemoteWatchImage(
-                asset: watch.photos.first.flatMap { store.photoAsset(itemID: watch.id, filename: $0, wishlist: false) },
-                allowsRemoteFetch: !store.isOffline,
-                focus: watch.focus(for: watch.photos.first),
-                maxPixel: DisplayImageCache.page
-            )
-            .frame(width: photoHeight * PhotoShape.plate, height: photoHeight)
-            .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
-            .shadow(color: .black.opacity(0.4), radius: 30, y: 18)
         }
         .scrollTransition(.interactive, axis: .vertical) { content, phase in
             content
@@ -249,7 +308,7 @@ struct TimelinePresentationScreen: View {
             Text(watch.name)
                 .font(.system(size: wide ? 42 : 30, weight: .bold))
                 .fixedSize(horizontal: false, vertical: true)
-            Text(cad(watch.price))
+            Text(watch.price == 0 && watch.costSourceWatchID != nil ? "Part of a lot" : cad(watch.price))
                 .font(.figure(.title))
             HStack(spacing: 8) {
                 if let category = watch.category { CapsuleChip(text: category) }
@@ -275,7 +334,7 @@ struct TimelinePresentationScreen: View {
                 .padding(.top, 14)
         }
         .multilineTextAlignment(wide ? .leading : .center)
-        .frame(maxWidth: wide ? 440 : .infinity, alignment: wide ? .leading : .center)
+        .frame(width: detailsWidth, alignment: wide ? .leading : .center)
         // The text travels further than the photo, so the two separate as a page scrolls.
         .scrollTransition(.interactive, axis: .vertical) { content, phase in
             content
@@ -285,17 +344,19 @@ struct TimelinePresentationScreen: View {
 
         return Group {
             if wide {
-                HStack(spacing: 64) {
+                HStack(spacing: 56) {
                     photo
                     details
                 }
-                .padding(.horizontal, 96)
+                .padding(.leading, 72)
+                .padding(.trailing, rail)
             } else {
                 VStack(spacing: 22) {
                     photo
                     details
                 }
-                .padding(.horizontal, 24)
+                .padding(.leading, 24)
+                .padding(.trailing, rail)
             }
         }
     }
@@ -381,10 +442,10 @@ struct TimelinePresentationScreen: View {
 }
 
 private enum TimelineSlide: Identifiable {
-    case intro(count: Int, total: Double, from: String, to: String, photos: [PurchaseTimelineEntry])
+    case intro(label: String, total: Double, from: String, to: String, photos: [PurchaseTimelineEntry])
     case year(String, count: Int, total: Double, photos: [PurchaseTimelineEntry], sinceStart: Int)
     case purchase(PurchaseTimelineEntry, number: Int, of: Int, runningTotal: Double, catalogue: Int?)
-    case outro(count: Int, total: Double, from: String, to: String)
+    case outro(label: String, total: Double, from: String, to: String)
 
     var id: String {
         switch self {

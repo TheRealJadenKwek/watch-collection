@@ -418,7 +418,8 @@ struct StatsScreen: View {
                 .foregroundStyle(Color.secondary)
 
                 Button {
-                    let route = TimelineRoute(ownedOnly: scope == "owned")
+                    // Every watch by default; the timeline has its own switch to show only current ones.
+                    let route = TimelineRoute(ownedOnly: false)
                     #if os(macOS)
                     openPage(route)
                     #else
