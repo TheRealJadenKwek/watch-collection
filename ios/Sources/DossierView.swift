@@ -9,6 +9,7 @@ struct WatchDossierView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var sheet: DossierSheet?
     @State private var titleInBar = false
+    @Environment(\.sectionIsActive) private var sectionIsActive
 
     private var watch: Watch? { store.data?.watches.first { $0.id == watchID } }
 
@@ -20,10 +21,12 @@ struct WatchDossierView: View {
                 EmptyCollectionView(title: "Watch removed", detail: "This watch is no longer in the collection.")
             }
         }
-        .navigationTitle(Platform.isMac ? watch?.name ?? "" : titleInBar ? watch?.name ?? "" : "")
+        .navigationTitle(titleInBar ? watch?.name ?? "" : "")
+        // On the Mac a page stays open while another section is on screen; its toolbar shouldn't show there.
+        .navigationBarBackButtonHidden(!sectionIsActive)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if let watch {
+            if let watch, sectionIsActive {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button("Edit") { sheet = .edit }
                         .disabled(store.isOffline)
@@ -107,7 +110,6 @@ struct WatchDossierView: View {
             .frame(width: 400)
             .screenBackground()
         }
-        .navigationTitle(watch.name)
     }
 
     private func phoneContent(_ watch: Watch) -> some View {

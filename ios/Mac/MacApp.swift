@@ -16,10 +16,7 @@ struct WatchCollectionMacApp: App {
         Window("Watch Collection", id: "main") {
             MacRootView(store: store)
                 .frame(minWidth: 980, minHeight: 640)
-                .task {
-                    await store.start()
-                    await SectionWarmup.run(store: store)
-                }
+                .task { await store.start() }
                 .onChange(of: scenePhase, initial: true) { _, phase in store.sceneChanged(phase) }
         }
         .defaultSize(width: 1360, height: 880)
@@ -37,40 +34,12 @@ struct WatchCollectionMacApp: App {
     }
 }
 
-/// Lays each section out once in a window that's never shown, soon after launch. Charts and lists
-/// pay a large one-time setup cost, and this keeps it from landing on the first click.
-@MainActor
-private enum SectionWarmup {
-    static func run(store: AppStore) async {
-        guard store.data != nil else { return }
-        try? await Task.sleep(for: .milliseconds(400))
-        let sections: [AnyView] = [
-            AnyView(StatsScreen(store: store, showSettings: {})),
-            AnyView(WishlistScreen(store: store, showSettings: {})),
-            AnyView(SearchScreen(store: store)),
-        ]
-        for section in sections {
-            let host = NSHostingView(rootView: section.frame(width: 1100, height: 880))
-            let window = NSWindow(
-                contentRect: NSRect(x: 0, y: 0, width: 1100, height: 880),
-                styleMask: [.borderless],
-                backing: .buffered,
-                defer: true
-            )
-            window.isReleasedWhenClosed = false
-            window.contentView = host
-            host.layoutSubtreeIfNeeded()
-            window.contentView = nil
-            try? await Task.sleep(for: .milliseconds(120))
-        }
-    }
-}
-
 /// Desktop shell: a sidebar in place of the phone's tab bar, sync state always in view.
 struct MacRootView: View {
     @ObservedObject var store: AppStore
     @AppStorage("selectedTabV4") private var selectedTab = AppTab.collection.rawValue
     @Environment(\.openSettings) private var openSettings
+    @State private var mounted: Set<String> = []
 
     var body: some View {
         Group {
@@ -111,26 +80,33 @@ struct MacRootView: View {
         .animation(.easeInOut, value: store.notice)
     }
 
-    // Native tabs keep every section alive, so going back to one is instant and keeps its place.
+    // Every section stays alive behind the current one, so switching only cross-fades what's
+    // already drawn. Building one on demand froze the window for up to a quarter of a second.
     private var sections: some View {
-        TabView(selection: $selectedTab) {
-            Tab("Collection", systemImage: "watch.analog", value: AppTab.collection.rawValue) {
-                CollectionScreen(store: store, showSettings: { openSettings() })
-            }
-            Tab("Insights", systemImage: "chart.bar.xaxis", value: AppTab.stats.rawValue) {
-                StatsScreen(store: store, showSettings: { openSettings() })
-            }
-            Tab("Wishlist", systemImage: "star", value: AppTab.wishlist.rawValue) {
-                WishlistScreen(store: store, showSettings: { openSettings() })
-            }
-            Tab("Search", systemImage: "magnifyingglass", value: AppTab.search.rawValue) {
-                SearchScreen(store: store)
+        NavigationSplitView {
+            MacSidebar(selection: $selectedTab)
+                .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 260)
+                .safeAreaInset(edge: .bottom) {
+                    SyncStatusBar(status: store.status) {
+                        Task { await store.refresh() }
+                    }
+                }
+        } detail: {
+            ZStack {
+                ForEach(AppTab.allCases, id: \.rawValue) { tab in
+                    if mounted.contains(tab.rawValue) || tab.rawValue == selectedTab {
+                        KeptSection(tab: tab, store: store, isActive: tab.rawValue == selectedTab)
+                            .zIndex(tab.rawValue == selectedTab ? 1 : 0)
+                    }
+                }
             }
         }
-        .tabViewStyle(.sidebarAdaptable)
-        .tabViewSidebarBottomBar {
-            SyncStatusBar(status: store.status) {
-                Task { await store.refresh() }
+        .toolbar(removing: .title)
+        .task {
+            // One at a time, so launch never stalls for all of them at once.
+            for tab in AppTab.allCases where !mounted.contains(tab.rawValue) {
+                try? await Task.sleep(for: .milliseconds(200))
+                mounted.insert(tab.rawValue)
             }
         }
     }
@@ -140,6 +116,93 @@ struct MacRootView: View {
             get: { store.errorMessage != nil && store.data != nil },
             set: { if !$0 { store.errorMessage = nil } }
         )
+    }
+}
+
+/// One section of the app. `showSettings` is unused on the Mac, and a closure that captures nothing
+/// compares as unchanged, so switching sections doesn't rebuild the screens themselves.
+private struct KeptSection: View {
+    let tab: AppTab
+    let store: AppStore
+    let isActive: Bool
+
+    var body: some View {
+        Group {
+            switch tab {
+            case .collection: CollectionScreen(store: store, showSettings: {})
+            case .stats: StatsScreen(store: store, showSettings: {})
+            case .wishlist: WishlistScreen(store: store, showSettings: {})
+            case .search: SearchScreen(store: store)
+            }
+        }
+        .environment(\.sectionIsActive, isActive)
+        .opacity(isActive ? 1 : 0)
+        .allowsHitTesting(isActive)
+        .accessibilityHidden(!isActive)
+        .animation(.easeOut(duration: 0.2), value: isActive)
+    }
+}
+
+/// The sidebar, drawn by the app because the system's has no hover state: the row under the mouse
+/// lights up, and the selection slides to the row you pick.
+private struct MacSidebar: View {
+    @Binding var selection: String
+    @State private var hovered: String?
+    @Namespace private var highlight
+
+    private let items: [(tab: AppTab, title: String, symbol: String)] = [
+        (.collection, "Collection", "watch.analog"),
+        (.stats, "Insights", "chart.bar.xaxis"),
+        (.wishlist, "Wishlist", "star"),
+        (.search, "Search", "magnifyingglass"),
+    ]
+
+    var body: some View {
+        VStack(spacing: 2) {
+            ForEach(Array(items.enumerated()), id: \.element.title) { index, item in
+                row(item.title, symbol: item.symbol, value: item.tab.rawValue, shortcut: index + 1)
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.top, 4)
+        .animation(.easeOut(duration: 0.1), value: hovered)
+        .animation(.easeInOut(duration: 0.22), value: selection)
+    }
+
+    private func row(_ title: String, symbol: String, value: String, shortcut: Int) -> some View {
+        let isSelected = selection == value
+        return Button {
+            selection = value
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: symbol)
+                    .frame(width: 20)
+                    .foregroundStyle(isSelected ? .primary : .secondary)
+                Text(title)
+                    .fontWeight(isSelected ? .semibold : .regular)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 7)
+            .contentShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
+            .background {
+                if isSelected {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Color.primary.opacity(0.16))
+                        .matchedGeometryEffect(id: "selection", in: highlight)
+                } else if hovered == value {
+                    RoundedRectangle(cornerRadius: 9, style: .continuous)
+                        .fill(Color.primary.opacity(0.08))
+                }
+            }
+        }
+        .buttonStyle(.plain)
+        .onHover { inside in
+            if inside { hovered = value } else if hovered == value { hovered = nil }
+        }
+        .keyboardShortcut(KeyEquivalent(Character("\(shortcut)")), modifiers: .command)
+        .accessibilityAddTraits(isSelected ? .isSelected : [])
     }
 }
 
@@ -170,7 +233,8 @@ private struct SyncStatusBar: View {
                 Spacer(minLength: 0)
             }
             .contentShape(Rectangle())
-            .padding(.vertical, 4)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
         }
         .buttonStyle(.plain)
         .help("Sync with the iPhone now")

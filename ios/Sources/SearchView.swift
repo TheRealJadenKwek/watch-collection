@@ -6,6 +6,7 @@ struct SearchScreen: View {
     @ObservedObject var store: AppStore
     @State private var query = ""
     @State private var editingItem: WishlistItem?
+    @Environment(\.sectionIsActive) private var sectionIsActive
 
     private var trimmed: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var watches: [Watch] { store.data?.watches ?? [] }
@@ -87,6 +88,7 @@ struct SearchScreen: View {
                     Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
                     TextField("Watches, brands and stories", text: $query)
                         .textFieldStyle(.plain)
+                        .disabled(!sectionIsActive)
                     if !query.isEmpty {
                         Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
                             .buttonStyle(.plain)

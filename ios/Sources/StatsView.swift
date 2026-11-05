@@ -9,10 +9,6 @@ struct StatsScreen: View {
     @State private var selectedWatch: Watch?
     @State private var completionQueue: [Watch] = []
     @State private var savedInSequence = false
-    @State private var selectedCostTier: String?
-    @State private var selectedSizeX: Double?
-    @State private var selectedSpendYear: String?
-    @State private var selectedLugWatchID: String?
     @State private var priceLedgerExpanded = false
 
     private var all: [Watch] { store.data?.watches ?? [] }
@@ -89,10 +85,6 @@ struct StatsScreen: View {
                 WatchDetailScreen(store: store, watch: watch, onSaved: { savedInSequence = true })
             }
             .onChange(of: scope) { _, _ in
-                selectedCostTier = nil
-                selectedSizeX = nil
-                selectedSpendYear = nil
-                selectedLugWatchID = nil
                 priceLedgerExpanded = false
             }
         }
@@ -227,6 +219,7 @@ struct StatsScreen: View {
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)
+                        .hoverRow(clickable: true)
                     }
                 }
             }
@@ -236,8 +229,6 @@ struct StatsScreen: View {
     private var costChart: some View {
         let bins = costHistogram(costScoped)
         let headline = store.data?.headlineStats?[scope]
-        let medianX = headline.map { costReferencePosition($0.median, maximumPrice: $0.max) }
-        let meanX = headline.map { costReferencePosition($0.mean, maximumPrice: $0.max) }
         return SectionCard("Price Tiers", systemImage: "chart.bar.fill", color: .green, detail: "Cost histogram") {
             HStack(spacing: 6) {
                 Capsule()
@@ -248,84 +239,8 @@ struct StatsScreen: View {
                     .foregroundStyle(Color.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
-            Chart {
-                ForEach(bins) { bin in
-                    BarMark(
-                        x: .value("Tier", bin.position),
-                        y: .value("Watches", bin.count),
-                        width: .fixed(24)
-                    )
-                    .foregroundStyle(Color.green.gradient)
-                    .opacity(selectedCostTier == nil || selectedCostTier == bin.id ? 1 : 0.42)
-                    .cornerRadius(3)
-                    .accessibilityLabel(bin.label)
-                    .accessibilityValue("\(bin.count) \(bin.count == 1 ? "watch" : "watches")")
-                    .annotation(position: .top) {
-                        if selectedCostTier == bin.id {
-                            ChartAnnotationBubble(text: "\(bin.label) — \(bin.count) \(bin.count == 1 ? "watch" : "watches")")
-                        }
-                    }
-                }
-                ForEach(bins) { bin in
-                    LineMark(
-                        x: .value("Tier", bin.position),
-                        y: .value("Shape", bin.count)
-                    )
-                    .interpolationMethod(.monotone)
-                    .foregroundStyle(Color.green.opacity(0.6))
-                    .lineStyle(StrokeStyle(lineWidth: 2))
-                }
-                if let medianX, let headline {
-                    RuleMark(x: .value("Median", medianX))
-                        .foregroundStyle(Color.primary)
-                        .lineStyle(StrokeStyle(lineWidth: 1.4))
-                        .annotation(position: .top, alignment: .leading) {
-                            Text("median \(cad(headline.median))")
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(Color.primary)
-                                .fixedSize()
-                        }
-                }
-                if let meanX, let headline {
-                    RuleMark(x: .value("Mean", meanX))
-                        .foregroundStyle(Color.secondary)
-                        .lineStyle(StrokeStyle(lineWidth: 1.4, dash: [6, 5]))
-                        .annotation(position: .top, alignment: .leading) {
-                            Text("mean \(cad(headline.mean))")
-                                .font(.caption2.weight(.bold))
-                                .foregroundStyle(Color.secondary)
-                                .fixedSize()
-                                .offset(y: 15)
-                        }
-                }
-            }
-            .frame(height: 285)
-            .chartXScale(domain: 0...Double(bins.count))
-            .chartXAxis {
-                AxisMarks(values: bins.map(\.position)) { value in
-                    AxisGridLine()
-                    AxisTick()
-                    AxisValueLabel {
-                        if let position = value.as(Double.self),
-                           let bin = bins.min(by: { abs($0.position - position) < abs($1.position - position) }) {
-                            Text(bin.axisLabel)
-                                .font(.system(size: 8))
-                        }
-                    }
-                }
-            }
-            .chartYAxisLabel("watches")
-            .chartOverlay { proxy in
-                GeometryReader { geometry in
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .highPriorityGesture(
-                            SpatialTapGesture().onEnded { tap in
-                                selectCostBar(at: tap.location, proxy: proxy, geometry: geometry, bins: bins)
-                            }
-                        )
-                }
-            }
+            CostTierChart(bins: bins, headline: headline)
+                .id(scope)
             if let headline {
                 Text("Mean \(cad(headline.mean)) vs median \(cad(headline.median)) — \(skewShape(headline.skewness)) (skew \(headline.skewness.formatted(.number.precision(.fractionLength(3)))))")
                     .font(.caption)
@@ -359,6 +274,7 @@ struct StatsScreen: View {
                             }
                         }
                         .padding(.vertical, 9)
+                        .hoverRow()
                         if row.id != rows.last?.id {
                             Divider()
                         }
@@ -391,62 +307,10 @@ struct StatsScreen: View {
 
     private var sizeChart: some View {
         let bins = histogram(scoped, keyPath: \Watch.diameter)
-        let ceiling = max(1, bins.map(\.count).max() ?? 1)
-        let selectedBin = selectedSizeX.flatMap { rawValue in
-            bins.min(by: { abs($0.midpoint - rawValue) < abs($1.midpoint - rawValue) })
-        }
         return SectionCard("Case Size", systemImage: "ruler.fill", color: .purple, detail: "Diameter") {
-            Chart {
-                RectangleMark(
-                    xStart: .value("Sweet minimum", wrist.sweetSpotMin),
-                    xEnd: .value("Sweet maximum", wrist.sweetSpotMax),
-                    yStart: .value("Floor", 0),
-                    yEnd: .value("Ceiling", ceiling)
-                )
-                .foregroundStyle(Color.purple.opacity(0.1))
-                ForEach(bins) { bin in
-                    BarMark(
-                        x: .value("Diameter", bin.midpoint),
-                        y: .value("Watches", bin.count),
-                        width: .fixed(13)
-                    )
-                    .foregroundStyle(Color.purple.gradient)
-                    .opacity(selectedBin == nil || selectedBin?.lower == bin.lower ? 1 : 0.42)
-                    .annotation(position: .top) {
-                        if selectedBin?.lower == bin.lower {
-                            ChartAnnotationBubble(text: "\(bin.label) — \(bin.count) \(bin.count == 1 ? "watch" : "watches")")
-                        }
-                    }
-                }
-                RuleMark(x: .value("Perfect", wrist.perfect))
-                    .foregroundStyle(Color.secondary)
-                    .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4]))
-            }
-            .frame(height: 190)
-            .chartXScale(domain: sizeDomain(bins))
-            .chartXAxisLabel("mm · shaded \(compactNumber(wrist.sweetSpotMin))–\(compactNumber(wrist.sweetSpotMax)) sweet spot")
-            .chartYAxisLabel("watches")
-            .chartXSelection(value: $selectedSizeX)
-            .chartOverlay { proxy in
-                GeometryReader { geometry in
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .highPriorityGesture(
-                            SpatialTapGesture().onEnded { tap in
-                                selectSizeBar(at: tap.location, proxy: proxy, geometry: geometry, bins: bins)
-                            }
-                        )
-                }
-            }
+            CaseSizeChart(bins: bins, wrist: wrist)
+                .id(scope)
         }
-    }
-
-    /// Frame the size chart around the actual watches and sweet spot instead of starting at 0mm.
-    private func sizeDomain(_ bins: [MetricBin]) -> ClosedRange<Double> {
-        let values = bins.filter { $0.count > 0 }.flatMap { [$0.lower, $0.lower + 2] } + [wrist.sweetSpotMin, wrist.sweetSpotMax]
-        let lower = ((values.min() ?? 30) - 2).rounded(.down)
-        let upper = ((values.max() ?? 50) + 2).rounded(.up)
-        return lower...max(upper, lower + 1)
     }
 
     private var spendChart: some View {
@@ -456,31 +320,8 @@ struct StatsScreen: View {
             Text("Annual spend")
                 .font(.caption.weight(.bold))
                 .foregroundStyle(Color.secondary)
-            Chart(values) { point in
-                BarMark(x: .value("Year", point.year), y: .value("CAD", point.total))
-                    .foregroundStyle(Color.green.gradient)
-                    .opacity(selectedSpendYear == nil || selectedSpendYear == point.year ? 1 : 0.42)
-                    .cornerRadius(4)
-                    .annotation(position: .top) {
-                        if selectedSpendYear == point.year {
-                            ChartAnnotationBubble(text: "\(point.year) — \(cad(point.total))")
-                        }
-                    }
-            }
-            .frame(height: 180)
-            .chartYAxis { AxisMarks() }
-            .chartXSelection(value: $selectedSpendYear)
-            .chartOverlay { proxy in
-                GeometryReader { geometry in
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .highPriorityGesture(
-                            SpatialTapGesture().onEnded { tap in
-                                selectSpendBar(at: tap.location, proxy: proxy, geometry: geometry, values: values)
-                            }
-                        )
-                }
-            }
+            AnnualSpendChart(values: values)
+                .id(scope)
 
             if !cumulative.isEmpty {
                 Divider()
@@ -493,26 +334,8 @@ struct StatsScreen: View {
                         .font(.caption.weight(.semibold).monospacedDigit())
                         .foregroundStyle(.green)
                 }
-                Chart(cumulative) { point in
-                    AreaMark(
-                        x: .value("Year", point.year),
-                        y: .value("Cumulative CAD", point.total)
-                    )
-                    .foregroundStyle(Color.green.opacity(0.15).gradient)
-                    LineMark(
-                        x: .value("Year", point.year),
-                        y: .value("Cumulative CAD", point.total)
-                    )
-                    .foregroundStyle(Color.green)
-                    .lineStyle(StrokeStyle(lineWidth: 2.2))
-                    PointMark(
-                        x: .value("Year", point.year),
-                        y: .value("Cumulative CAD", point.total)
-                    )
-                    .foregroundStyle(Color.green)
-                }
-                .frame(height: 115)
-                .chartYAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
+                CumulativeSpendChart(values: cumulative)
+                    .id(scope)
             }
         }
     }
@@ -599,6 +422,7 @@ struct StatsScreen: View {
                         .buttonStyle(.plain)
                         .accessibilityLabel("\(entry.watch.name), \(entry.source == nil ? "purchased" : "original purchase carried over") \(entry.month) \(entry.year)")
                         .accessibilityHint("Opens watch details")
+                        .hoverRow(clickable: true)
                     }
                 }
 
@@ -625,6 +449,7 @@ struct StatsScreen: View {
                         }
                     }
                     .buttonStyle(.plain)
+                    .hoverRow(clickable: true)
                 }
             }
         }
@@ -655,32 +480,8 @@ struct StatsScreen: View {
                 .font(.subheadline)
                 .foregroundStyle(Color.secondary)
             } else {
-                Chart(measurements) { measurement in
-                    BarMark(x: .value("L2L", measurement.value), y: .value("Watch", measurement.id))
-                        .foregroundStyle(Color.purple.gradient)
-                        .opacity(selectedLugWatchID == nil || selectedLugWatchID == measurement.id ? 1 : 0.42)
-                        .annotation(position: .trailing) {
-                            if selectedLugWatchID == measurement.id {
-                                ChartAnnotationBubble(text: "\(measurement.watch.name) — \(compactNumber(measurement.value))mm")
-                            }
-                        }
-                    RuleMark(x: .value("Ceiling", wrist.lugMax))
-                        .foregroundStyle(Color.red)
-                }
-                .frame(height: 150)
-                .chartYAxis(.hidden)
-                .chartYSelection(value: $selectedLugWatchID)
-                .chartOverlay { proxy in
-                    GeometryReader { geometry in
-                        Color.clear
-                            .contentShape(Rectangle())
-                            .highPriorityGesture(
-                                SpatialTapGesture().onEnded { tap in
-                                    selectLugBar(at: tap.location, proxy: proxy, geometry: geometry, values: measurements)
-                                }
-                            )
-                    }
-                }
+                LugToLugChart(measurements: measurements, wrist: wrist)
+                    .id(scope)
             }
         }
     }
@@ -706,6 +507,7 @@ struct StatsScreen: View {
                         CapsuleChip(text: row.verdict, color: row.owned == 0 ? .indigo : row.owned >= 3 ? .secondary : .green)
                     }
                     .padding(.vertical, 9)
+                    .hoverRow()
                     if row.id != rows.last?.id { Divider() }
                 }
             }
@@ -731,6 +533,7 @@ struct StatsScreen: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                         if matches.isEmpty { CapsuleChip(text: "Gap", color: .teal) }
                     }
+                    .hoverRow()
                 }
             }
             if let first = gaps.first {
@@ -766,6 +569,7 @@ struct StatsScreen: View {
                     if count >= 2 { CapsuleChip(text: "Saturated") }
                 }
                 .font(.subheadline)
+                .hoverRow()
             }
             if !letGo.isEmpty {
                 Text("Explored & let go")
@@ -800,6 +604,7 @@ struct StatsScreen: View {
                         .foregroundStyle(Color.secondary)
                     if count >= 2 { CapsuleChip(text: "Saturated") }
                 }
+                .hoverRow()
             }
         }
     }
@@ -832,109 +637,341 @@ struct StatsScreen: View {
         }
         selectedWatch = completionQueue.removeFirst()
     }
+}
 
-    private func selectCostBar(at location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy, bins: [CostBin]) {
-        guard let plotAnchor = proxy.plotFrame else {
-            selectedCostTier = nil
-            return
+/// How a chart's bars get highlighted: following the mouse on the Mac, by tap on the phone.
+/// `pick` gets the pointer's position inside the plot and returns the bar there, if any.
+private struct ChartPointerLayer<ID: Equatable>: View {
+    let proxy: ChartProxy
+    @Binding var selection: ID?
+    let pick: (CGPoint, CGRect) -> ID?
+
+    var body: some View {
+        GeometryReader { geometry in
+            let plot = proxy.plotFrame.map { geometry[$0] } ?? .zero
+            Color.clear
+                .contentShape(Rectangle())
+                #if os(macOS)
+                .onContinuousHover { phase in
+                    var next: ID?
+                    if case let .active(location) = phase { next = bar(at: location, in: plot) }
+                    guard next != selection else { return }
+                    withAnimation(.easeOut(duration: 0.12)) { selection = next }
+                }
+                #else
+                .highPriorityGesture(
+                    SpatialTapGesture().onEnded { tap in
+                        let next = bar(at: tap.location, in: plot)
+                        selection = next == selection ? nil : next
+                    }
+                )
+                #endif
         }
-        let plotFrame = geometry[plotAnchor]
-        guard plotFrame.contains(location) else {
-            selectedCostTier = nil
-            return
-        }
-        let plotX = location.x - plotFrame.minX
-        let plotY = location.y - plotFrame.minY
-        guard let rawX = proxy.value(atX: plotX, as: Double.self),
-              let rawY = proxy.value(atY: plotY, as: Double.self),
-              let bin = bins.min(by: { abs($0.position - rawX) < abs($1.position - rawX) }),
-              abs(bin.position - rawX) <= 0.34,
-              rawY >= 0,
-              rawY <= Double(bin.count)
-        else {
-            selectedCostTier = nil
-            return
-        }
-        selectedCostTier = selectedCostTier == bin.id ? nil : bin.id
     }
 
-    private func selectSizeBar(at location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy, bins: [MetricBin]) {
-        guard let plotAnchor = proxy.plotFrame else {
-            selectedSizeX = nil
-            return
+    private func bar(at location: CGPoint, in plot: CGRect) -> ID? {
+        guard plot.contains(location) else { return nil }
+        return pick(CGPoint(x: location.x - plot.minX, y: location.y - plot.minY), plot)
+    }
+}
+
+// Each chart keeps its own highlight, so moving the mouse across one redraws only that chart
+// rather than the whole Insights screen.
+
+private struct CostTierChart: View {
+    let bins: [CostBin]
+    let headline: HeadlineStatsPayload?
+    @State private var selected: String?
+
+    var body: some View {
+        let medianX = headline.map { costReferencePosition($0.median, maximumPrice: $0.max) }
+        let meanX = headline.map { costReferencePosition($0.mean, maximumPrice: $0.max) }
+        Chart {
+            ForEach(bins) { bin in
+                BarMark(
+                    x: .value("Tier", bin.position),
+                    y: .value("Watches", bin.count),
+                    width: .fixed(24)
+                )
+                .foregroundStyle(Color.green.gradient)
+                .opacity(selected == nil || selected == bin.id ? 1 : 0.42)
+                .cornerRadius(3)
+                .accessibilityLabel(bin.label)
+                .accessibilityValue("\(bin.count) \(bin.count == 1 ? "watch" : "watches")")
+                .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
+                    if selected == bin.id {
+                        ChartAnnotationBubble(text: "\(bin.label) — \(bin.count) \(bin.count == 1 ? "watch" : "watches")")
+                    }
+                }
+            }
+            ForEach(bins) { bin in
+                LineMark(
+                    x: .value("Tier", bin.position),
+                    y: .value("Shape", bin.count)
+                )
+                .interpolationMethod(.monotone)
+                .foregroundStyle(Color.green.opacity(0.6))
+                .lineStyle(StrokeStyle(lineWidth: 2))
+            }
+            if let medianX, let headline {
+                RuleMark(x: .value("Median", medianX))
+                    .foregroundStyle(Color.primary)
+                    .lineStyle(StrokeStyle(lineWidth: 1.4))
+                    .annotation(position: .top, alignment: .leading) {
+                        Text("median \(cad(headline.median))")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(Color.primary)
+                            .fixedSize()
+                    }
+            }
+            if let meanX, let headline {
+                RuleMark(x: .value("Mean", meanX))
+                    .foregroundStyle(Color.secondary)
+                    .lineStyle(StrokeStyle(lineWidth: 1.4, dash: [6, 5]))
+                    .annotation(position: .top, alignment: .leading) {
+                        Text("mean \(cad(headline.mean))")
+                            .font(.caption2.weight(.bold))
+                            .foregroundStyle(Color.secondary)
+                            .fixedSize()
+                            .offset(y: 15)
+                    }
+            }
         }
-        let plotFrame = geometry[plotAnchor]
-        guard plotFrame.contains(location) else {
-            selectedSizeX = nil
-            return
+        .frame(height: 285)
+        .chartXScale(domain: 0...Double(bins.count))
+        .chartXAxis {
+            AxisMarks(values: bins.map(\.position)) { value in
+                AxisGridLine()
+                AxisTick()
+                AxisValueLabel {
+                    if let position = value.as(Double.self),
+                       let bin = bins.min(by: { abs($0.position - position) < abs($1.position - position) }) {
+                        Text(bin.axisLabel)
+                            .font(.system(size: 8))
+                    }
+                }
+            }
         }
-        let plotX = location.x - plotFrame.minX
-        let plotY = location.y - plotFrame.minY
-        guard let rawX = proxy.value(atX: plotX, as: Double.self),
-              let rawY = proxy.value(atY: plotY, as: Double.self),
-              let bin = bins.min(by: { abs($0.midpoint - rawX) < abs($1.midpoint - rawX) }),
-              let barX = proxy.position(forX: bin.midpoint),
-              abs(barX - plotX) <= 12,
-              rawY >= 0,
-              rawY <= Double(bin.count)
-        else {
-            selectedSizeX = nil
-            return
+        .chartYAxisLabel("watches")
+        .chartOverlay { proxy in
+            ChartPointerLayer(proxy: proxy, selection: $selected) { point, _ in
+                guard let rawX = proxy.value(atX: point.x, as: Double.self),
+                      let rawY = proxy.value(atY: point.y, as: Double.self),
+                      let bin = bins.min(by: { abs($0.position - rawX) < abs($1.position - rawX) }),
+                      bin.count > 0,
+                      abs(bin.position - rawX) <= (Platform.isMac ? 0.5 : 0.34),
+                      Platform.isMac || (rawY >= 0 && rawY <= Double(bin.count))
+                else { return nil }
+                return bin.id
+            }
         }
-        let current = selectedSizeX.flatMap { value in
-            bins.min(by: { abs($0.midpoint - value) < abs($1.midpoint - value) })
+    }
+}
+
+private struct CaseSizeChart: View {
+    let bins: [MetricBin]
+    let wrist: WristProfile
+    @State private var selected: Double?
+
+    var body: some View {
+        let ceiling = max(1, bins.map(\.count).max() ?? 1)
+        let hoveredBin = selected.flatMap { rawValue in
+            bins.min(by: { abs($0.midpoint - rawValue) < abs($1.midpoint - rawValue) })
         }
-        selectedSizeX = current?.lower == bin.lower ? nil : bin.midpoint
+        Chart {
+            RectangleMark(
+                xStart: .value("Sweet minimum", wrist.sweetSpotMin),
+                xEnd: .value("Sweet maximum", wrist.sweetSpotMax),
+                yStart: .value("Floor", 0),
+                yEnd: .value("Ceiling", ceiling)
+            )
+            .foregroundStyle(Color.purple.opacity(0.1))
+            ForEach(bins) { bin in
+                BarMark(
+                    x: .value("Diameter", bin.midpoint),
+                    y: .value("Watches", bin.count),
+                    width: .fixed(13)
+                )
+                .foregroundStyle(Color.purple.gradient)
+                .opacity(hoveredBin == nil || hoveredBin?.lower == bin.lower ? 1 : 0.42)
+                .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
+                    if hoveredBin?.lower == bin.lower {
+                        ChartAnnotationBubble(text: "\(bin.label) — \(bin.count) \(bin.count == 1 ? "watch" : "watches")")
+                    }
+                }
+            }
+            RuleMark(x: .value("Perfect", wrist.perfect))
+                .foregroundStyle(Color.secondary)
+                .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4]))
+        }
+        .frame(height: 190)
+        .chartXScale(domain: sizeDomain(bins))
+        .chartXAxisLabel("mm · shaded \(compactNumber(wrist.sweetSpotMin))–\(compactNumber(wrist.sweetSpotMax)) sweet spot")
+        .chartYAxisLabel("watches")
+        #if os(iOS)
+        .chartXSelection(value: $selected)
+        #endif
+        .chartOverlay { proxy in
+            ChartPointerLayer(proxy: proxy, selection: $selected) { point, _ in
+                guard let rawX = proxy.value(atX: point.x, as: Double.self),
+                      let rawY = proxy.value(atY: point.y, as: Double.self),
+                      let bin = bins.min(by: { abs($0.midpoint - rawX) < abs($1.midpoint - rawX) }),
+                      let barX = proxy.position(forX: bin.midpoint)
+                else { return nil }
+                if Platform.isMac { return abs(bin.midpoint - rawX) <= 1 ? bin.midpoint : nil }
+                return abs(barX - point.x) <= 12 && rawY >= 0 && rawY <= Double(bin.count) ? bin.midpoint : nil
+            }
+        }
     }
 
-    private func selectSpendBar(at location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy, values: [YearSpend]) {
-        guard let plotAnchor = proxy.plotFrame else {
-            selectedSpendYear = nil
-            return
-        }
-        let plotFrame = geometry[plotAnchor]
-        guard plotFrame.contains(location) else {
-            selectedSpendYear = nil
-            return
-        }
-        let plotX = location.x - plotFrame.minX
-        let plotY = location.y - plotFrame.minY
-        guard let year = proxy.value(atX: plotX, as: String.self),
-              let point = values.first(where: { $0.year == year }),
-              let rawY = proxy.value(atY: plotY, as: Double.self),
-              let barX = proxy.position(forX: point.year),
-              abs(barX - plotX) <= plotFrame.width / CGFloat(max(values.count, 1)) * 0.44,
-              rawY >= 0,
-              rawY <= point.total
-        else {
-            selectedSpendYear = nil
-            return
-        }
-        selectedSpendYear = selectedSpendYear == point.year ? nil : point.year
+    /// Frame the size chart around the actual watches and sweet spot instead of starting at 0mm.
+    private func sizeDomain(_ bins: [MetricBin]) -> ClosedRange<Double> {
+        let values = bins.filter { $0.count > 0 }.flatMap { [$0.lower, $0.lower + 2] } + [wrist.sweetSpotMin, wrist.sweetSpotMax]
+        let lower = ((values.min() ?? 30) - 2).rounded(.down)
+        let upper = ((values.max() ?? 50) + 2).rounded(.up)
+        return lower...max(upper, lower + 1)
     }
+}
 
-    private func selectLugBar(at location: CGPoint, proxy: ChartProxy, geometry: GeometryProxy, values: [LugMeasurement]) {
-        guard let plotAnchor = proxy.plotFrame else {
-            selectedLugWatchID = nil
-            return
+private struct AnnualSpendChart: View {
+    let values: [YearSpend]
+    @State private var selected: String?
+
+    var body: some View {
+        Chart(values) { point in
+            BarMark(x: .value("Year", point.year), y: .value("CAD", point.total))
+                .foregroundStyle(Color.green.gradient)
+                .opacity(selected == nil || selected == point.year ? 1 : 0.42)
+                .cornerRadius(4)
+                .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
+                    if selected == point.year {
+                        ChartAnnotationBubble(text: "\(point.year) — \(cad(point.total))")
+                    }
+                }
         }
-        let plotFrame = geometry[plotAnchor]
-        guard plotFrame.contains(location) else {
-            selectedLugWatchID = nil
-            return
+        .frame(height: 180)
+        .chartYAxis { AxisMarks() }
+        #if os(iOS)
+        .chartXSelection(value: $selected)
+        #endif
+        .chartOverlay { proxy in
+            ChartPointerLayer(proxy: proxy, selection: $selected) { point, plot in
+                guard let year = proxy.value(atX: point.x, as: String.self),
+                      let value = values.first(where: { $0.year == year })
+                else { return nil }
+                if Platform.isMac { return value.total > 0 ? value.year : nil }
+                guard let rawY = proxy.value(atY: point.y, as: Double.self),
+                      let barX = proxy.position(forX: value.year),
+                      abs(barX - point.x) <= plot.width / CGFloat(max(values.count, 1)) * 0.44,
+                      rawY >= 0,
+                      rawY <= value.total
+                else { return nil }
+                return value.year
+            }
         }
-        let plotX = location.x - plotFrame.minX
-        let plotY = location.y - plotFrame.minY
-        guard let watchID = proxy.value(atY: plotY, as: String.self),
-              let measurement = values.first(where: { $0.id == watchID }),
-              let rawX = proxy.value(atX: plotX, as: Double.self),
-              rawX >= 0,
-              rawX <= measurement.value
-        else {
-            selectedLugWatchID = nil
-            return
+    }
+}
+
+private struct CumulativeSpendChart: View {
+    let values: [YearSpend]
+    @State private var selected: String?
+
+    var body: some View {
+        Chart(values) { point in
+            AreaMark(
+                x: .value("Year", point.year),
+                y: .value("Cumulative CAD", point.total)
+            )
+            .foregroundStyle(Color.green.opacity(0.15).gradient)
+            LineMark(
+                x: .value("Year", point.year),
+                y: .value("Cumulative CAD", point.total)
+            )
+            .foregroundStyle(Color.green)
+            .lineStyle(StrokeStyle(lineWidth: 2.2))
+            PointMark(
+                x: .value("Year", point.year),
+                y: .value("Cumulative CAD", point.total)
+            )
+            .foregroundStyle(Color.green)
+            .symbolSize(selected == point.year ? 90 : 30)
+            .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
+                if selected == point.year {
+                    ChartAnnotationBubble(text: "\(point.year) — \(cad(point.total))")
+                }
+            }
         }
-        selectedLugWatchID = selectedLugWatchID == measurement.id ? nil : measurement.id
+        .frame(height: Platform.isMac ? 140 : 115)
+        .chartYAxis { AxisMarks(values: .automatic(desiredCount: 3)) }
+        #if os(macOS)
+        .chartOverlay { proxy in
+            ChartPointerLayer(proxy: proxy, selection: $selected) { point, _ in
+                proxy.value(atX: point.x, as: String.self)
+            }
+        }
+        #endif
+    }
+}
+
+private struct LugToLugChart: View {
+    let measurements: [LugMeasurement]
+    let wrist: WristProfile
+    @State private var selected: String?
+
+    var body: some View {
+        Chart(measurements) { measurement in
+            BarMark(x: .value("L2L", measurement.value), y: .value("Watch", measurement.id))
+                .foregroundStyle(Color.purple.gradient)
+                .opacity(selected == nil || selected == measurement.id ? 1 : 0.42)
+                .annotation(position: .trailing, overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
+                    if selected == measurement.id {
+                        ChartAnnotationBubble(text: "\(measurement.watch.name) — \(compactNumber(measurement.value))mm")
+                    }
+                }
+            RuleMark(x: .value("Ceiling", wrist.lugMax))
+                .foregroundStyle(Color.red)
+        }
+        .frame(height: 150)
+        .chartYAxis(.hidden)
+        #if os(iOS)
+        .chartYSelection(value: $selected)
+        #endif
+        .chartOverlay { proxy in
+            ChartPointerLayer(proxy: proxy, selection: $selected) { point, _ in
+                guard let watchID = proxy.value(atY: point.y, as: String.self),
+                      let measurement = measurements.first(where: { $0.id == watchID })
+                else { return nil }
+                if Platform.isMac { return measurement.id }
+                guard let rawX = proxy.value(atX: point.x, as: Double.self), rawX >= 0, rawX <= measurement.value else { return nil }
+                return measurement.id
+            }
+        }
+    }
+}
+
+/// A soft highlight under the row the mouse is on, so long lists are easy to read across.
+private struct HoverRow: ViewModifier {
+    let clickable: Bool
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content
+            .padding(.horizontal, 8)
+            .background(hovering ? WatchTheme.fill : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .padding(.horizontal, -8)
+            .onHover { hovering = $0 }
+            .pointerStyle(clickable ? .link : nil)
+            .animation(.easeOut(duration: 0.1), value: hovering)
+        #else
+        content
+        #endif
+    }
+}
+
+private extension View {
+    func hoverRow(clickable: Bool = false) -> some View {
+        modifier(HoverRow(clickable: clickable))
     }
 }
 

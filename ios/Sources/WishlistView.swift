@@ -11,6 +11,7 @@ struct WishlistScreen: View {
     @State private var boughtItem: WishlistItem?
     @State private var radarBrand = ""
     @State private var prefilledBrand = ""
+    @Environment(\.sectionIsActive) private var sectionIsActive
 
     private var ranked: [WishlistItem] {
         (store.data?.wishlist ?? []).sorted { left, right in
@@ -148,6 +149,7 @@ struct WishlistScreen: View {
             }
             HStack {
                 TextField("Add a brand", text: $radarBrand)
+                    .disabled(!sectionIsActive)
                     .textInputAutocapitalization(.words)
                     .padding(.horizontal, 12)
                     .padding(.vertical, 9)

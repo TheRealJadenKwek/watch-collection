@@ -73,18 +73,21 @@ extension View {
     }
 }
 
-/// Fades a screen in when it appears, so moving between screens never just snaps. On the Mac it
-/// also rises slightly, since a native sidebar swaps sections with no motion of its own.
+/// Fades a screen in when it appears, so moving between screens never just snaps.
 private struct PageAppear: ViewModifier {
     @State private var shown = false
 
     func body(content: Content) -> some View {
         content
             .opacity(shown ? 1 : 0)
-            .offset(y: shown || !Platform.isMac ? 0 : 10)
-            .onAppear { withAnimation(.easeOut(duration: Platform.isMac ? 0.24 : 0.2)) { shown = true } }
+            .onAppear { withAnimation(.easeOut(duration: 0.2)) { shown = true } }
             .onDisappear { shown = false }
     }
+}
+
+extension EnvironmentValues {
+    /// False for a Mac section that's kept alive behind the one on screen.
+    @Entry var sectionIsActive = true
 }
 
 #if os(macOS)
@@ -130,7 +133,6 @@ extension View {
             .background(WatchTheme.background)
             .padding(.top, -Self.desktopTitleBarHeight)
         }
-        .toolbar(removing: .title)
     }
 
     private static var desktopTitleBarHeight: CGFloat { 52 }
@@ -138,13 +140,21 @@ extension View {
 #endif
 
 extension View {
-    func pageAppear() -> some View { modifier(PageAppear()) }
+    /// For a main section. The Mac cross-fades its sections itself, so it needs nothing here.
+    @ViewBuilder
+    func pageAppear() -> some View {
+        #if os(iOS)
+        modifier(PageAppear())
+        #else
+        self
+        #endif
+    }
 
     /// For a pushed page: the phone already zooms or slides, the Mac needs the fade.
     @ViewBuilder
     func desktopPageAppear() -> some View {
         #if os(macOS)
-        pageAppear()
+        modifier(PageAppear())
         #else
         self
         #endif
