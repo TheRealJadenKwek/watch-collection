@@ -95,7 +95,8 @@ struct StatsScreen: View {
         let months = timeMonths
         let last = max(months.count - 1, 1)
         let label = asOfKey.map(purchaseMonthLabel) ?? "Now"
-        return HStack(spacing: 10) {
+        return VStack(spacing: 8) {
+        HStack(spacing: 10) {
             Button {
                 playingTime.toggle()
             } label: {
@@ -106,18 +107,23 @@ struct StatsScreen: View {
             .buttonStyle(.borderless)
             .help("Replay your collection month by month")
             .accessibilityLabel(playingTime ? "Pause" : "Replay over time")
-            Slider(
-                value: Binding(
-                    get: { Double(asOfIndex ?? last) },
-                    // Whole months only, so the charts change once per month while you drag.
-                    set: { value in
-                        let index = Int(value.rounded())
-                        let next = index >= last ? nil : index
-                        if next != asOfIndex { asOfIndex = next }
-                    }
-                ),
-                in: 0...Double(last)
-            )
+            VStack(spacing: 2) {
+                Slider(
+                    value: Binding(
+                        get: { Double(asOfIndex ?? last) },
+                        // Whole months only, so the charts change once per month while you drag.
+                        set: { value in
+                            let index = Int(value.rounded())
+                            let next = index >= last ? nil : index
+                            if next != asOfIndex { asOfIndex = next }
+                        }
+                    ),
+                    in: 0...Double(last)
+                )
+                if Platform.isMac { yearEndMarks(months: months, last: last) }
+            }
+            // The play button and month label line up with the slider, not with the year row under it.
+            .alignmentGuide(VerticalAlignment.center) { d in Platform.isMac ? (d.height - Self.yearRowHeight - 2) / 2 : d.height / 2 }
             .frame(minWidth: 180, maxWidth: Platform.isMac ? 360 : .infinity)
             Text(label)
                 .font(.subheadline.weight(.semibold).monospacedDigit())
@@ -130,6 +136,9 @@ struct StatsScreen: View {
                 }
                 .buttonStyle(.borderless)
             }
+        }
+        // On iPhone the slider is too narrow for labels under it, so the years get their own row.
+        if !Platform.isMac { yearEndRow(months: months, last: last) }
         }
         .task(id: playingTime) {
             // Replay: from the start (or where the slider is) to now, about eight months a second.
@@ -148,6 +157,66 @@ struct StatsScreen: View {
                     return
                 }
                 asOfIndex = index
+            }
+        }
+    }
+
+    private static let yearRowHeight: CGFloat = 16
+
+    /// Shortcuts under the slider, one per finished year: each jumps to that December, where the year's
+    /// buying is complete. Each label sits under its December on the track.
+    private func yearEndMarks(months: [String], last: Int) -> some View {
+        let marks = months.enumerated().compactMap { index, key -> (year: String, index: Int)? in
+            key.hasSuffix("-12") && index < last ? (String(key.prefix(4)), index) : nil
+        }
+        return GeometryReader { geo in
+            // The slider's knob keeps it from reaching the very ends of its frame.
+            let inset: CGFloat = Platform.isMac ? 10 : 14
+            let span = max(geo.size.width - inset * 2, 1)
+            ForEach(marks, id: \.index) { mark in
+                let selected = asOfIndex == mark.index
+                Button {
+                    playingTime = false
+                    asOfIndex = mark.index
+                } label: {
+                    Text(Platform.isMac ? mark.year : "\u{2019}" + mark.year.suffix(2))
+                        .font(.caption2.monospacedDigit().weight(selected ? .bold : .regular))
+                        .foregroundStyle(selected ? Color.primary : Color.secondary)
+                        .fixedSize()
+                        .padding(.horizontal, 3)
+                        .padding(.vertical, 1)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Jump to the end of \(mark.year)")
+                .accessibilityLabel("End of \(mark.year)")
+                .position(x: inset + CGFloat(mark.index) / CGFloat(max(last, 1)) * span, y: Self.yearRowHeight / 2)
+            }
+        }
+        .frame(height: Self.yearRowHeight)
+    }
+
+    /// iPhone: the same year-end shortcuts as one evenly spaced row across the full width.
+    private func yearEndRow(months: [String], last: Int) -> some View {
+        let marks = months.enumerated().compactMap { index, key -> (year: String, index: Int)? in
+            key.hasSuffix("-12") && index < last ? (String(key.prefix(4)), index) : nil
+        }
+        return HStack(spacing: 0) {
+            ForEach(marks, id: \.index) { mark in
+                let selected = asOfIndex == mark.index
+                Button {
+                    playingTime = false
+                    asOfIndex = mark.index
+                } label: {
+                    Text(mark.year)
+                        .font(.caption.monospacedDigit().weight(selected ? .bold : .regular))
+                        .foregroundStyle(selected ? Color.primary : Color.secondary)
+                        .frame(maxWidth: .infinity, minHeight: 30)
+                        .background(selected ? Color.primary.opacity(0.08) : Color.clear, in: Capsule())
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("End of \(mark.year)")
             }
         }
     }
