@@ -802,20 +802,34 @@ struct StatsScreen: View {
         let current = counts(realOwned.map(normalizedBrand))
         let lifetime = counts(realAll.map(normalizedBrand))
         let letGo = lifetime.filter { current[$0.key] == nil }.sorted { $0.value > $1.value }
+        let allTimeView = scope != "owned"
+        // All Time lists every brand you have had, most-bought first; Current lists what you own now.
+        let rows = allTimeView
+            ? lifetime.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
+            : current.sorted { $0.value == $1.value ? $0.key < $1.key : $0.value > $1.value }
         return SectionCard("Brands", systemImage: "tag.fill", color: .pink, detail: "Explore before repeating") {
-            Text("\(current.count) unique brands / \(owned.count) watches owned · \(lifetime.count) explored all-time")
+            Text(allTimeView
+                 ? "\(lifetime.count) brands explored all-time · \(current.count) still owned"
+                 : "\(current.count) unique brands / \(owned.count) watches owned · \(lifetime.count) explored all-time")
                 .font(.subheadline.weight(.semibold))
-            ForEach(current.sorted { $0.value > $1.value }, id: \.key) { brand, count in
-                HStack {
-                    Text(brand)
-                    Spacer()
-                    Text("\(count)").foregroundStyle(Color.secondary)
-                    if count >= 2 { CapsuleChip(text: "Saturated") }
+            // A long brand list scrolls inside the card instead of pushing the page down.
+            VStack(spacing: 0) {
+                ForEach(rows, id: \.key) { brand, count in
+                    let ownedCount = current[brand] ?? 0
+                    HStack {
+                        Text(brand)
+                        Spacer()
+                        Text(allTimeView ? varietyLabel(owned: ownedCount, allTime: count) : "\(count)")
+                            .foregroundStyle(Color.secondary)
+                        if ownedCount >= 2 { CapsuleChip(text: "Saturated") }
+                    }
+                    .font(.subheadline)
+                    .padding(.vertical, 6)
+                    .hoverRow()
                 }
-                .font(.subheadline)
-                .hoverRow()
             }
-            if !letGo.isEmpty {
+            .modifier(ScrollWithin(limit: 420, reportsViewport: false, overflowing: .constant(false)))
+            if !allTimeView, !letGo.isEmpty {
                 Text("Explored & let go")
                     .font(.caption.weight(.bold))
                     .foregroundStyle(Color.secondary)
@@ -836,14 +850,17 @@ struct StatsScreen: View {
 
     private func varietyPanel(title: String, symbol: String, color: Color, field: KeyPath<Watch, String?>, values: [String]) -> some View {
         let current = counts(owned.compactMap { $0[keyPath: field] })
+        // All Time also counts watches you no longer have (sold, given away, broken), like Categories does.
+        let lifetime = counts(all.compactMap { $0[keyPath: field] })
         return SectionCard(title, systemImage: symbol, color: color, detail: "Variety") {
             ForEach(values, id: \.self) { value in
                 let count = current[value] ?? 0
+                let ever = lifetime[value] ?? 0
                 HStack {
                     if field == \Watch.dialColor { Circle().fill(dialColor(value)).frame(width: 10, height: 10) }
                     Text(value).font(.subheadline)
                     Spacer()
-                    Text(count == 0 ? "not represented" : "\(count) owned")
+                    Text(varietyLabel(owned: count, allTime: ever))
                         .font(.caption)
                         .foregroundStyle(Color.secondary)
                     if count >= 2 { CapsuleChip(text: "Saturated") }
@@ -851,6 +868,12 @@ struct StatsScreen: View {
                 .hoverRow()
             }
         }
+    }
+
+    private func varietyLabel(owned: Int, allTime: Int) -> String {
+        guard scope != "owned" else { return owned == 0 ? "not represented" : "\(owned) owned" }
+        if allTime == 0 { return "never owned" }
+        return owned == 0 ? "\(allTime) all-time" : "\(owned) owned · \(allTime) all-time"
     }
 
     private var completeData: some View {
