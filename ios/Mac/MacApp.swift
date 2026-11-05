@@ -111,6 +111,10 @@ struct MacRootView: View {
                     YearPurchasesScreen(store: store, year: route.year, ownedOnly: route.ownedOnly)
                         .desktopPageAppear()
                 }
+                .navigationDestination(for: TimelineRoute.self) { route in
+                    TimelinePresentationScreen(store: store, ownedOnly: route.ownedOnly)
+                        .desktopPageAppear()
+                }
             }
             .environment(\.openPage) { page in
                 var path = paths[selectedTab] ?? NavigationPath()

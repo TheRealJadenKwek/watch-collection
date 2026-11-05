@@ -43,6 +43,7 @@ struct StatsScreen: View {
                                 VStack(spacing: 16) {
                                     maintenanceDashboard
                                     spendChart
+                                    countChart
                                     currentCollectionTimeline
                                     categoryCoverage
                                     priceLedger
@@ -58,6 +59,7 @@ struct StatsScreen: View {
                             priceLedger
                             sizeChart
                             spendChart
+                            countChart
                             currentCollectionTimeline
                             lugChart
                             categoryCoverage
@@ -71,7 +73,8 @@ struct StatsScreen: View {
                     .padding(.horizontal, Platform.isMac ? 24 : 16)
                     .padding(.top, 4)
                     .padding(.bottom, 24)
-                    .animation(.easeInOut(duration: 0.2), value: scope)
+                    // Charts morph between Current and All Time: bars grow, shrink, appear and leave.
+                    .animation(.smooth(duration: 0.5), value: scope)
                 }
                 .screenBackground()
             }
@@ -89,6 +92,9 @@ struct StatsScreen: View {
             }
             .navigationDestination(for: WatchRoute.self) { route in
                 WatchDossierView(store: store, watchID: route.id)
+            }
+            .navigationDestination(for: TimelineRoute.self) { route in
+                TimelinePresentationScreen(store: store, ownedOnly: route.ownedOnly)
             }
             #endif
             .sheet(item: $selectedWatch, onDismiss: advanceCompletionQueue) { watch in
@@ -250,7 +256,6 @@ struct StatsScreen: View {
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
             CostTierChart(bins: bins, headline: headline)
-                .id(scope)
             if let headline {
                 Text("Mean \(cad(headline.mean)) vs median \(cad(headline.median)) — \(skewShape(headline.skewness)) (skew \(headline.skewness.formatted(.number.precision(.fractionLength(3)))))")
                     .font(.caption)
@@ -319,7 +324,40 @@ struct StatsScreen: View {
         let bins = histogram(scoped, keyPath: \Watch.diameter)
         return SectionCard("Case Size", systemImage: "ruler.fill", color: .purple, detail: "Diameter") {
             CaseSizeChart(bins: bins, wrist: wrist)
-                .id(scope)
+        }
+    }
+
+    private func openYear(_ year: String) {
+        let route = YearRoute(year: year, ownedOnly: scope == "owned")
+        #if os(macOS)
+        openPage(route)
+        #else
+        path.append(route)
+        #endif
+    }
+
+    /// Watches bought each year. A lot or a trade counts once, as on the year's purchase page.
+    private var countChart: some View {
+        let values = purchasesByYear(scoped, all: all)
+        let busiest = values.max { $0.total < $1.total }
+        let ceiling = values.map(\.total).max() ?? 1
+        return SectionCard("Watches Bought", systemImage: "number", color: .teal, detail: "By year") {
+            HStack {
+                Text(busiest.map { "Most in \($0.year): \(Int($0.total))" } ?? "No dated purchases yet")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(Color.secondary)
+                Spacer()
+                Text("\(Platform.isMac ? "Click" : "Tap") a bar for that year's purchases")
+                    .font(.caption2)
+                    .foregroundStyle(Color.secondary)
+            }
+            YearBarChart(
+                values: values,
+                color: .teal,
+                describe: { "\(Int($0)) \(Int($0) == 1 ? "watch" : "watches")" },
+                yStride: max(1, (ceiling / 4).rounded(.up)),
+                openYear: openYear
+            )
         }
     }
 
@@ -336,15 +374,7 @@ struct StatsScreen: View {
                     .font(.caption2)
                     .foregroundStyle(Color.secondary)
             }
-            AnnualSpendChart(values: values) { year in
-                let route = YearRoute(year: year, ownedOnly: scope == "owned")
-                #if os(macOS)
-                openPage(route)
-                #else
-                path.append(route)
-                #endif
-            }
-            .id(scope)
+            YearBarChart(values: values, openYear: openYear)
 
             if !cumulative.isEmpty {
                 Divider()
@@ -358,7 +388,6 @@ struct StatsScreen: View {
                         .foregroundStyle(.green)
                 }
                 CumulativeSpendChart(values: cumulative)
-                    .id(scope)
             }
         }
     }
@@ -387,6 +416,20 @@ struct StatsScreen: View {
                 }
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(Color.secondary)
+
+                Button {
+                    let route = TimelineRoute(ownedOnly: scope == "owned")
+                    #if os(macOS)
+                    openPage(route)
+                    #else
+                    path.append(route)
+                    #endif
+                } label: {
+                    Label("Play the timeline", systemImage: "play.fill")
+                        .frame(maxWidth: .infinity)
+                }
+                .prominentButton()
+                .controlSize(.large)
 
                 VStack(spacing: 0) {
                     ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
@@ -504,7 +547,6 @@ struct StatsScreen: View {
                 .foregroundStyle(Color.secondary)
             } else {
                 LugToLugChart(measurements: measurements, wrist: wrist)
-                    .id(scope)
             }
         }
     }
@@ -862,25 +904,36 @@ private struct CaseSizeChart: View {
     }
 }
 
-private struct AnnualSpendChart: View {
+/// Bars by year that open that year's purchases: money spent, or how many watches were bought.
+private struct YearBarChart: View {
     let values: [YearSpend]
+    var color: Color = .green
+    var describe: (Double) -> String = { cad($0) }
+    /// Whole-number ticks for counts; nil lets the chart choose.
+    var yStride: Double?
     let openYear: (String) -> Void
     @State private var selected: String?
 
     var body: some View {
         Chart(values) { point in
-            BarMark(x: .value("Year", point.year), y: .value("CAD", point.total))
-                .foregroundStyle(Color.green.gradient)
+            BarMark(x: .value("Year", point.year), y: .value("Value", point.total))
+                .foregroundStyle(color.gradient)
                 .opacity(selected == nil || selected == point.year ? 1 : 0.42)
                 .cornerRadius(4)
                 .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
                     if selected == point.year {
-                        ChartAnnotationBubble(text: "\(point.year) — \(cad(point.total))")
+                        ChartAnnotationBubble(text: "\(point.year) — \(describe(point.total))")
                     }
                 }
         }
         .frame(height: 180)
-        .chartYAxis { AxisMarks() }
+        .chartYAxis {
+            if let yStride {
+                AxisMarks(values: .stride(by: yStride))
+            } else {
+                AxisMarks()
+            }
+        }
         #if os(macOS)
         .chartOverlay { proxy in
             // One real button per column: the whole column responds to the mouse and to a click.
@@ -902,7 +955,7 @@ private struct AnnualSpendChart: View {
                             }
                         }
                         .pointerStyle(.link)
-                        .accessibilityLabel("\(value.year), \(cad(value.total)). Open purchases")
+                        .accessibilityLabel("\(value.year), \(describe(value.total)). Open purchases")
                     }
                 }
             }
@@ -1266,7 +1319,7 @@ private func cumulativeSpend(_ values: [YearSpend]) -> [YearSpend] {
     }
 }
 
-private struct PurchaseTimelineEntry: Identifiable {
+struct PurchaseTimelineEntry: Identifiable {
     var id: String { watch.id }
     var watch: Watch
     var source: Watch?
@@ -1275,14 +1328,14 @@ private struct PurchaseTimelineEntry: Identifiable {
     var year: String
 }
 
-private enum TimelineDating {
+enum TimelineDating {
     /// When the watch arrived: a trade sits at its own trade date (undated trades are left out).
     case acquisition
     /// When the money was spent: a trade sits at the original purchase it carries the cost of.
     case cost
 }
 
-private func purchaseTimelineEntries(_ watches: [Watch], all: [Watch], by dating: TimelineDating) -> [PurchaseTimelineEntry] {
+func purchaseTimelineEntries(_ watches: [Watch], all: [Watch], by dating: TimelineDating) -> [PurchaseTimelineEntry] {
     let monthNames = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
     let order = Dictionary(uniqueKeysWithValues: acquisitionOrder(all).enumerated().map { ($0.element.id, $0.offset) })
     return uniqueCostRecords(watches).compactMap { watch in
@@ -1312,6 +1365,11 @@ private func purchaseTimelineEntries(_ watches: [Watch], all: [Watch], by dating
 private func spendByYear(_ watches: [Watch], all: [Watch]) -> [YearSpend] {
     let grouped = Dictionary(grouping: purchaseTimelineEntries(watches, all: all, by: .cost), by: \.year)
     return grouped.map { YearSpend(year: $0.key, total: $0.value.reduce(0) { $0 + $1.watch.price }) }.sorted { $0.year < $1.year }
+}
+
+private func purchasesByYear(_ watches: [Watch], all: [Watch]) -> [YearSpend] {
+    let grouped = Dictionary(grouping: purchaseTimelineEntries(watches, all: all, by: .cost), by: \.year)
+    return grouped.map { YearSpend(year: $0.key, total: Double($0.value.count)) }.sorted { $0.year < $1.year }
 }
 
 private struct LugMeasurement: Identifiable {
