@@ -73,17 +73,68 @@ extension View {
     }
 }
 
-/// Fades a screen in when it appears, so moving between screens never just snaps.
+/// Fades a screen in when it appears, so moving between screens never just snaps. On the Mac the
+/// screen shows at once and only settles: a fade up from nothing read as lag after a click.
 private struct PageAppear: ViewModifier {
     @State private var shown = false
 
     func body(content: Content) -> some View {
         content
-            .opacity(shown ? 1 : 0)
-            .onAppear { withAnimation(.easeOut(duration: 0.2)) { shown = true } }
+            .opacity(shown ? 1 : (Platform.isMac ? 0.6 : 0))
+            .onAppear { withAnimation(.easeOut(duration: Platform.isMac ? 0.12 : 0.2)) { shown = true } }
             .onDisappear { shown = false }
     }
 }
+
+#if os(macOS)
+extension View {
+    /// A section's title and controls, drawn by the app instead of the window toolbar. Rebuilding a
+    /// different toolbar for each section was most of the delay when switching between them.
+    /// The title sits in the title bar row, but the toolbar view there takes every click, so
+    /// anything clickable has to go in the row beneath it.
+    func desktopHeader<Leading: View, Trailing: View>(
+        _ title: String,
+        subtitle: String? = nil,
+        @ViewBuilder leading: () -> Leading = { EmptyView() },
+        @ViewBuilder trailing: () -> Trailing = { EmptyView() }
+    ) -> some View {
+        let leadingControls = leading()
+        let trailingControls = trailing()
+        return safeAreaInset(edge: .top, spacing: 0) {
+            VStack(alignment: .leading, spacing: 0) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.title3.bold())
+                        .lineLimit(1)
+                    if let subtitle {
+                        Text(subtitle)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                    }
+                }
+                .frame(height: Self.desktopTitleBarHeight)
+                HStack(spacing: 10) {
+                    leadingControls
+                    Spacer(minLength: 12)
+                    trailingControls
+                        .buttonStyle(.bordered)
+                        .buttonBorderShape(.circle)
+                }
+                .frame(minHeight: 30)
+                .padding(.bottom, 10)
+            }
+            .padding(.horizontal, 24)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(WatchTheme.background)
+            .padding(.top, -Self.desktopTitleBarHeight)
+        }
+        .toolbar(removing: .title)
+    }
+
+    private static var desktopTitleBarHeight: CGFloat { 52 }
+}
+#endif
 
 extension View {
     func pageAppear() -> some View { modifier(PageAppear()) }

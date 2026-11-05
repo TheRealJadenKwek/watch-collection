@@ -65,14 +65,10 @@ struct CollectionScreen: View {
                     // which bounced the scroll position back and forth on every drag from the top.
                     LazyVStack(alignment: .leading, spacing: 18) {
                         let shown = watches
-                        Picker("Show", selection: $scope) {
-                            ForEach(Scope.allCases, id: \.self) { Text($0.rawValue).tag($0.rawValue) }
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(maxWidth: Platform.isMac ? 240 : .infinity, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.horizontal, 20)
+                        #if os(iOS)
+                        scopePicker
+                            .padding(.horizontal, 20)
+                        #endif
 
                         Group {
                         if shown.isEmpty {
@@ -97,34 +93,24 @@ struct CollectionScreen: View {
                 }
                 .screenBackground()
             }
+            #if os(macOS)
+            .desktopHeader(title, subtitle: subtitle) {
+                scopePicker.fixedSize()
+            } trailing: {
+                sortMenu.menuIndicator(.hidden).fixedSize()
+                addButton
+            }
+            #else
             .navigationTitle(title)
             .navigationSubtitle(subtitle)
             .toolbar {
-                if !Platform.isMac {
-                    ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
-                }
+                ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
                 ToolbarItemGroup(placement: .topBarTrailing) {
-                    Menu {
-                        Section("Sort By") {
-                            Picker("Sort By", selection: $sort) {
-                                ForEach(Sort.allCases, id: \.self) { Text($0.rawValue).tag($0.rawValue) }
-                            }
-                        }
-                        Section("View As") {
-                            Picker("View As", selection: $layout) {
-                                Label("Cards", systemImage: "square.grid.2x2").tag(Layout.cards.rawValue)
-                                Label("Photos", systemImage: "square.grid.3x3").tag(Layout.grid.rawValue)
-                            }
-                        }
-                    } label: {
-                        Image(systemName: "line.3.horizontal.decrease")
-                    }
-                    .accessibilityLabel("Sort and view options")
-                    Button { addingWatch = true } label: { Image(systemName: "plus") }
-                        .disabled(store.isOffline)
-                        .accessibilityLabel("Add watch")
+                    sortMenu
+                    addButton
                 }
             }
+            #endif
             .navigationDestination(for: WatchRoute.self) { route in
                 WatchDossierView(store: store, watchID: route.id)
                     .zoomDestination(id: route.id, in: zoom)
@@ -147,6 +133,39 @@ struct CollectionScreen: View {
             }
         }
         .pageAppear()
+    }
+
+    private var scopePicker: some View {
+        Picker("Show", selection: $scope) {
+            ForEach(Scope.allCases, id: \.self) { Text($0.rawValue).tag($0.rawValue) }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+    }
+
+    private var sortMenu: some View {
+        Menu {
+            Section("Sort By") {
+                Picker("Sort By", selection: $sort) {
+                    ForEach(Sort.allCases, id: \.self) { Text($0.rawValue).tag($0.rawValue) }
+                }
+            }
+            Section("View As") {
+                Picker("View As", selection: $layout) {
+                    Label("Cards", systemImage: "square.grid.2x2").tag(Layout.cards.rawValue)
+                    Label("Photos", systemImage: "square.grid.3x3").tag(Layout.grid.rawValue)
+                }
+            }
+        } label: {
+            Image(systemName: "line.3.horizontal.decrease")
+        }
+        .accessibilityLabel("Sort and view options")
+    }
+
+    private var addButton: some View {
+        Button { addingWatch = true } label: { Image(systemName: "plus") }
+            .disabled(store.isOffline)
+            .accessibilityLabel("Add watch")
     }
 
     private var contentKey: String { "\(scope)-\(sort)-\(layout)" }

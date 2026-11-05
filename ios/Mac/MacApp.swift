@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 @main
@@ -15,7 +16,10 @@ struct WatchCollectionMacApp: App {
         Window("Watch Collection", id: "main") {
             MacRootView(store: store)
                 .frame(minWidth: 980, minHeight: 640)
-                .task { await store.start() }
+                .task {
+                    await store.start()
+                    await SectionWarmup.run(store: store)
+                }
                 .onChange(of: scenePhase, initial: true) { _, phase in store.sceneChanged(phase) }
         }
         .defaultSize(width: 1360, height: 880)
@@ -29,6 +33,35 @@ struct WatchCollectionMacApp: App {
         Settings {
             SettingsView(store: store)
                 .frame(width: 560, height: 680)
+        }
+    }
+}
+
+/// Lays each section out once in a window that's never shown, soon after launch. Charts and lists
+/// pay a large one-time setup cost, and this keeps it from landing on the first click.
+@MainActor
+private enum SectionWarmup {
+    static func run(store: AppStore) async {
+        guard store.data != nil else { return }
+        try? await Task.sleep(for: .milliseconds(400))
+        let sections: [AnyView] = [
+            AnyView(StatsScreen(store: store, showSettings: {})),
+            AnyView(WishlistScreen(store: store, showSettings: {})),
+            AnyView(SearchScreen(store: store)),
+        ]
+        for section in sections {
+            let host = NSHostingView(rootView: section.frame(width: 1100, height: 880))
+            let window = NSWindow(
+                contentRect: NSRect(x: 0, y: 0, width: 1100, height: 880),
+                styleMask: [.borderless],
+                backing: .buffered,
+                defer: true
+            )
+            window.isReleasedWhenClosed = false
+            window.contentView = host
+            host.layoutSubtreeIfNeeded()
+            window.contentView = nil
+            try? await Task.sleep(for: .milliseconds(120))
         }
     }
 }

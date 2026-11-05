@@ -26,15 +26,10 @@ struct StatsScreen: View {
             RefreshableScreen(store: store) {
                 ScrollView {
                     LazyVStack(spacing: 14) {
-                        Picker("Scope", selection: $scope) {
-                            Text("Current").tag("owned")
-                            Text("All Time").tag("all")
-                        }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .frame(maxWidth: Platform.isMac ? 240 : .infinity, alignment: .leading)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(.bottom, 4)
+                        #if os(iOS)
+                        scopePicker
+                            .padding(.bottom, 4)
+                        #endif
                         if Platform.isMac {
                             HStack(alignment: .top, spacing: 16) {
                                 VStack(spacing: 16) {
@@ -82,12 +77,14 @@ struct StatsScreen: View {
                 }
                 .screenBackground()
             }
+            #if os(macOS)
+            .desktopHeader("Insights", leading: { scopePicker.fixedSize() })
+            #else
             .navigationTitle("Insights")
             .toolbar {
-                if !Platform.isMac {
-                    ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
-                }
+                ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
             }
+            #endif
             .sheet(item: $selectedWatch, onDismiss: advanceCompletionQueue) { watch in
                 WatchDetailScreen(store: store, watch: watch, onSaved: { savedInSequence = true })
             }
@@ -100,6 +97,15 @@ struct StatsScreen: View {
             }
         }
         .pageAppear()
+    }
+
+    private var scopePicker: some View {
+        Picker("Scope", selection: $scope) {
+            Text("Current").tag("owned")
+            Text("All Time").tag("all")
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
     }
 
     private var headlineTiles: some View {

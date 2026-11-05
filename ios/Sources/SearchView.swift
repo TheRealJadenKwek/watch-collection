@@ -81,8 +81,28 @@ struct SearchScreen: View {
                     ContentUnavailableView.search(text: trimmed)
                 }
             }
+            #if os(macOS)
+            .desktopHeader("Search", leading: {
+                HStack(spacing: 6) {
+                    Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
+                    TextField("Watches, brands and stories", text: $query)
+                        .textFieldStyle(.plain)
+                    if !query.isEmpty {
+                        Button { query = "" } label: { Image(systemName: "xmark.circle.fill") }
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                            .accessibilityLabel("Clear search")
+                    }
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 6)
+                .frame(maxWidth: 480)
+                .background(WatchTheme.fill, in: Capsule())
+            })
+            #else
             .navigationTitle("Search")
             .searchable(text: $query, prompt: "Watches, brands and stories")
+            #endif
             .navigationDestination(for: WatchRoute.self) { route in
                 WatchDossierView(store: store, watchID: route.id)
                     .desktopPageAppear()

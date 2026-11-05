@@ -76,18 +76,20 @@ struct WishlistScreen: View {
                     .screenBackground()
                 }
             }
+            #if os(macOS)
+            .desktopHeader("Wishlist", subtitle: subtitle) {
+                EmptyView()
+            } trailing: {
+                addButton
+            }
+            #else
             .navigationTitle("Wishlist")
             .navigationSubtitle(subtitle)
             .toolbar {
-                if !Platform.isMac {
-                    ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
-                }
-                ToolbarItem(placement: .topBarTrailing) {
-                    Button { prefilledBrand = ""; addingItem = true } label: { Image(systemName: "plus") }
-                        .disabled(store.isOffline)
-                        .accessibilityLabel("Add candidate")
-                }
+                ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
+                ToolbarItem(placement: .topBarTrailing) { addButton }
             }
+            #endif
             .sheet(item: $editingItem) { item in
                 WishlistDetailScreen(store: store, item: item)
             }
@@ -99,6 +101,12 @@ struct WishlistScreen: View {
             }
         }
         .pageAppear()
+    }
+
+    private var addButton: some View {
+        Button { prefilledBrand = ""; addingItem = true } label: { Image(systemName: "plus") }
+            .disabled(store.isOffline)
+            .accessibilityLabel("Add candidate")
     }
 
     private var subtitle: String {
