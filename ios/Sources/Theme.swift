@@ -3,6 +3,76 @@ import SwiftUI
 /// System colours, so the app follows Light and Dark Mode the way Apple's own apps do.
 /// The tint is the asset catalog's AccentColor: monochrome (black in Light Mode, white in Dark),
 /// so the watch photos carry the colour. Switches use system green so they stay readable.
+enum Platform {
+    #if os(macOS)
+    static let isMac = true
+    static let deviceName = "Mac"
+    /// The sync hub runs on this same Mac, so the desktop app talks to it directly.
+    static let defaultSyncAddress = "http://127.0.0.1:8931"
+    #else
+    static let isMac = false
+    static let deviceName = "iPhone"
+    static let defaultSyncAddress = ""
+    #endif
+}
+
+extension View {
+    /// iOS sheets size themselves; a Mac sheet collapses to its content without a frame.
+    @ViewBuilder
+    func desktopSheet(width: CGFloat = 620, height: CGFloat = 720) -> some View {
+        #if os(macOS)
+        self.formStyle(.grouped).frame(minWidth: width, idealWidth: width, minHeight: height, idealHeight: height)
+        #else
+        self
+        #endif
+    }
+}
+
+extension View {
+    /// The grouped page background behind a scrolling screen.
+    @ViewBuilder
+    func screenBackground() -> some View {
+        #if os(macOS)
+        self.background(WatchTheme.background)
+        #else
+        self.containerBackground(WatchTheme.background, for: .navigation)
+        #endif
+    }
+}
+
+extension View {
+    /// The phone's photo-to-page zoom. The Mac has no such transition, so its page just appears.
+    @ViewBuilder
+    func zoomSource(id: String, in namespace: Namespace.ID) -> some View {
+        #if os(iOS)
+        self.matchedTransitionSource(id: id, in: namespace)
+        #else
+        self
+        #endif
+    }
+
+    @ViewBuilder
+    func zoomDestination(id: String, in namespace: Namespace.ID) -> some View {
+        #if os(iOS)
+        self.navigationTransition(.zoom(sourceID: id, in: namespace))
+        #else
+        self
+        #endif
+    }
+}
+
+extension View {
+    /// List rows that are buttons read as rows on the Mac, not as a stack of bordered buttons.
+    @ViewBuilder
+    func desktopPlainRows() -> some View {
+        #if os(macOS)
+        self.buttonStyle(.plain)
+        #else
+        self
+        #endif
+    }
+}
+
 enum WatchTheme {
     /// Named directly: Color.accentColor resolves to system blue with the iOS 27 SDK on iOS 26.
     static let accent = Color("AccentColor")
@@ -26,11 +96,34 @@ extension Font {
 extension View {
     /// Filled button in the accent. The accent is black or white, so the label takes the
     /// background colour instead of the default white, which vanished on a white fill.
+    @ViewBuilder
     func prominentButton() -> some View {
+        #if os(macOS)
+        // macOS greys out prominent buttons in an inactive window, which left the label unreadable.
+        buttonStyle(DesktopProminentButtonStyle())
+        #else
         buttonStyle(.borderedProminent)
             .foregroundStyle(Color(.systemBackground))
+        #endif
     }
 }
+
+#if os(macOS)
+struct DesktopProminentButtonStyle: ButtonStyle {
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.body.weight(.medium))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 4)
+            .foregroundStyle(Color(.systemBackground))
+            .background(Color.primary, in: Capsule())
+            .opacity(!isEnabled ? 0.4 : configuration.isPressed ? 0.7 : 1)
+            .contentShape(Capsule())
+    }
+}
+#endif
 
 extension View {
     /// A rounded card on the grouped background, like a Health summary tile.
@@ -216,6 +309,7 @@ struct NumberField: View {
         LabeledContent(title) {
             TextField(title, text: $text, prompt: Text("None"))
                 .multilineTextAlignment(.trailing)
+                .labelsHidden()
         }
         .keyboardType(.decimalPad)
         .onChange(of: text) { _, new in value = parseTypedNumber(new) }

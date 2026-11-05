@@ -14,7 +14,7 @@ import sys
 import threading
 import unicodedata
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from email import policy
 from email.parser import BytesParser
 from http import HTTPStatus
@@ -545,7 +545,24 @@ class WatchHandler(BaseHTTPRequestHandler):
 
     def sync_snapshot(self, data):
         return {"data": data, "revision": fingerprint(data), "photos": [p for p in self.sync_photo_paths(data)
-                if (PHOTOS_DIR / p).is_file()], "conflicts": []}
+                if (PHOTOS_DIR / p).is_file()], "conflicts": [], "lastRemoteSync": self.read_last_remote_sync()}
+
+    @staticmethod
+    def read_last_remote_sync():
+        try:
+            return (DATA_FILE.parent / "last-remote-sync.txt").read_text(encoding="utf-8").strip() or None
+        except OSError:
+            return None
+
+    def note_remote_sync(self):
+        """Lets the Mac app show when the phone last got through, so a dead link can't go unnoticed."""
+        try:
+            if ipaddress.ip_address(self.client_address[0].split("%")[0]).is_loopback:
+                return
+            stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            (DATA_FILE.parent / "last-remote-sync.txt").write_text(stamp + "\n", encoding="utf-8")
+        except (OSError, ValueError):
+            pass
 
     def validate_sync_data(self, data):
         if not isinstance(data, dict):
@@ -586,6 +603,7 @@ class WatchHandler(BaseHTTPRequestHandler):
         with DATA_LOCK:
             current = read_data()
             merged, conflicts = merge_sync(base, local, current, body.get("resolutions"))
+            self.note_remote_sync()
             if conflicts:
                 self.send_json(HTTPStatus.OK, {**self.sync_snapshot(current), "conflicts": conflicts})
                 return

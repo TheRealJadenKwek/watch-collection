@@ -115,6 +115,7 @@ struct MaintenanceSheet: View {
                 if enabled { nextDue = suggestedDueDate() }
             }
         }
+        .desktopSheet()
         .presentationDetents([.large])
     }
 

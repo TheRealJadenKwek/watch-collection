@@ -63,12 +63,15 @@ struct CollectionScreen: View {
                             ForEach(Scope.allCases, id: \.self) { Text($0.rawValue).tag($0.rawValue) }
                         }
                         .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(maxWidth: Platform.isMac ? 240 : .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 20)
 
                         if watches.isEmpty {
                             EmptyCollectionView(
                                 title: "Nothing Here Yet",
-                                detail: scope == Scope.owned.rawValue ? "Tap + to add your first watch." : "Watches you part with appear in the archive."
+                                detail: scope == Scope.owned.rawValue ? Platform.isMac ? "Click + to add your first watch." : "Tap + to add your first watch." : "Watches you part with appear in the archive."
                             )
                             .frame(minHeight: 360)
                         } else if layout == Layout.grid.rawValue {
@@ -80,12 +83,14 @@ struct CollectionScreen: View {
                     .padding(.top, 4)
                     .padding(.bottom, 24)
                 }
-                .containerBackground(WatchTheme.background, for: .navigation)
+                .screenBackground()
             }
             .navigationTitle(scope == Scope.owned.rawValue ? "Collection" : "Archive")
             .navigationSubtitle(subtitle)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
+                if !Platform.isMac {
+                    ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
+                }
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Menu {
                         Section("Sort By") {
@@ -110,7 +115,7 @@ struct CollectionScreen: View {
             }
             .navigationDestination(for: WatchRoute.self) { route in
                 WatchDossierView(store: store, watchID: route.id)
-                    .navigationTransition(.zoom(sourceID: route.id, in: zoom))
+                    .zoomDestination(id: route.id, in: zoom)
             }
             .onAppear {
                 // "Most worn" went away with wear logging, and the one-up plates became cards.
@@ -131,7 +136,10 @@ struct CollectionScreen: View {
     }
 
     private var cards: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 14, alignment: .top), count: 2), spacing: 24) {
+        LazyVGrid(columns: Platform.isMac
+                  ? [GridItem(.adaptive(minimum: 230, maximum: 340), spacing: 20, alignment: .top)]
+                  : Array(repeating: GridItem(.flexible(), spacing: 14, alignment: .top), count: 2),
+                  spacing: Platform.isMac ? 30 : 24) {
             ForEach(watches) { watch in
                 NavigationLink(value: WatchRoute(id: watch.id)) {
                     WatchTile(store: store, watch: watch, zoom: zoom)
@@ -143,7 +151,9 @@ struct CollectionScreen: View {
     }
 
     private var grid: some View {
-        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
+        LazyVGrid(columns: Platform.isMac
+                  ? [GridItem(.adaptive(minimum: 170), spacing: 2)]
+                  : Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
             ForEach(watches) { watch in
                 NavigationLink(value: WatchRoute(id: watch.id)) {
                     FramedPhoto(
@@ -154,7 +164,7 @@ struct CollectionScreen: View {
                         aspect: PhotoShape.square
                     )
                     .overlay(alignment: .bottomLeading) { PurchaseDateOverlay(watch: watch, watches: all) }
-                    .matchedTransitionSource(id: watch.id, in: zoom)
+                    .zoomSource(id: watch.id, in: zoom)
                 }
                 .buttonStyle(.plain)
                 .accessibilityLabel(watch.name)
@@ -184,7 +194,7 @@ struct WatchTile: View {
                     }
                 }
                 .overlay(alignment: .bottomLeading) { PurchaseDateOverlay(watch: watch, watches: store.data?.watches ?? []) }
-                .matchedTransitionSource(id: watch.id, in: zoom)
+                .zoomSource(id: watch.id, in: zoom)
             VStack(alignment: .leading, spacing: 2) {
                 Text(watch.name)
                     .font(.subheadline.weight(.semibold))

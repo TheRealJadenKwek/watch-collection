@@ -31,31 +31,61 @@ struct StatsScreen: View {
                             Text("All Time").tag("all")
                         }
                         .pickerStyle(.segmented)
+                        .labelsHidden()
+                        .frame(maxWidth: Platform.isMac ? 240 : .infinity, alignment: .leading)
+                        .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.bottom, 4)
-                        headlineTiles
-                        maintenanceDashboard
-                        costChart
-                        priceLedger
-                        sizeChart
-                        spendChart
-                        currentCollectionTimeline
-                        lugChart
-                        categoryCoverage
-                        priceLadder
-                        brandBreadth
-                        varietyPanel(title: "Dials", symbol: "circle.lefthalf.filled", color: .cyan, field: \Watch.dialColor, values: store.data?.dialColors ?? [])
-                        varietyPanel(title: "Materials", symbol: "cube.fill", color: .brown, field: \Watch.material, values: store.data?.materials ?? [])
-                        completeData
+                        if Platform.isMac {
+                            HStack(alignment: .top, spacing: 16) {
+                                VStack(spacing: 16) {
+                                    headlineTiles
+                                    costChart
+                                    sizeChart
+                                    lugChart
+                                    priceLadder
+                                    varietyPanel(title: "Dials", symbol: "circle.lefthalf.filled", color: .cyan, field: \Watch.dialColor, values: store.data?.dialColors ?? [])
+                                    completeData
+                                }
+                                .frame(maxWidth: .infinity)
+                                VStack(spacing: 16) {
+                                    maintenanceDashboard
+                                    spendChart
+                                    currentCollectionTimeline
+                                    categoryCoverage
+                                    priceLedger
+                                    brandBreadth
+                                    varietyPanel(title: "Materials", symbol: "cube.fill", color: .brown, field: \Watch.material, values: store.data?.materials ?? [])
+                                }
+                                .frame(maxWidth: .infinity)
+                            }
+                        } else {
+                            headlineTiles
+                            maintenanceDashboard
+                            costChart
+                            priceLedger
+                            sizeChart
+                            spendChart
+                            currentCollectionTimeline
+                            lugChart
+                            categoryCoverage
+                            priceLadder
+                            brandBreadth
+                            varietyPanel(title: "Dials", symbol: "circle.lefthalf.filled", color: .cyan, field: \Watch.dialColor, values: store.data?.dialColors ?? [])
+                            varietyPanel(title: "Materials", symbol: "cube.fill", color: .brown, field: \Watch.material, values: store.data?.materials ?? [])
+                            completeData
+                        }
                     }
-                    .padding(.horizontal, 16)
+                    .padding(.horizontal, Platform.isMac ? 24 : 16)
                     .padding(.top, 4)
                     .padding(.bottom, 24)
                 }
-                .containerBackground(WatchTheme.background, for: .navigation)
+                .screenBackground()
             }
             .navigationTitle("Insights")
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
+                if !Platform.isMac {
+                    ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
+                }
             }
             .sheet(item: $selectedWatch, onDismiss: advanceCompletionQueue) { watch in
                 WatchDetailScreen(store: store, watch: watch, onSaved: { savedInSequence = true })

@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 
 /// Geometry for drawing an image aspect-filled into a frame, centred on a PhotoFocus.
 /// The focus is clamped so the image always covers the frame (no empty edges).
@@ -93,7 +95,7 @@ struct PhotoFramingSheet: View {
             VStack(spacing: 0) {
                 VStack(spacing: 18) {
                     editor
-                    Text("Drag to reposition. Pinch to zoom. Double-tap to reset.")
+                    Text(Platform.isMac ? "Drag to reposition. Pinch on the trackpad to zoom. Double-click to reset." : "Drag to reposition. Pinch to zoom. Double-tap to reset.")
                         .font(.caption)
                         .foregroundStyle(Color.secondary)
                     if let image, !previews.isEmpty {
@@ -146,10 +148,16 @@ struct PhotoFramingSheet: View {
             .task {
                 guard let asset else { return }
                 if let data = await PhotoStore.shared.load(asset, allowDownload: allowsRemoteFetch) {
+                    #if os(macOS)
+                    // Applies EXIF orientation, which NSImage(data:) can skip, so framing matches every other view.
+                    image = DisplayImageCache.decode(data, key: asset.key, maxPixel: 3000) ?? UIImage(data: data)
+                    #else
                     image = UIImage(data: data)
+                    #endif
                 }
             }
         }
+        .desktopSheet(width: 560, height: 760)
         .preferredColorScheme(.dark)
     }
 

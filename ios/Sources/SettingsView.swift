@@ -94,13 +94,14 @@ struct SettingsView: View {
                 inspectImport(result)
             }
         }
+        .desktopSheet(width: 560, height: 680)
     }
 
     private var storageSection: some View {
         Section("Storage") {
-            LabeledContent("Collection", value: "On this iPhone")
+            LabeledContent("Collection", value: "On this \(Platform.deviceName)")
             LabeledContent("Connection required", value: "No")
-            Text("Your collection and photos stay on this iPhone and work offline. Sync shares changes when your Mac is reachable through Tailscale.")
+            Text(Platform.isMac ? "Your collection and photos are kept on this Mac and work offline. Sync shares changes with your iPhone through this Mac's sync service." : "Your collection and photos stay on this iPhone and work offline. Sync shares changes when your Mac is reachable through Tailscale.")
                 .font(.caption)
                 .foregroundStyle(Color.secondary)
         }
@@ -129,17 +130,17 @@ struct SettingsView: View {
                 Task { await store.syncNow() }
             }
             .disabled(store.isSyncing || !store.syncEnabled)
-            Text("Sync runs when you open the app, after edits, and when a connection returns. iOS chooses when background refresh runs. Keep your Mac awake and Tailscale connected on both devices.")
+            Text(Platform.isMac ? "Sync runs every 15 seconds while this app is open, and right after every edit. The iPhone picks up changes when it opens or refreshes, as long as Tailscale is connected." : "Sync runs when you open the app, after edits, and when a connection returns. iOS chooses when background refresh runs. Keep your Mac awake and Tailscale connected on both devices.")
                 .font(.caption)
                 .foregroundStyle(Color.secondary)
             ForEach(store.syncConflicts) { conflict in
                 VStack(alignment: .leading, spacing: 8) {
                     Text(conflict.title).font(.caption.weight(.semibold))
-                    Text("iPhone: \(conflict.localText)").font(.caption)
-                    Text("Mac: \(conflict.remoteText)").font(.caption)
+                    Text("\(Platform.isMac ? "This Mac" : "iPhone"): \(conflict.localText)").font(.caption)
+                    Text("\(Platform.isMac ? "iPhone" : "Mac"): \(conflict.remoteText)").font(.caption)
                     HStack {
-                        Button("Keep iPhone") { choose(conflict, "local") }
-                        Button("Keep Mac") { choose(conflict, "remote") }
+                        Button(Platform.isMac ? "Keep This Mac" : "Keep iPhone") { choose(conflict, "local") }
+                        Button(Platform.isMac ? "Keep iPhone" : "Keep Mac") { choose(conflict, "remote") }
                     }
                     .buttonStyle(.bordered)
                     .disabled(resolvedConflicts.contains(conflict.id) || store.isSyncing)
@@ -171,7 +172,7 @@ struct SettingsView: View {
         Section("Backups & recovery") {
             Toggle("Keep JSON backup in Files", isOn: $draftSettings.autoBackup)
                 .tint(.green)
-            LabeledContent("Destination", value: "On My iPhone / Watch Collection Backup")
+            LabeledContent("Destination", value: Platform.isMac ? "App Documents / Watch Collection Backup" : "On My iPhone / Watch Collection Backup")
             if let lastBackup = draftSettings.lastBackup {
                 LabeledContent("Last backup", value: lastBackup)
                     .font(.caption)
@@ -268,7 +269,7 @@ struct SettingsView: View {
 
     private var aboutSection: some View {
         Section("About") {
-            LabeledContent("Source of truth", value: "This iPhone")
+            LabeledContent("Source of truth", value: "This \(Platform.deviceName)")
             LabeledContent("Offline editing", value: "Ready")
             LabeledContent("Score maximum", value: "14")
         }

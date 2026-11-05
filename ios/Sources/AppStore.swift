@@ -1,7 +1,9 @@
 import Foundation
 import SwiftUI
 import Network
+#if canImport(BackgroundTasks) && os(iOS)
 import BackgroundTasks
+#endif
 
 enum LocalStoreError: LocalizedError {
     case missingData
@@ -13,12 +15,12 @@ enum LocalStoreError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .missingData: "No collection data is stored on this iPhone yet."
+        case .missingData: "No collection data is stored on this \(Platform.deviceName) yet."
         case .itemNotFound: "That item is no longer in the collection."
         case .duplicateValue: "That name already exists."
         case let .valueInUse(count): "Cannot delete this value because it is used by \(count) item(s). Reassign them first."
         case .invalidOperation: "That change could not be applied."
-        case .saveFailed: "The collection could not be saved. Check the iPhone's available storage and try again."
+        case .saveFailed: "The collection could not be saved. Check the \(Platform.deviceName)'s available storage and try again."
         }
     }
 }
@@ -36,9 +38,10 @@ final class AppStore: ObservableObject {
     @Published private(set) var isSyncing = false
     @Published private(set) var syncConflicts: [SyncConflict] = []
     @Published private(set) var lastSync: Date?
+    @Published private(set) var lastPhoneSync: Date?
     @Published private(set) var syncEnabled = UserDefaults.standard.object(forKey: "syncEnabled") as? Bool ?? true
     @Published private(set) var syncAddress = UserDefaults.standard.string(forKey: "syncAddress")
-        ?? LegacyServerConfiguration.migrationURL ?? ""
+        ?? LegacyServerConfiguration.migrationURL ?? Platform.defaultSyncAddress
 
     static let backgroundSyncID = "com.jadenkwek.watchcollection.refresh"
     private var syncBase: CollectionData?
@@ -108,6 +111,19 @@ final class AppStore: ObservableObject {
     }
 
     func sceneChanged(_ phase: ScenePhase) {
+        #if os(macOS)
+        // A desktop window stays on screen unfocused, so keep it current the whole time it's open.
+        guard syncTimer == nil else {
+            if phase == .active { Task { await syncNow() } }
+            return
+        }
+        syncTimer = Task { [weak self] in
+            while !Task.isCancelled {
+                await self?.syncNow()
+                do { try await Task.sleep(for: .seconds(15)) } catch { break }
+            }
+        }
+        #else
         syncTimer?.cancel()
         if phase == .active {
             syncTimer = Task { [weak self] in
@@ -119,14 +135,17 @@ final class AppStore: ObservableObject {
         } else if phase == .background {
             scheduleBackgroundSync()
         }
+        #endif
     }
 
     func scheduleBackgroundSync() {
+        #if os(iOS)
         guard syncEnabled, !syncAddress.isEmpty else { return }
         let request = BGAppRefreshTaskRequest(identifier: Self.backgroundSyncID)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
         // The system determines the actual launch time; foreground sync is the fallback.
         try? BGTaskScheduler.shared.submit(request)
+        #endif
     }
 
     private func startConnectionMonitor() {
@@ -160,6 +179,7 @@ final class AppStore: ObservableObject {
                     result = try await client.exchange(base: syncBase, local: local, resolutions: syncResolutions, remote: remote)
                 } else { result = remote }
                 guard syncAddress == address, syncEnabled else { return false }
+                if let stamp = result.lastRemoteSync { lastPhoneSync = ISO8601DateFormatter().date(from: stamp) }
                 // Do not install a response over edits made while a request was in flight.
                 guard generation == editGeneration else { continue }
                 if !result.conflicts.isEmpty {
@@ -191,9 +211,9 @@ final class AppStore: ObservableObject {
             }
             syncMessage = "New edits are saved locally; sync will retry"
         } catch is CancellationError {
-            syncMessage = "Saved on this iPhone; sync will resume"
+            syncMessage = "Saved on this \(Platform.deviceName); sync will resume"
         } catch {
-            syncMessage = "Saved on this iPhone. \(error.localizedDescription)"
+            syncMessage = "Saved on this \(Platform.deviceName). \(error.localizedDescription)"
             // Keep local editing enabled when the sync server is unreachable.
         }
         return false
@@ -432,8 +452,8 @@ final class AppStore: ObservableObject {
             var updated = try requireData()
             updated.settings.lastBackup = ISO8601DateFormatter().string(from: Date())
             try await commit(updated)
-            notice = "Backup saved in Files."
-            return "Saved to On My iPhone / Watch Collection Backup."
+            notice = Platform.isMac ? "Backup saved." : "Backup saved in Files."
+            return Platform.isMac ? "Saved to the app's Documents / Watch Collection Backup." : "Saved to On My iPhone / Watch Collection Backup."
         } catch {
             surface(error)
             return error.localizedDescription

@@ -1,7 +1,9 @@
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
+#if canImport(UIKit)
 import UIKit
+#endif
 
 struct WatchDetailScreen: View {
     @Environment(\.dismiss) private var dismiss
@@ -15,6 +17,7 @@ struct WatchDetailScreen: View {
     @State private var photoItem: PhotosPickerItem?
     @State private var pendingPhotos: [PendingWatchPhoto] = []
     @State private var showCamera = false
+    @State private var showFilePicker = false
     @State private var isSaving = false
     @State private var confirmDelete = false
     @State private var activitySheet: WatchActivitySheet?
@@ -81,12 +84,25 @@ struct WatchDetailScreen: View {
                     draft.purchasedText = purchaseMonthLabel(draft.purchased)
                 }
             }
+            #if os(iOS)
             .fullScreenCover(isPresented: $showCamera) {
                 CameraPicker { image in
                     guard let data = image.jpegData(compressionQuality: 0.9) else { return }
                     Task { await upload(data: data, filename: "camera-\(UUID().uuidString).jpg", mimeType: "image/jpeg") }
                 }
                 .ignoresSafeArea()
+            }
+            #endif
+            .fileImporter(isPresented: $showFilePicker, allowedContentTypes: [.image]) { result in
+                guard case let .success(url) = result else { return }
+                let accessing = url.startAccessingSecurityScopedResource()
+                defer { if accessing { url.stopAccessingSecurityScopedResource() } }
+                guard let data = try? Data(contentsOf: url) else {
+                    store.notice = "Couldn't load that photo."
+                    return
+                }
+                let type = UTType(filenameExtension: url.pathExtension)
+                Task { await upload(data: data, filename: url.lastPathComponent, mimeType: type?.preferredMIMEType ?? "image/jpeg") }
             }
             .sheet(item: $activitySheet, onDismiss: reloadDraft) { sheet in
                 switch sheet {
@@ -103,6 +119,7 @@ struct WatchDetailScreen: View {
                 Text("The record and its photos will be removed permanently.")
             }
         }
+        .desktopSheet()
     }
 
     private var photoSection: some View {
@@ -112,24 +129,20 @@ struct WatchDetailScreen: View {
                     .frame(height: 230)
                     .clipShape(RoundedRectangle(cornerRadius: 14))
             } else if isNew {
-                TabView(selection: $selectedPhotoIndex) {
-                    ForEach(Array(pendingPhotos.enumerated()), id: \.element.id) { index, pending in
-                        Group {
-                            if let image = UIImage(data: pending.data) {
-                                Image(uiImage: image)
-                                    .resizable()
-                                    .scaledToFill()
-                            } else {
-                                WatchPlaceholder()
-                            }
+                PhotoPager(selection: $selectedPhotoIndex, count: pendingPhotos.count) { index in
+                    Group {
+                        if let image = UIImage(data: pendingPhotos[index].data) {
+                            Image(uiImage: image)
+                                .resizable()
+                                .scaledToFill()
+                        } else {
+                            WatchPlaceholder()
                         }
-                            .frame(height: 250)
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
-                            .tag(index)
                     }
+                    .frame(height: 250)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
                 .frame(height: 260)
-                .tabViewStyle(.page(indexDisplayMode: .automatic))
                 if pendingPhotos.indices.contains(selectedPhotoIndex) {
                     HStack {
                         Button("Set cover") {
@@ -155,8 +168,13 @@ struct WatchDetailScreen: View {
                 PhotosPicker(selection: $photoItem, matching: .images) {
                     Label("Photos", systemImage: "photo.on.rectangle")
                 }
+                #if os(iOS)
                 Spacer()
                 Button { showCamera = true } label: { Label("Camera", systemImage: "camera") }
+                #else
+                Spacer()
+                Button { showFilePicker = true } label: { Label("Choose File…", systemImage: "folder") }
+                #endif
             }
             // Borderless keeps each control its own tap target — otherwise the Form row
             // acts as one big button and every tap opens the camera.
@@ -174,20 +192,16 @@ struct WatchDetailScreen: View {
 
     @ViewBuilder
     private var existingPhotoGallery: some View {
-        TabView(selection: $selectedPhotoIndex) {
-            ForEach(Array(draft.photos.enumerated()), id: \.offset) { index, filename in
-                RemoteWatchImage(
-                    asset: store.photoAsset(itemID: draft.id, filename: filename, wishlist: false),
-                    allowsRemoteFetch: !store.isOffline,
-                    focus: draft.focus(for: filename)
-                )
-                .frame(height: 250)
-                .clipShape(RoundedRectangle(cornerRadius: 14))
-                .tag(index)
-            }
+        PhotoPager(selection: $selectedPhotoIndex, count: draft.photos.count) { index in
+            RemoteWatchImage(
+                asset: store.photoAsset(itemID: draft.id, filename: draft.photos[index], wishlist: false),
+                allowsRemoteFetch: !store.isOffline,
+                focus: draft.focus(for: draft.photos[index])
+            )
+            .frame(height: 250)
+            .clipShape(RoundedRectangle(cornerRadius: 14))
         }
         .frame(height: 260)
-        .tabViewStyle(.page(indexDisplayMode: .automatic))
         if draft.photos.indices.contains(selectedPhotoIndex) {
             let filename = draft.photos[selectedPhotoIndex]
             HStack {
@@ -442,6 +456,7 @@ private enum WatchEditorDefaults {
     static let material = "watchEditor.lastMaterial"
 }
 
+#if os(iOS)
 struct CameraPicker: UIViewControllerRepresentable {
     let onImage: (UIImage) -> Void
     @Environment(\.dismiss) private var dismiss
@@ -469,3 +484,4 @@ struct CameraPicker: UIViewControllerRepresentable {
         func imagePickerControllerDidCancel(_ picker: UIImagePickerController) { parent.dismiss() }
     }
 }
+#endif

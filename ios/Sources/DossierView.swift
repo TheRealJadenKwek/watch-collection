@@ -20,7 +20,7 @@ struct WatchDossierView: View {
                 EmptyCollectionView(title: "Watch removed", detail: "This watch is no longer in the collection.")
             }
         }
-        .navigationTitle(titleInBar ? watch?.name ?? "" : "")
+        .navigationTitle(Platform.isMac ? watch?.name ?? "" : titleInBar ? watch?.name ?? "" : "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if let watch {
@@ -67,7 +67,48 @@ struct WatchDossierView: View {
         }
     }
 
+    @ViewBuilder
     private func content(_ watch: Watch) -> some View {
+        if Platform.isMac { desktopContent(watch) } else { phoneContent(watch) }
+    }
+
+    /// Desktop: the photo fills the left of the window at full size, details scroll on the right.
+    private func desktopContent(_ watch: Watch) -> some View {
+        HStack(spacing: 0) {
+            ZStack {
+                Color.black.opacity(0.04)
+                if watch.photos.isEmpty {
+                    WatchPlaceholder()
+                } else {
+                    PhotoPager(selection: $page, count: watch.photos.count) { index in
+                        RemoteWatchImage(
+                            asset: store.photoAsset(itemID: watch.id, filename: watch.photos[index], wishlist: false),
+                            allowsRemoteFetch: !store.isOffline,
+                            fitWholePhoto: true
+                        )
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: 28) {
+                    titleBlock(watch)
+                    if watch.status != "owned" { statusNote(watch) }
+                    details(watch)
+                    story(watch)
+                    service(watch)
+                }
+                .padding(24)
+            }
+            .frame(width: 400)
+            .screenBackground()
+        }
+        .navigationTitle(watch.name)
+    }
+
+    private func phoneContent(_ watch: Watch) -> some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 hero(watch)
@@ -83,7 +124,7 @@ struct WatchDossierView: View {
                 .padding(.bottom, 40)
             }
         }
-        .containerBackground(WatchTheme.background, for: .navigation)
+        .screenBackground()
         .ignoresSafeArea(edges: .top)
         // Once the large name has scrolled up under the bar, show it in the bar.
         .onScrollGeometryChange(for: Bool.self) { geometry in
@@ -102,17 +143,13 @@ struct WatchDossierView: View {
                 if watch.photos.isEmpty {
                     WatchPlaceholder()
                 } else {
-                    TabView(selection: $page) {
-                        ForEach(Array(watch.photos.enumerated()), id: \.offset) { index, filename in
-                            RemoteWatchImage(
-                                asset: store.photoAsset(itemID: watch.id, filename: filename, wishlist: false),
-                                allowsRemoteFetch: !store.isOffline,
-                                focus: watch.focus(for: filename)
-                            )
-                            .tag(index)
-                        }
+                    PhotoPager(selection: $page, count: watch.photos.count) { index in
+                        RemoteWatchImage(
+                            asset: store.photoAsset(itemID: watch.id, filename: watch.photos[index], wishlist: false),
+                            allowsRemoteFetch: !store.isOffline,
+                            focus: watch.focus(for: watch.photos[index])
+                        )
                     }
-                    .tabViewStyle(.page(indexDisplayMode: watch.photos.count > 1 ? .always : .never))
                 }
             }
             .clipped()

@@ -26,6 +26,7 @@ phone and can automatically sync with the stdlib-only desktop server through Tai
   Renames propagate atomically.
 - **Daily backup** — CSV + JSON export, optionally rclone'd to your own cloud remote on a launchd
   schedule.
+- **Native Mac app** — same screens with a real desktop layout (`WatchCollectionMac` target in `ios/`), kept in sync with the iPhone through the local server
 - **Standalone native iOS app** — full feature parity, camera-roll uploads, local scoring, and
   writable on-device storage. It does not need a Mac or server after its one-time migration.
 - **Files backup** — keeps a portable JSON copy under On My iPhone and can copy the complete photo

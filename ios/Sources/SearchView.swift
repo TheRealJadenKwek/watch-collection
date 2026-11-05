@@ -75,6 +75,7 @@ struct SearchScreen: View {
                     }
                 }
             }
+            .desktopPlainRows()
             .overlay {
                 if !trimmed.isEmpty, foundWatches.isEmpty, foundWishlist.isEmpty {
                     ContentUnavailableView.search(text: trimmed)

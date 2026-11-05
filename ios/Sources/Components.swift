@@ -1,5 +1,7 @@
 import SwiftUI
+#if canImport(UIKit)
 import UIKit
+#endif
 import ImageIO
 
 struct WatchPlaceholder: View {
@@ -17,6 +19,8 @@ struct RemoteWatchImage: View {
     let asset: PhotoAsset?
     let allowsRemoteFetch: Bool
     var focus: PhotoFocus? = nil
+    /// Show the whole photo instead of filling the frame (the desktop page's viewer).
+    var fitWholePhoto = false
     @State private var image: UIImage?
     @State private var isLoading = false
 
@@ -27,7 +31,11 @@ struct RemoteWatchImage: View {
     var body: some View {
         ZStack {
             if let image {
-                FocusedImage(image: image, focus: focus)
+                if fitWholePhoto {
+                    Image(uiImage: image).resizable().scaledToFit()
+                } else {
+                    FocusedImage(image: image, focus: focus)
+                }
             } else {
                 WatchPlaceholder()
             }
@@ -100,6 +108,73 @@ enum DisplayImageCache {
     }
 }
 
+/// Swipeable photos on iOS; on the Mac, where page-style TabViews don't exist,
+/// one photo at a time with previous/next buttons and arrow keys.
+struct PhotoPager<Content: View>: View {
+    @Binding var selection: Int
+    let count: Int
+    var showsDotsForOne = false
+    @ViewBuilder let content: (Int) -> Content
+
+    var body: some View {
+        #if os(iOS)
+        TabView(selection: $selection) {
+            ForEach(0..<count, id: \.self) { index in
+                content(index).tag(index)
+            }
+        }
+        .tabViewStyle(.page(indexDisplayMode: count > 1 ? .always : .never))
+        #else
+        ZStack {
+            if count > 0 {
+                content(min(max(selection, 0), count - 1))
+                    .id(selection)
+            }
+            if count > 1 {
+                HStack {
+                    pagerButton("chevron.left", label: "Previous photo", by: -1, key: .leftArrow)
+                    Spacer()
+                    pagerButton("chevron.right", label: "Next photo", by: 1, key: .rightArrow)
+                }
+                .padding(12)
+                VStack {
+                    Spacer()
+                    HStack(spacing: 6) {
+                        ForEach(0..<count, id: \.self) { index in
+                            Circle()
+                                .fill(index == selection ? Color.white : Color.white.opacity(0.45))
+                                .frame(width: 7, height: 7)
+                        }
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(.black.opacity(0.35), in: Capsule())
+                    .padding(.bottom, 12)
+                }
+            }
+        }
+        #endif
+    }
+
+    #if os(macOS)
+    private func pagerButton(_ symbol: String, label: String, by step: Int, key: KeyEquivalent) -> some View {
+        Button {
+            selection = (selection + step + count) % count
+        } label: {
+            Image(systemName: symbol)
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.white)
+                .frame(width: 34, height: 34)
+                .background(.black.opacity(0.4), in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .keyboardShortcut(key, modifiers: [])
+        .accessibilityLabel(label)
+    }
+    #endif
+}
+
 struct CapsuleChip: View {
     let text: String
     var color: Color = .secondary
@@ -111,7 +186,8 @@ struct CapsuleChip: View {
             .lineLimit(1)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            .foregroundStyle(filled ? .white : color)
+            // The accent is white in Dark Mode, so a chip filled with it needs the background colour for its text.
+            .foregroundStyle(filled ? (color == WatchTheme.accent ? Color(.systemBackground) : .white) : color)
             .background(filled ? color : color.opacity(0.15), in: Capsule())
     }
 }

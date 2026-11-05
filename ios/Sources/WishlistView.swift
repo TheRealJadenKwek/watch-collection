@@ -46,17 +46,22 @@ struct WishlistScreen: View {
                                     .id("wishlist-\(top.id)")
                                     .padding(.bottom, 10)
                                 }
-                                ForEach(ranked.first?.status == "considering" ? Array(ranked.dropFirst()) : ranked) { item in
-                                    WishlistCard(
-                                        store: store,
-                                        item: item,
-                                        score: store.scores[item.id],
-                                        edit: { editingItem = item },
-                                        pass: { Task { await store.passWishlist(id: item.id) } },
-                                        bought: { boughtItem = item },
-                                        findImage: { findImage(item.id) }
-                                    )
-                                    .id("wishlist-\(item.id)")
+                                // One column on the phone; as many as fit on the desktop.
+                                LazyVGrid(columns: Platform.isMac
+                                          ? [GridItem(.adaptive(minimum: 380), spacing: 14, alignment: .top)]
+                                          : [GridItem(.flexible(), alignment: .top)], spacing: 14) {
+                                    ForEach(ranked.first?.status == "considering" ? Array(ranked.dropFirst()) : ranked) { item in
+                                        WishlistCard(
+                                            store: store,
+                                            item: item,
+                                            score: store.scores[item.id],
+                                            edit: { editingItem = item },
+                                            pass: { Task { await store.passWishlist(id: item.id) } },
+                                            bought: { boughtItem = item },
+                                            findImage: { findImage(item.id) }
+                                        )
+                                        .id("wishlist-\(item.id)")
+                                    }
                                 }
                             }
                             nextMoveSection { id in
@@ -64,17 +69,19 @@ struct WishlistScreen: View {
                             }
                             radarStrip
                         }
-                        .padding(.horizontal, 16)
+                        .padding(.horizontal, Platform.isMac ? 24 : 16)
                         .padding(.top, 4)
                         .padding(.bottom, 24)
                     }
-                    .containerBackground(WatchTheme.background, for: .navigation)
+                    .screenBackground()
                 }
             }
             .navigationTitle("Wishlist")
             .navigationSubtitle(subtitle)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
+                if !Platform.isMac {
+                    ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
+                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button { prefilledBrand = ""; addingItem = true } label: { Image(systemName: "plus") }
                         .disabled(store.isOffline)
@@ -121,6 +128,12 @@ struct WishlistScreen: View {
                             .padding(.vertical, 9)
                             .background(Color.pink.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
                         }
+                        #if os(macOS)
+                        .menuStyle(.button)
+                        .buttonStyle(.plain)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        #endif
                     }
                 }
             }
@@ -429,7 +442,22 @@ struct TopPickView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        if Platform.isMac {
+            // Desktop: photo beside the reasons, so the card doesn't fill the whole window.
+            HStack(alignment: .center, spacing: 28) {
+                photo.frame(width: 340)
+                VStack(alignment: .leading, spacing: 16) { details }
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        } else {
+            VStack(alignment: .leading, spacing: 16) {
+                photo
+                details
+            }
+        }
+    }
+
+    private var photo: some View {
             Button(action: edit) {
                 FramedPhoto(
                     store: store,
@@ -451,7 +479,10 @@ struct TopPickView: View {
                 }
             }
             .buttonStyle(.plain)
+    }
 
+    @ViewBuilder
+    private var details: some View {
             VStack(alignment: .leading, spacing: 6) {
                 Text(item.name)
                     .font(.title2.bold())
@@ -483,7 +514,6 @@ struct TopPickView: View {
             .controlSize(.large)
             .buttonBorderShape(.capsule)
             .disabled(store.isOffline)
-        }
     }
 }
 
@@ -609,6 +639,7 @@ struct WishlistDetailScreen: View {
                 Text("The wishlist record and its photos will be removed permanently.")
             }
         }
+        .desktopSheet()
     }
 
     private var photoSection: some View {
@@ -616,20 +647,16 @@ struct WishlistDetailScreen: View {
             if draft.photos.isEmpty {
                 WatchPlaceholder().frame(height: 210).clipShape(RoundedRectangle(cornerRadius: 14))
             } else {
-                TabView(selection: $selectedPhotoIndex) {
-                    ForEach(Array(draft.photos.enumerated()), id: \.offset) { index, filename in
-                        RemoteWatchImage(
-                            asset: store.photoAsset(itemID: draft.id, filename: filename, wishlist: true),
-                            allowsRemoteFetch: !store.isOffline,
-                            focus: draft.focus(for: filename)
-                        )
-                            .frame(height: 230)
-                            .clipShape(RoundedRectangle(cornerRadius: 14))
-                            .tag(index)
-                    }
+                PhotoPager(selection: $selectedPhotoIndex, count: draft.photos.count) { index in
+                    RemoteWatchImage(
+                        asset: store.photoAsset(itemID: draft.id, filename: draft.photos[index], wishlist: true),
+                        allowsRemoteFetch: !store.isOffline,
+                        focus: draft.focus(for: draft.photos[index])
+                    )
+                    .frame(height: 230)
+                    .clipShape(RoundedRectangle(cornerRadius: 14))
                 }
                 .frame(height: 240)
-                .tabViewStyle(.page)
                 if draft.photos.indices.contains(selectedPhotoIndex) {
                     let filename = draft.photos[selectedPhotoIndex]
                     HStack {
@@ -739,6 +766,7 @@ struct BoughtSheet: View {
                 }
             }
         }
+        .desktopSheet()
     }
 }
 

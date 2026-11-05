@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: com.jadenkwek
   deploymentTarget:
     iOS: "26.0"
+    macOS: "26.0"
 targets:
   WatchCollection:
     type: application
@@ -57,3 +58,41 @@ targets:
           NSAllowsArbitraryLoads: true
         NSPhotoLibraryUsageDescription: Add photos to your watch collection.
         NSCameraUsageDescription: Take photos for your watch collection.
+  WatchCollectionMac:
+    type: application
+    platform: macOS
+    sources:
+      - path: Sources
+        excludes:
+          - WatchCollectionApp.swift
+      - path: Mac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jadenkwek.watchcollection.mac
+        PRODUCT_NAME: Watch Collection
+        DEVELOPMENT_TEAM: RLC58VS9R6
+        MARKETING_VERSION: "1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        CODE_SIGN_STYLE: Automatic
+        CODE_SIGN_ENTITLEMENTS: Mac/WatchCollectionMac.entitlements
+        ENABLE_HARDENED_RUNTIME: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
+        SWIFT_VERSION: "5.9"
+    info:
+      path: Mac/Info.plist
+      properties:
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        CFBundleDisplayName: Watch Collection
+        LSApplicationCategoryType: public.app-category.lifestyle
+        NSAppTransportSecurity:
+          NSAllowsArbitraryLoads: true
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: com.jadenkwek.watchcollection.backup
+            UTTypeDescription: Watch Collection Backup
+            UTTypeConformsTo:
+              - com.apple.package
+            UTTypeTagSpecification:
+              public.filename-extension:
+                - watchcollection

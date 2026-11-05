@@ -65,6 +65,8 @@ struct SyncSnapshot: Decodable {
     var revision: String
     var photos: [String]
     var conflicts: [SyncConflict]
+    /// When a device other than this Mac last completed a sync with the hub.
+    var lastRemoteSync: String?
 }
 
 struct SyncRequest: Encodable {
