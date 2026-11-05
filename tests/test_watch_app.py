@@ -361,7 +361,8 @@ class WatchAppTests(unittest.TestCase):
     @personal_only
     def test_09_fit_chips_and_l2l_precedence(self):
         data = self.get_data(); wrist = data["settings"]["wrist"]
-        watches = {watch["id"]: watch for watch in data["watches"]}
+        # The diameter labels are checked with lug-to-lug removed; a measured L2L takes precedence (below).
+        watches = {watch["id"]: {**watch, "lugToLug": None} for watch in data["watches"]}
         self.assertTrue(export_sheet.fit_info(watches["timex-marlin"], wrist)["label"].startswith("sweet spot"))
         self.assertEqual(export_sheet.fit_info(watches["casio-g-steel-gsts300g"], wrist)["label"], "+10mm over")
         self.assertEqual(export_sheet.fit_info(watches["zenith-220s"], wrist)["label"], "−1mm under")

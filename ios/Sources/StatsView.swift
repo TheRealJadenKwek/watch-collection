@@ -674,6 +674,8 @@ struct StatsScreen: View {
             guard let value = watch.lugToLug else { return nil }
             return LugMeasurement(watch: watch, value: value)
         }
+        // Lots and bundles are not watches you wear, so they never count as unmeasured.
+        let unmeasured = scoped.filter { $0.lugToLug == nil && $0.diameter != nil }
         return SectionCard("Lug to Lug", systemImage: "arrow.left.and.right", color: .purple, detail: "Wearability") {
             if measurements.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
@@ -694,7 +696,7 @@ struct StatsScreen: View {
                 .font(.subheadline)
                 .foregroundStyle(Color.secondary)
             } else {
-                LugToLugChart(measurements: measurements, wrist: wrist)
+                LugToLugChart(measurements: measurements, unmeasured: unmeasured, wrist: wrist) { selectedWatch = $0 }
             }
         }
     }
@@ -1170,39 +1172,168 @@ private struct CumulativeSpendChart: View {
     }
 }
 
+/// One row per watch on a millimetre scale that starts near the smallest case, so a 45 and a 50 look
+/// different. The ceiling from Settings runs through every row; a dot past it is red.
 private struct LugToLugChart: View {
     let measurements: [LugMeasurement]
+    let unmeasured: [Watch]
     let wrist: WristProfile
-    @State private var selected: String?
+    let open: (Watch) -> Void
+    @State private var showAll = false
+
+    private static let collapsedCount = 12
+    private var labelWidth: CGFloat { Platform.isMac ? 200 : 132 }
+    private var valueWidth: CGFloat { 42 }
+
+    private var rows: [LugMeasurement] {
+        measurements.sorted { $0.value == $1.value ? $0.watch.name < $1.watch.name : $0.value > $1.value }
+    }
+
+    /// Whole 5 mm steps around the measurements and the ceiling.
+    private var domain: ClosedRange<Double> {
+        let values = measurements.map(\.value) + [wrist.lugMax]
+        let low = ((values.min() ?? 40) - 2) / 5
+        let high = ((values.max() ?? 50) + 1) / 5
+        return (low.rounded(.down) * 5)...(high.rounded(.up) * 5)
+    }
+
+    private func fit(_ value: Double) -> (color: Color, label: String) {
+        if value <= wrist.lugMax - 1 { return (.purple, "fits") }
+        if value <= wrist.lugMax { return (.orange, "at the limit") }
+        return (.red, "over")
+    }
 
     var body: some View {
-        Chart(measurements) { measurement in
-            BarMark(x: .value("L2L", measurement.value), y: .value("Watch", measurement.id))
-                .foregroundStyle(Color.purple.gradient)
-                .opacity(selected == nil || selected == measurement.id ? 1 : 0.42)
-                .annotation(position: .trailing, overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
-                    if selected == measurement.id {
-                        ChartAnnotationBubble(text: "\(measurement.watch.name) — \(compactNumber(measurement.value))mm")
-                    }
+        let domain = domain
+        let rows = rows
+        let visible = showAll ? rows : Array(rows.prefix(Self.collapsedCount))
+        let over = rows.filter { $0.value > wrist.lugMax }.count
+        let limit = rows.filter { $0.value > wrist.lugMax - 1 && $0.value <= wrist.lugMax }.count
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 14) {
+                legend(.purple, "\(rows.count - over - limit) fit")
+                if limit > 0 { legend(.orange, "\(limit) at the limit") }
+                legend(.red, "\(over) over \(compactNumber(wrist.lugMax)) mm")
+                Spacer(minLength: 0)
+            }
+            .font(.caption)
+            .foregroundStyle(Color.secondary)
+
+            VStack(spacing: 0) {
+                ForEach(visible) { row in
+                    Button { open(row.watch) } label: { rowView(row, domain: domain) }
+                        .buttonStyle(.plain)
+                        .hoverRow(clickable: true)
                 }
-            RuleMark(x: .value("Ceiling", wrist.lugMax))
-                .foregroundStyle(Color.red)
-        }
-        .frame(height: 150)
-        .chartYAxis(.hidden)
-        #if os(iOS)
-        .chartYSelection(value: $selected)
-        #endif
-        .chartOverlay { proxy in
-            ChartPointerLayer(proxy: proxy, selection: $selected) { point, _ in
-                guard let watchID = proxy.value(atY: point.y, as: String.self),
-                      let measurement = measurements.first(where: { $0.id == watchID })
-                else { return nil }
-                if Platform.isMac { return measurement.id }
-                guard let rawX = proxy.value(atX: point.x, as: Double.self), rawX >= 0, rawX <= measurement.value else { return nil }
-                return measurement.id
+                axis(domain)
+            }
+
+            if rows.count > Self.collapsedCount {
+                Button(showAll ? "Show fewer" : "Show all \(rows.count)") {
+                    withAnimation(.smooth(duration: 0.3)) { showAll.toggle() }
+                }
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.plain)
+                .foregroundStyle(Color.purple)
+            }
+
+            if !unmeasured.isEmpty {
+                Text(unmeasuredNote)
+                    .font(.caption)
+                    .foregroundStyle(Color.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
         }
+    }
+
+    private var unmeasuredNote: String {
+        let names = unmeasured.map(\.name).sorted()
+        if names.count <= 6 {
+            return "No published lug-to-lug for \(names.formatted(.list(type: .and))). Measure and add it in Edit."
+        }
+        return "\(names.count) watches have no published lug-to-lug."
+    }
+
+    private func legend(_ color: Color, _ text: String) -> some View {
+        HStack(spacing: 5) {
+            Circle().fill(color).frame(width: 7, height: 7)
+            Text(text)
+        }
+    }
+
+    private func rowView(_ row: LugMeasurement, domain: ClosedRange<Double>) -> some View {
+        let style = fit(row.value)
+        return HStack(spacing: 10) {
+            Text(row.watch.name)
+                .font(.caption)
+                .lineLimit(2)
+                .truncationMode(.tail)
+                .multilineTextAlignment(.leading)
+                .padding(.vertical, 3)
+                .frame(width: labelWidth, alignment: .leading)
+            GeometryReader { geo in
+                let x = { (value: Double) -> CGFloat in
+                    let span = domain.upperBound - domain.lowerBound
+                    return CGFloat((min(max(value, domain.lowerBound), domain.upperBound) - domain.lowerBound) / span) * geo.size.width
+                }
+                ZStack(alignment: .leading) {
+                    Capsule()
+                        .fill(Color.primary.opacity(0.07))
+                        .frame(height: 4)
+                    Capsule()
+                        .fill(style.color.opacity(0.35))
+                        .frame(width: x(row.value), height: 4)
+                    Rectangle()
+                        .fill(Color.red.opacity(0.75))
+                        .frame(width: 1.5)
+                        .offset(x: x(wrist.lugMax) - 0.75)
+                    Circle()
+                        .fill(style.color)
+                        .frame(width: 10, height: 10)
+                        .offset(x: x(row.value) - 5)
+                }
+                .frame(maxHeight: .infinity)
+            }
+            Text("\(compactNumber(row.value))")
+                .font(.caption.monospacedDigit().weight(.semibold))
+                .foregroundStyle(row.value > wrist.lugMax ? Color.red : Color.primary)
+                .frame(width: valueWidth, alignment: .trailing)
+        }
+        .frame(minHeight: 28)
+        .fixedSize(horizontal: false, vertical: true)
+        .contentShape(Rectangle())
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(row.watch.name), \(compactNumber(row.value)) millimetres, \(style.label)")
+    }
+
+    /// Millimetre ticks under the dots, with the ceiling named.
+    private func axis(_ domain: ClosedRange<Double>) -> some View {
+        let ticks = stride(from: domain.lowerBound, through: domain.upperBound, by: 5).map { $0 }
+        return HStack(spacing: 10) {
+            Color.clear.frame(width: labelWidth, height: 1)
+            GeometryReader { geo in
+                let span = domain.upperBound - domain.lowerBound
+                ZStack(alignment: .topLeading) {
+                    ForEach(ticks, id: \.self) { tick in
+                        Text("\(Int(tick))")
+                            .font(.caption2.monospacedDigit())
+                            .foregroundStyle(Color.secondary)
+                            .fixedSize()
+                            .position(x: CGFloat((tick - domain.lowerBound) / span) * geo.size.width, y: 8)
+                    }
+                    Text("\(compactNumber(wrist.lugMax)) mm ceiling")
+                        .font(.caption2.weight(.semibold))
+                        .foregroundStyle(Color.red)
+                        .fixedSize()
+                        .position(x: CGFloat((wrist.lugMax - domain.lowerBound) / span) * geo.size.width, y: 24)
+                }
+            }
+            Text("mm")
+                .font(.caption2)
+                .foregroundStyle(Color.secondary)
+                .frame(width: valueWidth, alignment: .trailing)
+        }
+        .frame(height: 34)
     }
 }
 
