@@ -173,6 +173,13 @@ struct CollectionScreen: View {
     }
 }
 
+/// What an archive row says under the name: what it cost, then where it went. A watch that came
+/// in a lot has no price of its own, because the lot's record already carries the cost.
+func archiveDetail(_ watch: Watch) -> String {
+    let cost = watch.costSourceWatchID != nil && watch.price == 0 ? "Part of lot" : cadWhole(watch.price)
+    return "\(cost) · \(statusLabel(watch.status))"
+}
+
 /// Two-up card in the style of Apple's own libraries: rounded photo, name, then price and category.
 struct WatchTile: View {
     @ObservedObject var store: AppStore
@@ -180,7 +187,7 @@ struct WatchTile: View {
     let zoom: Namespace.ID
 
     private var detail: String {
-        if watch.status != "owned" { return statusLabel(watch.status) }
+        if watch.status != "owned" { return archiveDetail(watch) }
         return [cadWhole(watch.price), watch.category].compactMap { $0 }.joined(separator: " · ")
     }
 

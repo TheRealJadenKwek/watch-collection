@@ -107,7 +107,7 @@ struct SearchScreen: View {
                             title: watch.name,
                             subtitle: watch.status == "owned"
                                 ? [watch.brand, cadWhole(watch.price)].compactMap { $0 }.joined(separator: " · ")
-                                : statusLabel(watch.status)
+                                : archiveDetail(watch)
                         )
                     }
                 }

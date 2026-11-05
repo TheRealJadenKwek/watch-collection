@@ -202,6 +202,7 @@ enum WatchStatus: String, CaseIterable, Identifiable {
     case owned
     case givenAway = "given_away"
     case sold
+    case traded
     case broken
     case donated
     case ousted
@@ -215,6 +216,7 @@ enum WatchStatus: String, CaseIterable, Identifiable {
         case .owned: "Owned"
         case .givenAway: "Given away"
         case .sold: "Sold"
+        case .traded: "Traded"
         case .broken: "Broken"
         case .donated: "Donated"
         case .ousted: "Ousted"

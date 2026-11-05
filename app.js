@@ -24,7 +24,7 @@ const PRICE_TIERS = [
 ];
 
 const STATUS_LABELS = {
-  owned: "Owned", given_away: "Given away", sold: "Sold", broken: "Broken",
+  owned: "Owned", given_away: "Given away", sold: "Sold", traded: "Traded", broken: "Broken",
   donated: "Donated", ousted: "Ousted", want_to_buy_back: "Want to buy back",
   giving_away: "Giving away",
 };

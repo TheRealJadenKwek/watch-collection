@@ -42,7 +42,7 @@ ALLOWED_PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
 AUTO_IMAGE_LIMIT = 5 * 1024 * 1024
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) WatchCollection/1.10"
 STATUSES = {
-    "owned", "given_away", "sold", "broken", "donated", "ousted",
+    "owned", "given_away", "sold", "traded", "broken", "donated", "ousted",
     "want_to_buy_back", "giving_away",
 }
 WISHLIST_STATUSES = {"considering", "passed", "bought"}
