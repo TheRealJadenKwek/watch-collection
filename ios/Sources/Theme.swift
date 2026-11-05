@@ -88,6 +88,32 @@ private struct PageAppear: ViewModifier {
 extension EnvironmentValues {
     /// False for a Mac section that's kept alive behind the one on screen.
     @Entry var sectionIsActive = true
+    /// Opens a page in the Mac's shared navigation stack.
+    @Entry var openPage: (any Hashable) -> Void = { _ in }
+}
+
+/// A section's navigation. On the phone each tab has its own stack. On the Mac all sections share one,
+/// owned by the window, because a split view's detail column can't hold several stacks at once.
+struct SectionStack<Content: View>: View {
+    private let path: Binding<NavigationPath>?
+    private let content: Content
+
+    init(path: Binding<NavigationPath>? = nil, @ViewBuilder content: () -> Content) {
+        self.path = path
+        self.content = content()
+    }
+
+    var body: some View {
+        #if os(iOS)
+        if let path {
+            NavigationStack(path: path) { content }
+        } else {
+            NavigationStack { content }
+        }
+        #else
+        content
+        #endif
+    }
 }
 
 #if os(macOS)

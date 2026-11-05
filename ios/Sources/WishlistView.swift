@@ -27,7 +27,7 @@ struct WishlistScreen: View {
     }
 
     var body: some View {
-        NavigationStack {
+        SectionStack {
             ScrollViewReader { proxy in
                 RefreshableScreen(store: store) {
                     ScrollView {

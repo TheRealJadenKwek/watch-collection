@@ -36,7 +36,7 @@ struct SearchScreen: View {
     }
 
     var body: some View {
-        NavigationStack {
+        SectionStack {
             List {
                 if trimmed.isEmpty {
                     Section("Browse by Brand") {
@@ -105,10 +105,11 @@ struct SearchScreen: View {
             .navigationTitle("Search")
             .searchable(text: $query, prompt: "Watches, brands and stories")
             #endif
+            #if os(iOS)
             .navigationDestination(for: WatchRoute.self) { route in
                 WatchDossierView(store: store, watchID: route.id)
-                    .desktopPageAppear()
             }
+            #endif
             .sheet(item: $editingItem) { item in
                 WishlistDetailScreen(store: store, item: item)
             }

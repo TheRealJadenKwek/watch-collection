@@ -9,7 +9,6 @@ struct WatchDossierView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var sheet: DossierSheet?
     @State private var titleInBar = false
-    @Environment(\.sectionIsActive) private var sectionIsActive
 
     private var watch: Watch? { store.data?.watches.first { $0.id == watchID } }
 
@@ -22,11 +21,9 @@ struct WatchDossierView: View {
             }
         }
         .navigationTitle(titleInBar ? watch?.name ?? "" : "")
-        // On the Mac a page stays open while another section is on screen; its toolbar shouldn't show there.
-        .navigationBarBackButtonHidden(!sectionIsActive)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
-            if let watch, sectionIsActive {
+            if let watch {
                 ToolbarItemGroup(placement: .topBarTrailing) {
                     Button("Edit") { sheet = .edit }
                         .disabled(store.isOffline)

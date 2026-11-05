@@ -40,6 +40,8 @@ struct MacRootView: View {
     @AppStorage("selectedTabV4") private var selectedTab = AppTab.collection.rawValue
     @Environment(\.openSettings) private var openSettings
     @State private var mounted: Set<String> = []
+    /// Pages open in each section, so going back to a section returns to where you were in it.
+    @State private var paths: [String: NavigationPath] = [:]
 
     var body: some View {
         Group {
@@ -84,7 +86,7 @@ struct MacRootView: View {
     // already drawn. Building one on demand froze the window for up to a quarter of a second.
     private var sections: some View {
         NavigationSplitView {
-            MacSidebar(selection: $selectedTab)
+            MacSidebar(selection: $selectedTab) { paths[selectedTab] = NavigationPath() }
                 .navigationSplitViewColumnWidth(min: 190, ideal: 210, max: 260)
                 .safeAreaInset(edge: .bottom) {
                     SyncStatusBar(status: store.status) {
@@ -92,13 +94,28 @@ struct MacRootView: View {
                     }
                 }
         } detail: {
-            ZStack {
-                ForEach(AppTab.allCases, id: \.rawValue) { tab in
-                    if mounted.contains(tab.rawValue) || tab.rawValue == selectedTab {
-                        KeptSection(tab: tab, store: store, isActive: tab.rawValue == selectedTab)
-                            .zIndex(tab.rawValue == selectedTab ? 1 : 0)
+            NavigationStack(path: currentPath) {
+                ZStack {
+                    ForEach(AppTab.allCases, id: \.rawValue) { tab in
+                        if mounted.contains(tab.rawValue) || tab.rawValue == selectedTab {
+                            KeptSection(tab: tab, store: store, isActive: tab.rawValue == selectedTab)
+                                .zIndex(tab.rawValue == selectedTab ? 1 : 0)
+                        }
                     }
                 }
+                .navigationDestination(for: WatchRoute.self) { route in
+                    WatchDossierView(store: store, watchID: route.id)
+                        .desktopPageAppear()
+                }
+                .navigationDestination(for: YearRoute.self) { route in
+                    YearPurchasesScreen(store: store, year: route.year, ownedOnly: route.ownedOnly)
+                        .desktopPageAppear()
+                }
+            }
+            .environment(\.openPage) { page in
+                var path = paths[selectedTab] ?? NavigationPath()
+                path.append(page)
+                paths[selectedTab] = path
             }
         }
         .toolbar(removing: .title)
@@ -109,6 +126,13 @@ struct MacRootView: View {
                 mounted.insert(tab.rawValue)
             }
         }
+    }
+
+    private var currentPath: Binding<NavigationPath> {
+        Binding(
+            get: { paths[selectedTab] ?? NavigationPath() },
+            set: { paths[selectedTab] = $0 }
+        )
     }
 
     private var errorBinding: Binding<Bool> {
@@ -147,6 +171,8 @@ private struct KeptSection: View {
 /// lights up, and the selection slides to the row you pick.
 private struct MacSidebar: View {
     @Binding var selection: String
+    /// Clicking the section you're already in goes back to its main screen.
+    let reselect: () -> Void
     @State private var hovered: String?
     @Namespace private var highlight
 
@@ -173,7 +199,7 @@ private struct MacSidebar: View {
     private func row(_ title: String, symbol: String, value: String, shortcut: Int) -> some View {
         let isSelected = selection == value
         return Button {
-            selection = value
+            if isSelected { reselect() } else { selection = value }
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: symbol)

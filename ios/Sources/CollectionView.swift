@@ -58,7 +58,7 @@ struct CollectionScreen: View {
     }
 
     var body: some View {
-        NavigationStack {
+        SectionStack {
             RefreshableScreen(store: store) {
                 ScrollView {
                     // Lazy, not VStack: a LazyVGrid inside an eager VStack re-measures as rows load,
@@ -111,11 +111,12 @@ struct CollectionScreen: View {
                 }
             }
             #endif
+            #if os(iOS)
             .navigationDestination(for: WatchRoute.self) { route in
                 WatchDossierView(store: store, watchID: route.id)
                     .zoomDestination(id: route.id, in: zoom)
-                    .desktopPageAppear()
             }
+            #endif
             .task(id: contentKey) {
                 // Have the next cards ready before they scroll into view.
                 let assets = watches.prefix(32).compactMap { watch in

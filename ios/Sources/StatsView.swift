@@ -10,6 +10,8 @@ struct StatsScreen: View {
     @State private var completionQueue: [Watch] = []
     @State private var savedInSequence = false
     @State private var priceLedgerExpanded = false
+    @State private var path = NavigationPath()
+    @Environment(\.openPage) private var openPage
 
     private var all: [Watch] { store.data?.watches ?? [] }
     private var owned: [Watch] { all.filter { $0.status == "owned" } }
@@ -18,7 +20,7 @@ struct StatsScreen: View {
     private var wrist: WristProfile { store.data?.settings.wrist ?? WristProfile(inches: 6, sweetSpotMin: 35, sweetSpotMax: 40, perfect: 38, lugMax: 47) }
 
     var body: some View {
-        NavigationStack {
+        SectionStack(path: $path) {
             RefreshableScreen(store: store) {
                 ScrollView {
                     LazyVStack(spacing: 14) {
@@ -79,6 +81,14 @@ struct StatsScreen: View {
             .navigationTitle("Insights")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
+            }
+            #endif
+            #if os(iOS)
+            .navigationDestination(for: YearRoute.self) { route in
+                YearPurchasesScreen(store: store, year: route.year, ownedOnly: route.ownedOnly)
+            }
+            .navigationDestination(for: WatchRoute.self) { route in
+                WatchDossierView(store: store, watchID: route.id)
             }
             #endif
             .sheet(item: $selectedWatch, onDismiss: advanceCompletionQueue) { watch in
@@ -317,11 +327,24 @@ struct StatsScreen: View {
         let values = spendByYear(scoped, all: all)
         let cumulative = cumulativeSpend(values)
         return SectionCard("Spending", systemImage: "calendar", color: .green, detail: "By year") {
-            Text("Annual spend")
-                .font(.caption.weight(.bold))
-                .foregroundStyle(Color.secondary)
-            AnnualSpendChart(values: values)
-                .id(scope)
+            HStack {
+                Text("Annual spend")
+                    .font(.caption.weight(.bold))
+                    .foregroundStyle(Color.secondary)
+                Spacer()
+                Text("\(Platform.isMac ? "Click" : "Tap") a bar for that year's purchases")
+                    .font(.caption2)
+                    .foregroundStyle(Color.secondary)
+            }
+            AnnualSpendChart(values: values) { year in
+                let route = YearRoute(year: year, ownedOnly: scope == "owned")
+                #if os(macOS)
+                openPage(route)
+                #else
+                path.append(route)
+                #endif
+            }
+            .id(scope)
 
             if !cumulative.isEmpty {
                 Divider()
@@ -645,6 +668,8 @@ private struct ChartPointerLayer<ID: Equatable>: View {
     let proxy: ChartProxy
     @Binding var selection: ID?
     let pick: (CGPoint, CGRect) -> ID?
+    /// On the phone, for a chart whose bars open something: tapping a bar calls this.
+    var onClick: ((ID) -> Void)?
 
     var body: some View {
         GeometryReader { geometry in
@@ -662,7 +687,11 @@ private struct ChartPointerLayer<ID: Equatable>: View {
                 .highPriorityGesture(
                     SpatialTapGesture().onEnded { tap in
                         let next = bar(at: tap.location, in: plot)
-                        selection = next == selection ? nil : next
+                        if let onClick, let next {
+                            onClick(next)
+                        } else {
+                            selection = next == selection ? nil : next
+                        }
                     }
                 )
                 #endif
@@ -835,6 +864,7 @@ private struct CaseSizeChart: View {
 
 private struct AnnualSpendChart: View {
     let values: [YearSpend]
+    let openYear: (String) -> Void
     @State private var selected: String?
 
     var body: some View {
@@ -851,24 +881,48 @@ private struct AnnualSpendChart: View {
         }
         .frame(height: 180)
         .chartYAxis { AxisMarks() }
-        #if os(iOS)
-        .chartXSelection(value: $selected)
-        #endif
+        #if os(macOS)
         .chartOverlay { proxy in
-            ChartPointerLayer(proxy: proxy, selection: $selected) { point, plot in
+            // One real button per column: the whole column responds to the mouse and to a click.
+            GeometryReader { geometry in
+                let plot = proxy.plotFrame.map { geometry[$0] } ?? .zero
+                ForEach(values) { value in
+                    if value.total > 0, let x = proxy.position(forX: value.year) {
+                        Button {
+                            openYear(value.year)
+                        } label: {
+                            Color.clear.contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .frame(width: plot.width / CGFloat(max(values.count, 1)), height: plot.height)
+                        .position(x: plot.minX + x, y: plot.midY)
+                        .onHover { inside in
+                            withAnimation(.easeOut(duration: 0.12)) {
+                                if inside { selected = value.year } else if selected == value.year { selected = nil }
+                            }
+                        }
+                        .pointerStyle(.link)
+                        .accessibilityLabel("\(value.year), \(cad(value.total)). Open purchases")
+                    }
+                }
+            }
+        }
+        #else
+        .chartXSelection(value: $selected)
+        .chartOverlay { proxy in
+            ChartPointerLayer(proxy: proxy, selection: $selected, pick: { point, plot in
                 guard let year = proxy.value(atX: point.x, as: String.self),
-                      let value = values.first(where: { $0.year == year })
-                else { return nil }
-                if Platform.isMac { return value.total > 0 ? value.year : nil }
-                guard let rawY = proxy.value(atY: point.y, as: Double.self),
+                      let value = values.first(where: { $0.year == year }),
+                      let rawY = proxy.value(atY: point.y, as: Double.self),
                       let barX = proxy.position(forX: value.year),
                       abs(barX - point.x) <= plot.width / CGFloat(max(values.count, 1)) * 0.44,
                       rawY >= 0,
                       rawY <= value.total
                 else { return nil }
                 return value.year
-            }
+            }, onClick: openYear)
         }
+        #endif
     }
 }
 
@@ -946,6 +1000,110 @@ private struct LugToLugChart: View {
                 return measurement.id
             }
         }
+    }
+}
+
+struct YearRoute: Hashable {
+    let year: String
+    let ownedOnly: Bool
+}
+
+/// What was bought in one year: the watches behind a bar on the Annual Spend chart. It uses the same
+/// list as the chart, so the total here always matches the bar that was clicked.
+struct YearPurchasesScreen: View {
+    @ObservedObject var store: AppStore
+    let year: String
+    let ownedOnly: Bool
+
+    private var all: [Watch] { store.data?.watches ?? [] }
+
+    private var entries: [PurchaseTimelineEntry] {
+        let scoped = ownedOnly ? all.filter { $0.status == "owned" } : all
+        return purchaseTimelineEntries(scoped, all: all, by: .cost).filter { $0.year == year }
+    }
+
+    var body: some View {
+        let entries = entries
+        let total = entries.reduce(0) { $0 + $1.watch.price }
+        ScrollView {
+            VStack(alignment: .leading, spacing: 18) {
+                VStack(alignment: .leading, spacing: 4) {
+                    Text(year)
+                        .font(.figure(.largeTitle))
+                    Text("\(cad(total)) across \(entries.count) \(entries.count == 1 ? "purchase" : "purchases")")
+                        .font(.headline)
+                    Text(ownedOnly
+                         ? "Only watches you still own. Switch Insights to All Time to see everything you bought that year."
+                         : "Everything you bought that year, including watches you no longer own.")
+                        .font(.caption)
+                        .foregroundStyle(Color.secondary)
+                }
+                if entries.isEmpty {
+                    EmptyCollectionView(title: "No purchases", detail: "Nothing is recorded for \(year).")
+                } else {
+                    VStack(spacing: 0) {
+                        ForEach(entries) { entry in
+                            row(entry)
+                            if entry.id != entries.last?.id { Divider() }
+                        }
+                    }
+                    .groupedCard(padding: 12)
+                }
+            }
+            .padding(Platform.isMac ? 24 : 16)
+            .frame(maxWidth: Platform.isMac ? 860 : .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        .screenBackground()
+        .navigationTitle(year)
+        .navigationBarTitleDisplayMode(.inline)
+    }
+
+    private func row(_ entry: PurchaseTimelineEntry) -> some View {
+        let watch = entry.watch
+        let dated = entry.source ?? watch
+        let details = [
+            purchaseShortLabel(dated, in: all),
+            watch.category,
+            watch.status == "owned" ? nil : statusLabel(watch.status),
+        ].compactMap { $0 }.joined(separator: " · ")
+        return NavigationLink(value: WatchRoute(id: watch.id)) {
+            HStack(spacing: 14) {
+                RemoteWatchImage(
+                    asset: watch.photos.first.flatMap { store.photoAsset(itemID: watch.id, filename: $0, wishlist: false) },
+                    allowsRemoteFetch: !store.isOffline,
+                    focus: watch.focus(for: watch.photos.first),
+                    maxPixel: DisplayImageCache.icon
+                )
+                .frame(width: 64, height: 64)
+                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(watch.name)
+                        .font(.subheadline.weight(.semibold))
+                        .foregroundStyle(.primary)
+                        .multilineTextAlignment(.leading)
+                    Text(details)
+                        .font(.caption)
+                        .foregroundStyle(Color.secondary)
+                    if let source = entry.source {
+                        Text("Original \(source.name) purchase, carried over through a trade")
+                            .font(.caption)
+                            .foregroundStyle(Color.secondary)
+                    }
+                }
+                Spacer(minLength: 12)
+                Text(cad(watch.price))
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(.primary)
+                Image(systemName: "chevron.right")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.vertical, 10)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .hoverRow(clickable: true)
     }
 }
 
