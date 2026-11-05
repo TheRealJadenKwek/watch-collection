@@ -2,6 +2,8 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
+    /// Redraws this screen as sync progresses; the store itself stays quiet during a sync.
+    @ObservedObject private var status: SyncStatus
     @Environment(\.dismiss) private var dismiss
     @ObservedObject var store: AppStore
     @State private var draftSettings: CollectionSettings
@@ -24,6 +26,7 @@ struct SettingsView: View {
         self.store = store
         _baselineSettings = State(initialValue: store.data?.settings)
         _syncEnabled = State(initialValue: store.syncEnabled)
+        _status = ObservedObject(wrappedValue: store.status)
         _syncAddress = State(initialValue: store.syncAddress)
         _draftSettings = State(initialValue: store.data?.settings ?? CollectionSettings(
             autoBackup: true,

@@ -78,6 +78,7 @@ struct StatsScreen: View {
                     .padding(.horizontal, Platform.isMac ? 24 : 16)
                     .padding(.top, 4)
                     .padding(.bottom, 24)
+                    .animation(.easeInOut(duration: 0.2), value: scope)
                 }
                 .screenBackground()
             }
@@ -98,6 +99,7 @@ struct StatsScreen: View {
                 priceLedgerExpanded = false
             }
         }
+        .pageAppear()
     }
 
     private var headlineTiles: some View {

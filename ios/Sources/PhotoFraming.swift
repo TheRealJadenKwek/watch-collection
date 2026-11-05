@@ -150,7 +150,7 @@ struct PhotoFramingSheet: View {
                 if let data = await PhotoStore.shared.load(asset, allowDownload: allowsRemoteFetch) {
                     #if os(macOS)
                     // Applies EXIF orientation, which NSImage(data:) can skip, so framing matches every other view.
-                    image = DisplayImageCache.decode(data, key: asset.key, maxPixel: 3000) ?? UIImage(data: data)
+                    image = DisplayImageCache.decode(data, key: asset.key, maxPixel: DisplayImageCache.full) ?? UIImage(data: data)
                     #else
                     image = UIImage(data: data)
                     #endif

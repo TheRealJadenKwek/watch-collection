@@ -10,15 +10,20 @@ struct CollectionScreen: View {
     @AppStorage("collectionLayout") private var layout = Layout.cards.rawValue
     @Namespace private var zoom
 
-    enum Scope: String, CaseIterable { case owned = "Owned", archive = "Archive" }
+    enum Scope: String, CaseIterable { case owned = "Owned", archive = "Archive", allTime = "All Time" }
     enum Sort: String, CaseIterable { case value = "Value", newest = "Newest", oldest = "Oldest", name = "Name" }
     enum Layout: String { case cards, grid }
 
     private var all: [Watch] { store.data?.watches ?? [] }
 
     private var watches: [Watch] {
-        let shown = all
-            .filter { scope == Scope.owned.rawValue ? $0.status == "owned" : $0.status != "owned" }
+        let shown = all.filter { watch in
+            switch Scope(rawValue: scope) ?? .owned {
+            case .owned: watch.status == "owned"
+            case .archive: watch.status != "owned"
+            case .allTime: true
+            }
+        }
         switch Sort(rawValue: sort) ?? .value {
         case .oldest:
             return byPurchaseDate(shown)
@@ -59,6 +64,7 @@ struct CollectionScreen: View {
                     // Lazy, not VStack: a LazyVGrid inside an eager VStack re-measures as rows load,
                     // which bounced the scroll position back and forth on every drag from the top.
                     LazyVStack(alignment: .leading, spacing: 18) {
+                        let shown = watches
                         Picker("Show", selection: $scope) {
                             ForEach(Scope.allCases, id: \.self) { Text($0.rawValue).tag($0.rawValue) }
                         }
@@ -68,24 +74,30 @@ struct CollectionScreen: View {
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .padding(.horizontal, 20)
 
-                        if watches.isEmpty {
+                        Group {
+                        if shown.isEmpty {
                             EmptyCollectionView(
                                 title: "Nothing Here Yet",
-                                detail: scope == Scope.owned.rawValue ? Platform.isMac ? "Click + to add your first watch." : "Tap + to add your first watch." : "Watches you part with appear in the archive."
+                                detail: scope == Scope.archive.rawValue ? "Watches you part with appear in the archive." : Platform.isMac ? "Click + to add your first watch." : "Tap + to add your first watch."
                             )
                             .frame(minHeight: 360)
                         } else if layout == Layout.grid.rawValue {
-                            grid
+                            grid(shown)
                         } else {
-                            cards
+                            cards(shown)
                         }
+                        }
+                        // A simple fade between Owned, Archive and All Time, and on a new sort or layout.
+                        .id(contentKey)
+                        .transition(.opacity)
                     }
+                    .animation(.easeInOut(duration: 0.2), value: contentKey)
                     .padding(.top, 4)
                     .padding(.bottom, 24)
                 }
                 .screenBackground()
             }
-            .navigationTitle(scope == Scope.owned.rawValue ? "Collection" : "Archive")
+            .navigationTitle(title)
             .navigationSubtitle(subtitle)
             .toolbar {
                 if !Platform.isMac {
@@ -116,6 +128,14 @@ struct CollectionScreen: View {
             .navigationDestination(for: WatchRoute.self) { route in
                 WatchDossierView(store: store, watchID: route.id)
                     .zoomDestination(id: route.id, in: zoom)
+                    .desktopPageAppear()
+            }
+            .task(id: contentKey) {
+                // Have the next cards ready before they scroll into view.
+                let assets = watches.prefix(32).compactMap { watch in
+                    watch.photos.first.flatMap { store.photoAsset(itemID: watch.id, filename: $0, wishlist: false) }
+                }
+                DisplayImageCache.preheat(assets, maxPixel: layout == Layout.grid.rawValue ? DisplayImageCache.thumb : DisplayImageCache.tile)
             }
             .onAppear {
                 // "Most worn" went away with wear logging, and the one-up plates became cards.
@@ -126,16 +146,33 @@ struct CollectionScreen: View {
                 WatchDetailScreen(store: store, watch: .newDraft, isNew: true)
             }
         }
+        .pageAppear()
+    }
+
+    private var contentKey: String { "\(scope)-\(sort)-\(layout)" }
+
+    private var title: String {
+        switch Scope(rawValue: scope) ?? .owned {
+        case .owned: "Collection"
+        case .archive: "Archive"
+        case .allTime: "All Time"
+        }
     }
 
     private var subtitle: String {
         let owned = all.filter { $0.status == "owned" }
-        return scope == Scope.owned.rawValue
-            ? "\(owned.count) watches · \(cadWhole(owned.reduce(0) { $0 + $1.price }))"
-            : "\(all.count - owned.count) moved on · \(all.count) all time"
+        switch Scope(rawValue: scope) ?? .owned {
+        case .owned:
+            return "\(owned.count) watches · \(cadWhole(owned.reduce(0) { $0 + $1.price }))"
+        case .archive:
+            return "\(all.count - owned.count) moved on · \(all.count) all time"
+        case .allTime:
+            // Same total as Insights: a trade or lot watch is counted once, through its source.
+            return "\(all.count) watches · \(cadWhole(uniqueCostRecords(all).reduce(0) { $0 + $1.price }))"
+        }
     }
 
-    private var cards: some View {
+    private func cards(_ watches: [Watch]) -> some View {
         LazyVGrid(columns: Platform.isMac
                   ? [GridItem(.adaptive(minimum: 230, maximum: 340), spacing: 20, alignment: .top)]
                   : Array(repeating: GridItem(.flexible(), spacing: 14, alignment: .top), count: 2),
@@ -150,7 +187,7 @@ struct CollectionScreen: View {
         .padding(.horizontal, 20)
     }
 
-    private var grid: some View {
+    private func grid(_ watches: [Watch]) -> some View {
         LazyVGrid(columns: Platform.isMac
                   ? [GridItem(.adaptive(minimum: 170), spacing: 2)]
                   : Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
@@ -161,7 +198,8 @@ struct CollectionScreen: View {
                         itemID: watch.id,
                         filename: watch.photos.first,
                         focus: watch.focus(for: watch.photos.first),
-                        aspect: PhotoShape.square
+                        aspect: PhotoShape.square,
+                        maxPixel: DisplayImageCache.thumb
                     )
                     .overlay(alignment: .bottomLeading) { PurchaseDateOverlay(watch: watch, watches: all) }
                     .zoomSource(id: watch.id, in: zoom)
@@ -182,7 +220,7 @@ func archiveDetail(_ watch: Watch) -> String {
 
 /// Two-up card in the style of Apple's own libraries: rounded photo, name, then price and category.
 struct WatchTile: View {
-    @ObservedObject var store: AppStore
+    let store: AppStore
     let watch: Watch
     let zoom: Namespace.ID
 

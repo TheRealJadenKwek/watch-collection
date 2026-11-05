@@ -85,11 +85,13 @@ struct SearchScreen: View {
             .searchable(text: $query, prompt: "Watches, brands and stories")
             .navigationDestination(for: WatchRoute.self) { route in
                 WatchDossierView(store: store, watchID: route.id)
+                    .desktopPageAppear()
             }
             .sheet(item: $editingItem) { item in
                 WishlistDetailScreen(store: store, item: item)
             }
         }
+        .pageAppear()
     }
 
     @ViewBuilder
@@ -117,7 +119,7 @@ struct SearchScreen: View {
 }
 
 private struct SearchRow: View {
-    @ObservedObject var store: AppStore
+    let store: AppStore
     let itemID: String
     let filename: String?
     let focus: PhotoFocus?
@@ -130,7 +132,8 @@ private struct SearchRow: View {
             RemoteWatchImage(
                 asset: filename.flatMap { store.photoAsset(itemID: itemID, filename: $0, wishlist: wishlist) },
                 allowsRemoteFetch: !store.isOffline,
-                focus: focus
+                focus: focus,
+                maxPixel: DisplayImageCache.icon
             )
             .frame(width: 48, height: 48)
             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))

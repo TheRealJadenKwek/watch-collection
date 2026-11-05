@@ -18,93 +18,144 @@ struct WatchPlaceholder: View {
 struct RemoteWatchImage: View {
     let asset: PhotoAsset?
     let allowsRemoteFetch: Bool
-    var focus: PhotoFocus? = nil
+    var focus: PhotoFocus?
     /// Show the whole photo instead of filling the frame (the desktop page's viewer).
-    var fitWholePhoto = false
+    var fitWholePhoto: Bool
+    var maxPixel: Int
     @State private var image: UIImage?
-    @State private var isLoading = false
+
+    init(
+        asset: PhotoAsset?,
+        allowsRemoteFetch: Bool,
+        focus: PhotoFocus? = nil,
+        fitWholePhoto: Bool = false,
+        maxPixel: Int = DisplayImageCache.page
+    ) {
+        self.asset = asset
+        self.allowsRemoteFetch = allowsRemoteFetch
+        self.focus = focus
+        self.fitWholePhoto = fitWholePhoto
+        self.maxPixel = maxPixel
+        // Already decoded? Draw it in this very frame, so scrolling back never flashes a placeholder.
+        _image = State(initialValue: asset.flatMap { DisplayImageCache.image(for: $0.key, maxPixel: maxPixel) })
+    }
 
     private var loadID: LoadID {
-        LoadID(asset: asset, allowsRemoteFetch: allowsRemoteFetch)
+        LoadID(asset: asset, allowsRemoteFetch: allowsRemoteFetch, maxPixel: maxPixel)
     }
 
     var body: some View {
         ZStack {
+            WatchPlaceholder()
             if let image {
-                if fitWholePhoto {
-                    Image(uiImage: image).resizable().scaledToFit()
-                } else {
-                    FocusedImage(image: image, focus: focus)
+                Group {
+                    if fitWholePhoto {
+                        Image(uiImage: image).resizable().scaledToFit()
+                    } else {
+                        FocusedImage(image: image, focus: focus)
+                    }
                 }
-            } else {
-                WatchPlaceholder()
-            }
-            if isLoading && image == nil {
-                ProgressView()
+                .transition(.opacity)
             }
         }
+        .animation(.easeOut(duration: 0.15), value: image != nil)
         .clipped()
         // clipped() trims drawing only; without this a zoomed photo steals taps above its frame.
         .contentShape(Rectangle())
         .task(id: loadID) {
-            image = nil
             guard let asset else {
-                isLoading = false
+                image = nil
                 return
             }
-            if let cached = DisplayImageCache.image(for: asset.key) {
+            let target = maxPixel
+            if let cached = DisplayImageCache.image(for: asset.key, maxPixel: target) {
                 image = cached
-                isLoading = false
                 return
             }
-            isLoading = true
-            let data = await PhotoStore.shared.load(asset, allowDownload: allowsRemoteFetch)
-            if !Task.isCancelled, let data {
-                let key = asset.key
-                image = await Task.detached(priority: .userInitiated) {
-                    DisplayImageCache.decode(data, key: key)
-                }.value
-            }
-            isLoading = false
+            image = nil
+            // A row that scrolls straight past cancels here, before any decoding is spent on it.
+            try? await Task.sleep(for: .milliseconds(25))
+            guard !Task.isCancelled else { return }
+            let allowDownload = allowsRemoteFetch
+            let decoded: UIImage? = await Task.detached(priority: .userInitiated) {
+                if let file = PhotoStore.existingLocalURL(for: asset) {
+                    return DisplayImageCache.decode(file: file, key: asset.key, maxPixel: target)
+                }
+                guard let data = await PhotoStore.shared.load(asset, allowDownload: allowDownload) else { return nil }
+                return DisplayImageCache.decode(data, key: asset.key, maxPixel: target)
+            }.value
+            if !Task.isCancelled { image = decoded }
         }
     }
 
     private struct LoadID: Hashable {
         let asset: PhotoAsset?
         let allowsRemoteFetch: Bool
+        let maxPixel: Int
     }
 }
 
-/// Downsampled, cached images for display. Full 12 MP originals are only decoded by
-/// the framing editor; every list, grid and page draws a ~1600 px version from here.
+/// Downsampled, cached images for display, decoded at the size each place actually draws.
+/// A card used to decode a 1600 px image to show it at about 500, which also overflowed the
+/// cache, so scrolling kept decoding the same photos again.
 enum DisplayImageCache {
+    static let icon = 400      // list rows and small thumbnails
+    static let thumb = 600     // the dense photo grid
+    static let tile = 900      // collection cards
+    static let page = 1600     // a watch's page and forms
+    static let full = 2400     // the desktop page's full-window viewer
+
     private static let cache: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()
-        cache.totalCostLimit = 160 * 1024 * 1024
+        cache.totalCostLimit = (Platform.isMac ? 480 : 220) * 1024 * 1024
         return cache
     }()
 
-    private static func cacheKey(_ key: PhotoKey) -> NSString {
-        "\(key.directory)/\(key.filename)" as NSString
+    private static func cacheKey(_ key: PhotoKey, _ maxPixel: Int) -> NSString {
+        "\(key.directory)/\(key.filename)@\(maxPixel)" as NSString
     }
 
-    static func image(for key: PhotoKey) -> UIImage? {
-        cache.object(forKey: cacheKey(key))
+    static func image(for key: PhotoKey, maxPixel: Int) -> UIImage? {
+        cache.object(forKey: cacheKey(key, maxPixel))
     }
 
-    static func decode(_ data: Data, key: PhotoKey, maxPixel: Int = 1600) -> UIImage? {
+    static func decode(_ data: Data, key: PhotoKey, maxPixel: Int = page) -> UIImage? {
+        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
+              let image = decode(source, key: key, maxPixel: maxPixel)
+        else { return UIImage(data: data) }
+        return image
+    }
+
+    /// From the file directly, so a downsample doesn't read the whole original into memory first.
+    static func decode(file: URL, key: PhotoKey, maxPixel: Int) -> UIImage? {
+        guard let source = CGImageSourceCreateWithURL(file as CFURL, nil) else { return nil }
+        return decode(source, key: key, maxPixel: maxPixel)
+    }
+
+    private static func decode(_ source: CGImageSource, key: PhotoKey, maxPixel: Int) -> UIImage? {
         let options: [CFString: Any] = [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
             kCGImageSourceShouldCacheImmediately: true,
             kCGImageSourceThumbnailMaxPixelSize: maxPixel,
         ]
-        guard let source = CGImageSourceCreateWithData(data as CFData, nil),
-              let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary)
-        else { return UIImage(data: data) }
+        guard let cgImage = CGImageSourceCreateThumbnailAtIndex(source, 0, options as CFDictionary) else { return nil }
         let image = UIImage(cgImage: cgImage)
-        cache.setObject(image, forKey: cacheKey(key), cost: cgImage.bytesPerRow * cgImage.height)
+        cache.setObject(image, forKey: cacheKey(key, maxPixel), cost: cgImage.bytesPerRow * cgImage.height)
         return image
+    }
+
+    /// Decodes what's about to be on screen ahead of time, quietly, one photo at a time.
+    static func preheat(_ assets: [PhotoAsset], maxPixel: Int) {
+        Task.detached(priority: .utility) {
+            for asset in assets {
+                guard !Task.isCancelled else { return }
+                if image(for: asset.key, maxPixel: maxPixel) != nil { continue }
+                if let file = PhotoStore.existingLocalURL(for: asset) {
+                    _ = decode(file: file, key: asset.key, maxPixel: maxPixel)
+                }
+            }
+        }
     }
 }
 

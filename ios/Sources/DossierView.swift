@@ -84,7 +84,8 @@ struct WatchDossierView: View {
                         RemoteWatchImage(
                             asset: store.photoAsset(itemID: watch.id, filename: watch.photos[index], wishlist: false),
                             allowsRemoteFetch: !store.isOffline,
-                            fitWholePhoto: true
+                            fitWholePhoto: true,
+                            maxPixel: DisplayImageCache.full
                         )
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }

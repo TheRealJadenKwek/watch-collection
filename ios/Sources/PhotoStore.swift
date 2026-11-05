@@ -160,6 +160,12 @@ actor PhotoStore {
         }
     }
 
+    /// The file, if it's already on disk. Readable from anywhere, so photos don't queue behind the actor.
+    nonisolated static func existingLocalURL(for asset: PhotoAsset) -> URL? {
+        guard let url = localURL(for: asset), FileManager.default.fileExists(atPath: url.path) else { return nil }
+        return url
+    }
+
     nonisolated static func localURL(for asset: PhotoAsset) -> URL? {
         guard isSafePathComponent(asset.directory), isSafePathComponent(asset.filename) else { return nil }
         return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]

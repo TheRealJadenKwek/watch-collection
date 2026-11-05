@@ -98,6 +98,7 @@ struct WishlistScreen: View {
                 BoughtSheet(store: store, item: item)
             }
         }
+        .pageAppear()
     }
 
     private var subtitle: String {
@@ -304,7 +305,7 @@ struct WishlistCard: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 14) {
-                RemoteWatchImage(asset: imageAsset, allowsRemoteFetch: !store.isOffline, focus: item.focus(for: item.photos.first))
+                RemoteWatchImage(asset: imageAsset, allowsRemoteFetch: !store.isOffline, focus: item.focus(for: item.photos.first), maxPixel: DisplayImageCache.icon)
                     .frame(width: 96, height: 120)
                     .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
                 VStack(alignment: .leading, spacing: 6) {
@@ -465,7 +466,8 @@ struct TopPickView: View {
                     filename: item.photos.first,
                     focus: item.focus(for: item.photos.first),
                     wishlist: true,
-                    aspect: PhotoShape.plate
+                    aspect: PhotoShape.plate,
+                    maxPixel: DisplayImageCache.page
                 )
                 .clipShape(RoundedRectangle(cornerRadius: WatchTheme.corner, style: .continuous))
                 .overlay(alignment: .topLeading) {

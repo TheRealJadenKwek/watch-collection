@@ -73,6 +73,32 @@ extension View {
     }
 }
 
+/// Fades a screen in when it appears, so moving between screens never just snaps.
+private struct PageAppear: ViewModifier {
+    @State private var shown = false
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(shown ? 1 : 0)
+            .onAppear { withAnimation(.easeOut(duration: 0.2)) { shown = true } }
+            .onDisappear { shown = false }
+    }
+}
+
+extension View {
+    func pageAppear() -> some View { modifier(PageAppear()) }
+
+    /// For a pushed page: the phone already zooms or slides, the Mac needs the fade.
+    @ViewBuilder
+    func desktopPageAppear() -> some View {
+        #if os(macOS)
+        pageAppear()
+        #else
+        self
+        #endif
+    }
+}
+
 enum WatchTheme {
     /// Named directly: Color.accentColor resolves to system blue with the iOS 27 SDK on iOS 26.
     static let accent = Color("AccentColor")

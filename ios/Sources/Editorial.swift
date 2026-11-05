@@ -22,22 +22,45 @@ func catalogueNumbers(_ watches: [Watch]) -> [String: Int] {
 
 /// Day of the month from a label like "September 20, 2026"; 0 when the label has no day.
 func purchaseDay(_ text: String) -> Int {
-    guard let match = text.firstMatch(of: /\b(\d{1,2}),\s*\d{4}/), let day = Int(match.1) else { return 0 }
-    return day
+    // Hand-rolled match for `\b(\d{1,2}),\s*\d{4}`: this runs for every watch on every sort, and
+    // a Swift Regex here showed up in profiles as most of the cost of drawing the collection.
+    let bytes = Array(text.utf8)
+    func isDigit(_ byte: UInt8) -> Bool { (48...57).contains(byte) }
+    func isWord(_ byte: UInt8) -> Bool {
+        isDigit(byte) || (65...90).contains(byte) || (97...122).contains(byte) || byte == 95 || byte >= 128
+    }
+    for comma in bytes.indices where bytes[comma] == 44 {
+        var start = comma
+        while start > 0, comma - start < 2, isDigit(bytes[start - 1]) { start -= 1 }
+        guard start < comma, start == 0 || !isWord(bytes[start - 1]) else { continue }
+        var next = comma + 1
+        while next < bytes.count, [32, 9, 10, 13].contains(bytes[next]) { next += 1 }
+        guard next + 4 <= bytes.count, bytes[next..<(next + 4)].allSatisfy(isDigit) else { continue }
+        return bytes[start..<comma].reduce(0) { $0 * 10 + Int($1 - 48) }
+    }
+    return 0
 }
+
+/// Formatted dates, kept because formatting one per photo on every redraw adds up while scrolling.
+@MainActor private var purchaseLabelCache: [String: String] = [:]
 
 /// Short purchase date for photo overlays: "Sep 20, 2026" when the day is known, else "Nov 2025".
 /// A trade with no date of its own shows when the watch it came from was bought
 /// (Series 6 traded for the Series 8 shows the Series 8's Feb 2023). Nil when neither has a date.
+@MainActor
 func purchaseShortLabel(_ watch: Watch, in watches: [Watch]) -> String? {
     let dated = datedSource(watch, in: watches)
     guard let parts = purchaseMonthParts(dated.purchased) else { return nil }
+    let cacheKey = "\(dated.purchased ?? "")|\(dated.purchasedText)"
+    if let cached = purchaseLabelCache[cacheKey] { return cached }
     let day = purchaseDay(dated.purchasedText)
     guard let date = Calendar.current.date(from: DateComponents(year: parts.year, month: parts.month, day: max(day, 1)))
     else { return nil }
-    return day > 0
+    let label = day > 0
         ? date.formatted(.dateTime.month(.abbreviated).day().year())
         : date.formatted(.dateTime.month(.abbreviated).year())
+    purchaseLabelCache[cacheKey] = label
+    return label
 }
 
 /// The watch whose purchase date stands for this one: itself, or for a trade with no date
@@ -66,11 +89,10 @@ struct PurchaseDateOverlay: View {
 /// Oldest first by purchase month, then day when known (month-only sorts first in its month),
 /// then the order the watches were added. Undated watches (e.g. trades with no date) go last.
 func acquisitionOrder(_ watches: [Watch]) -> [Watch] {
-    watches.enumerated().sorted { left, right in
-        let l = (left.element.purchased ?? "9999-99", purchaseDay(left.element.purchasedText), left.offset)
-        let r = (right.element.purchased ?? "9999-99", purchaseDay(right.element.purchasedText), right.offset)
-        return l < r
-    }.map(\.element)
+    watches.enumerated()
+        .map { (month: $0.element.purchased ?? "9999-99", day: purchaseDay($0.element.purchasedText), index: $0.offset, watch: $0.element) }
+        .sorted { ($0.month, $0.day, $0.index) < ($1.month, $1.day, $1.index) }
+        .map(\.watch)
 }
 
 func catalogueLabel(_ number: Int?) -> String {
@@ -82,12 +104,13 @@ func catalogueLabel(_ number: Int?) -> String {
 
 /// Full-bleed framed photo at a fixed aspect ratio.
 struct FramedPhoto: View {
-    @ObservedObject var store: AppStore
+    let store: AppStore
     let itemID: String
     let filename: String?
     let focus: PhotoFocus?
     var wishlist = false
     var aspect: CGFloat = PhotoShape.plate
+    var maxPixel = DisplayImageCache.tile
 
     var body: some View {
         Color.clear
@@ -96,7 +119,8 @@ struct FramedPhoto: View {
                 RemoteWatchImage(
                     asset: filename.flatMap { store.photoAsset(itemID: itemID, filename: $0, wishlist: wishlist) },
                     allowsRemoteFetch: !store.isOffline,
-                    focus: focus
+                    focus: focus,
+                    maxPixel: maxPixel
                 )
             }
             .clipped()
@@ -113,6 +137,8 @@ struct PhotoTag: View {
             .font(.caption.weight(.semibold))
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
-            .glassEffect(.regular, in: .capsule)
+            .foregroundStyle(.white)
+            // A plain fill: live glass on every card in a scrolling grid is expensive to composite.
+            .background(.black.opacity(0.45), in: Capsule())
     }
 }

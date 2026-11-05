@@ -25,6 +25,17 @@ enum LocalStoreError: LocalizedError {
     }
 }
 
+/// Sync progress, kept apart from the collection so a sync tick only redraws what shows its status,
+/// not every screen and photo in the app.
+@MainActor
+final class SyncStatus: ObservableObject {
+    @Published var isSyncing = false
+    @Published var message = "Waiting to sync"
+    @Published var conflicts: [SyncConflict] = []
+    @Published var lastSync: Date?
+    @Published var lastPhoneSync: Date?
+}
+
 @MainActor
 final class AppStore: ObservableObject {
     @Published private(set) var data: CollectionData?
@@ -34,11 +45,27 @@ final class AppStore: ObservableObject {
     @Published private(set) var isRefreshing = false
     @Published var errorMessage: String?
     @Published var notice: String?
-    @Published private(set) var syncMessage = "Waiting to sync"
-    @Published private(set) var isSyncing = false
-    @Published private(set) var syncConflicts: [SyncConflict] = []
-    @Published private(set) var lastSync: Date?
-    @Published private(set) var lastPhoneSync: Date?
+    let status = SyncStatus()
+    private(set) var syncMessage: String {
+        get { status.message }
+        set { if status.message != newValue { status.message = newValue } }
+    }
+    private(set) var isSyncing: Bool {
+        get { status.isSyncing }
+        set { if status.isSyncing != newValue { status.isSyncing = newValue } }
+    }
+    private(set) var syncConflicts: [SyncConflict] {
+        get { status.conflicts }
+        set { if !(status.conflicts.isEmpty && newValue.isEmpty) { status.conflicts = newValue } }
+    }
+    private(set) var lastSync: Date? {
+        get { status.lastSync }
+        set { status.lastSync = newValue }
+    }
+    private(set) var lastPhoneSync: Date? {
+        get { status.lastPhoneSync }
+        set { if status.lastPhoneSync != newValue { status.lastPhoneSync = newValue } }
+    }
     @Published private(set) var syncEnabled = UserDefaults.standard.object(forKey: "syncEnabled") as? Bool ?? true
     @Published private(set) var syncAddress = UserDefaults.standard.string(forKey: "syncAddress")
         ?? LegacyServerConfiguration.migrationURL ?? Platform.defaultSyncAddress
@@ -49,6 +76,10 @@ final class AppStore: ObservableObject {
     private var connectionMonitor: NWPathMonitor?
     private var syncTimer: Task<Void, Never>?
     private var syncResolutions: [String: String] = [:]
+    // What the last full sync settled on. If neither side has moved since, there is nothing to do.
+    private var syncedRevision: String?
+    private var syncedGeneration = -1
+    private var lastSyncAttempt = Date.distantPast
 
     private var started = false
 
@@ -153,7 +184,11 @@ final class AppStore: ObservableObject {
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
             guard path.status == .satisfied else { return }
-            Task { @MainActor [weak self] in await self?.syncNow() }
+            Task { @MainActor [weak self] in
+                // VPNs and Tailscale report path changes constantly; only a real gap is worth a sync.
+                guard let self, Date().timeIntervalSince(self.lastSyncAttempt) > 10 else { return }
+                await self.syncNow()
+            }
         }
         monitor.start(queue: DispatchQueue(label: "watch-collection.connection"))
         connectionMonitor = monitor
@@ -164,8 +199,8 @@ final class AppStore: ObservableObject {
         guard started, !isSyncing else { return false }
         guard syncEnabled else { syncMessage = "Automatic sync is off"; return false }
         guard !syncAddress.isEmpty else { syncMessage = "Add the Mac's address in Settings"; return false }
+        lastSyncAttempt = Date()
         isSyncing = true
-        syncMessage = "Syncing collection and photos..."
         defer { isSyncing = false }
         let address = syncAddress
         do {
@@ -174,12 +209,22 @@ final class AppStore: ObservableObject {
                 let generation = editGeneration
                 let local = data
                 let remote = try await client.snapshot()
+                if let stamp = remote.lastRemoteSync { lastPhoneSync = ISO8601DateFormatter().date(from: stamp) }
+                // Neither side changed: skip the upload, the disk writes and the redraw.
+                if generation == syncedGeneration, remote.revision == syncedRevision,
+                   syncResolutions.isEmpty, syncConflicts.isEmpty, let local,
+                   PhotoStore.missingLocalCount(PhotoStore.assets(in: local, baseURL: nil)) == 0 {
+                    lastSync = Date()
+                    syncMessage = "Up to date"
+                    if isOffline { isOffline = false }
+                    return true
+                }
+                syncMessage = "Syncing collection and photos..."
                 let result: SyncSnapshot
                 if let local {
                     result = try await client.exchange(base: syncBase, local: local, resolutions: syncResolutions, remote: remote)
                 } else { result = remote }
                 guard syncAddress == address, syncEnabled else { return false }
-                if let stamp = result.lastRemoteSync { lastPhoneSync = ISO8601DateFormatter().date(from: stamp) }
                 // Do not install a response over edits made while a request was in flight.
                 guard generation == editGeneration else { continue }
                 if !result.conflicts.isEmpty {
@@ -199,6 +244,8 @@ final class AppStore: ObservableObject {
                 let now = Date()
                 try SyncDisk.save(SyncCheckpoint(data: merged, base: result.data, server: address, lastSuccess: now))
                 syncBase = result.data
+                syncedRevision = result.revision
+                syncedGeneration = generation
                 lastSync = now
                 publish(merged, persist: false)
                 CacheStore.save(merged)
@@ -206,7 +253,7 @@ final class AppStore: ObservableObject {
                 syncConflicts = []
                 syncResolutions = [:]
                 syncMessage = "Up to date"
-                isOffline = false
+                if isOffline { isOffline = false }
                 return true
             }
             syncMessage = "New edits are saved locally; sync will retry"
@@ -700,7 +747,7 @@ final class AppStore: ObservableObject {
         data = derived
         scores = DecisionEngine.scores(for: derived)
         suggestions = DecisionEngine.suggestions(for: derived)
-        isOffline = false
+        if isOffline { isOffline = false }
         if persist {
             CacheStore.save(derived)
             CacheStore.save(WishlistScoresResponse(scores: scores))
