@@ -35,6 +35,7 @@ struct WatchDossierView: View {
                     } label: {
                         Image(systemName: "ellipsis")
                     }
+                    .menuIndicator(.hidden)
                     .disabled(store.isOffline)
                 }
             }

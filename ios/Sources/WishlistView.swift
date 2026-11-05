@@ -391,6 +391,8 @@ struct WishlistCard: View {
                 }
                 .buttonStyle(.bordered)
                 .buttonBorderShape(.circle)
+                .menuIndicator(.hidden)
+                .fixedSize()
                 .accessibilityLabel("More")
             }
             .controlSize(.small)

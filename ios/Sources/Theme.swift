@@ -73,15 +73,16 @@ extension View {
     }
 }
 
-/// Fades a screen in when it appears, so moving between screens never just snaps. On the Mac the
-/// screen shows at once and only settles: a fade up from nothing read as lag after a click.
+/// Fades a screen in when it appears, so moving between screens never just snaps. On the Mac it
+/// also rises slightly, since a native sidebar swaps sections with no motion of its own.
 private struct PageAppear: ViewModifier {
     @State private var shown = false
 
     func body(content: Content) -> some View {
         content
-            .opacity(shown ? 1 : (Platform.isMac ? 0.6 : 0))
-            .onAppear { withAnimation(.easeOut(duration: Platform.isMac ? 0.12 : 0.2)) { shown = true } }
+            .opacity(shown ? 1 : 0)
+            .offset(y: shown || !Platform.isMac ? 0 : 10)
+            .onAppear { withAnimation(.easeOut(duration: Platform.isMac ? 0.24 : 0.2)) { shown = true } }
             .onDisappear { shown = false }
     }
 }

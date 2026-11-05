@@ -401,6 +401,7 @@ struct TaxonomyManagerView: View {
                                 Task { await store.taxonomy(route, operation: .delete(value)) }
                             }
                         } label: { Image(systemName: "ellipsis.circle") }
+                        .menuIndicator(.hidden)
                         .disabled(store.isOffline)
                     }
                 }
