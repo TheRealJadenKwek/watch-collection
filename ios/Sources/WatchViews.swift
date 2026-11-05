@@ -312,6 +312,10 @@ struct WatchDetailScreen: View {
             Picker("Status", selection: $draft.status) {
                 ForEach(WatchStatus.allCases) { status in Text(status.label).tag(status.rawValue) }
             }
+            if draft.status == "sold" || draft.salePrice != nil {
+                NumberField("Sold for (CAD)", value: $draft.salePrice)
+                MonthYearPicker(value: $draft.soldOn, title: "Sold", allowsYearOnly: true)
+            }
             TextField("Status note", text: $draft.statusNote, axis: .vertical)
         }
     }

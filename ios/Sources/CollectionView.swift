@@ -235,6 +235,7 @@ struct CollectionScreen: View {
 /// in a lot has no price of its own, because the lot's record already carries the cost.
 func archiveDetail(_ watch: Watch) -> String {
     let cost = watch.costSourceWatchID != nil && watch.price == 0 ? "Part of lot" : cadWhole(watch.price)
+    if let sale = watch.salePrice { return "\(cost) · Sold for \(cadWhole(sale))" }
     return "\(cost) · \(statusLabel(watch.status))"
 }
 

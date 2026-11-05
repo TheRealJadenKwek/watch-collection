@@ -38,6 +38,7 @@ EXPORT_SCRIPT = ROOT / "export_sheet.py"
 DATA_LOCK = threading.RLock()
 SAFE_COMPONENT = re.compile(r"^[a-z0-9_.-]+$")
 PURCHASED = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
+SOLD_ON = re.compile(r"^\d{4}(-(0[1-9]|1[0-2]))?$")  # month optional: "2019" when only the year is known
 ALLOWED_PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
 AUTO_IMAGE_LIMIT = 5 * 1024 * 1024
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) WatchCollection/1.10"
@@ -50,6 +51,7 @@ WATCH_FIELDS = {
     "name", "story", "purchased", "purchasedText", "diameter", "lugToLug",
     "price", "original", "status", "statusNote", "category", "dialColor",
     "material", "brand", "acquisitionMethod", "costSourceWatchID",
+    "salePrice", "soldOn",
 }
 WISHLIST_FIELDS = {
     "name", "brand", "category", "priceExpected", "priceNote", "notes",
@@ -182,6 +184,12 @@ def validate_changes(changes: object, kind: str) -> dict:
                 raise ApiError(HTTPStatus.BAD_REQUEST, "purchased must be YYYY-MM or null")
         if "price" in clean:
             _number(clean["price"], "price", nullable=False, nonnegative=True)
+        if "salePrice" in clean:
+            _number(clean["salePrice"], "salePrice", nullable=True, nonnegative=True)
+        if "soldOn" in clean:
+            value = clean["soldOn"]
+            if value is not None and (not isinstance(value, str) or not SOLD_ON.fullmatch(value)):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "soldOn must be YYYY-MM, YYYY or null")
         if "original" in clean and clean["original"] is not None and not isinstance(clean["original"], bool):
             raise ApiError(HTTPStatus.BAD_REQUEST, "original must be true, false, or null")
         if "status" in clean and clean["status"] not in STATUSES:

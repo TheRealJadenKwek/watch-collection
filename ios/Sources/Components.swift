@@ -394,6 +394,9 @@ extension GroupedRow where Value == Text {
 struct MonthYearPicker: View {
     @Binding var value: String?
     var allowsUnknown = true
+    var title = "Purchased"
+    /// Lets the month stay Unknown while the year is set, stored as "2019".
+    var allowsYearOnly = false
 
     private let monthNames = Calendar.current.shortMonthSymbols
     private var currentYear: Int { Calendar.current.component(.year, from: Date()) }
@@ -404,11 +407,11 @@ struct MonthYearPicker: View {
             get: { purchaseMonthParts(value)?.month },
             set: { newMonth in
                 guard let newMonth else {
-                    value = nil
+                    value = allowsYearOnly ? knownYear.map(String.init) : nil
                     return
                 }
                 value = purchaseMonthKey(
-                    year: purchaseMonthParts(value)?.year ?? currentYear,
+                    year: knownYear ?? currentYear,
                     month: newMonth
                 )
             }
@@ -417,10 +420,14 @@ struct MonthYearPicker: View {
 
     private var year: Binding<Int?> {
         Binding(
-            get: { purchaseMonthParts(value)?.year },
+            get: { knownYear },
             set: { newYear in
                 guard let newYear else {
                     value = nil
+                    return
+                }
+                if allowsYearOnly, purchaseMonthParts(value) == nil {
+                    value = String(newYear)
                     return
                 }
                 value = purchaseMonthKey(
@@ -431,8 +438,14 @@ struct MonthYearPicker: View {
         )
     }
 
+    private var knownYear: Int? {
+        if let year = purchaseMonthParts(value)?.year { return year }
+        guard allowsYearOnly, let value, value.count == 4 else { return nil }
+        return Int(value)
+    }
+
     var body: some View {
-        LabeledContent("Purchased") {
+        LabeledContent(title) {
             HStack(spacing: 0) {
                 Picker("Purchase month", selection: month) {
                     if allowsUnknown { Text("Unknown").tag(nil as Int?) }

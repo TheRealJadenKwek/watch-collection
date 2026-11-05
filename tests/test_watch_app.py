@@ -121,9 +121,13 @@ class WatchAppTests(unittest.TestCase):
         # The 62 sheet-era watches must forever reproduce the old Google Sheet's numbers
         # The original spreadsheet ended January 2026; everything after is app-era.
         sheet_era = [w for w in watches if (w.get("purchased") or "9999") <= "2026-01"]
-        # Preserve the old sheet's rounded Series 8 price in this historical fixture.
-        # The live record now uses the verified Amazon receipt amount of $518.67.
-        sheet_era = [{**w, "price": 518} if w["id"] == "apple-watch-series-8" else w for w in sheet_era]
+        # Archive watches recovered after the sheet (Photos album, sale emails) are not sheet rows.
+        added_later = {"citizen-eco-drive", "fossil-all-black", "oris-aquis-date-2018", "invicta-pro-diver-22068-2017"}
+        sheet_era = [w for w in sheet_era if w["id"] not in added_later]
+        # Preserve the old sheet's prices where the live record has since been corrected
+        # (Series 8: Amazon receipt $518.67; Seiko 5 SRPD51: corrected to $467).
+        sheet_prices = {"apple-watch-series-8": 518, "seiko-5-srpd51": 270}
+        sheet_era = [{**w, "price": sheet_prices[w["id"]]} if w["id"] in sheet_prices else w for w in sheet_era]
         sheet_stats = export_sheet.headline_stats(sheet_era)
         self.assertEqual(int(sheet_stats["count"]), 62)
         self.assertAlmostEqual(sheet_stats["total"], 10356.63, delta=.01)
@@ -176,6 +180,16 @@ class WatchAppTests(unittest.TestCase):
         self.assertEqual(saved["statusNote"], "concurrent note")
         json.loads(self.data_file.read_text(encoding="utf-8"))
         self.assertFalse(list(self.data_file.parent.glob(".watches.json.*.tmp")))
+
+    def test_04_sale_price_and_month(self):
+        watch_id = self.seed_watch_id()
+        self.assertEqual(self.request("PUT", f"/api/watches/{watch_id}", {"salePrice": 825, "soldOn": "2019-12"})[0], 200)
+        saved = next(w for w in self.get_data()["watches"] if w["id"] == watch_id)
+        self.assertEqual((saved["salePrice"], saved["soldOn"]), (825, "2019-12"))
+        self.assertEqual(self.request("PUT", f"/api/watches/{watch_id}", {"salePrice": -1})[0], 400)
+        self.assertEqual(self.request("PUT", f"/api/watches/{watch_id}", {"soldOn": "Dec 2019"})[0], 400)
+        self.assertEqual(self.request("PUT", f"/api/watches/{watch_id}", {"soldOn": "2019"})[0], 200)
+        self.assertEqual(self.request("PUT", f"/api/watches/{watch_id}", {"salePrice": None, "soldOn": None})[0], 200)
 
     def test_05_photo_round_trip(self):
         boundary = "WatchBoundary123"

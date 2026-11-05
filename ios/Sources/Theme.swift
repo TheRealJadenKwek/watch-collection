@@ -323,6 +323,12 @@ func currentPurchaseMonth() -> String {
     return purchaseMonthKey(year: components.year ?? 2000, month: components.month ?? 1)
 }
 
+/// "2019-12" reads "December 2019"; a year on its own ("2019") reads "2019".
+func soldMonthLabel(_ value: String?) -> String {
+    if let value, value.count == 4, Int(value) != nil { return value }
+    return purchaseMonthLabel(value)
+}
+
 func purchaseMonthLabel(_ value: String?) -> String {
     guard let parts = purchaseMonthParts(value),
           let date = Calendar.current.date(from: DateComponents(year: parts.year, month: parts.month))

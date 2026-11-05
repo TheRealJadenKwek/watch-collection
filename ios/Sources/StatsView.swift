@@ -67,6 +67,16 @@ struct StatsScreen: View {
         return timeMonths[safe: asOfIndex]
     }
 
+    /// Watches in view that sold, by the scrubber's month. A year-only sale ("2019") counts from that January;
+    /// one with no date counts only at "Now".
+    private var salesInView: [Watch] {
+        scoped.filter { watch in
+            guard watch.salePrice != nil else { return false }
+            guard let key = asOfKey else { return true }
+            return watch.soldOn.map { $0 <= key } ?? false
+        }
+    }
+
     private var headline: HeadlineStatsPayload? {
         guard asOfKey != nil else { return store.data?.headlineStats?[scope] }
         return DecisionEngine.headlineStats(scope == "owned" ? owned : all)
@@ -267,6 +277,22 @@ struct StatsScreen: View {
                 Text("across \(count) watch\(count == 1 ? "" : "es")\(asOfKey.map { " bought by \(purchaseMonthLabel($0))\(scope == "owned" ? " that you still own" : "")" } ?? (scope == "owned" ? " you own" : " ever owned"))")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
+                let sales = salesInView
+                if !sales.isEmpty {
+                    let back = sales.reduce(0) { $0 + ($1.salePrice ?? 0) }
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("Net cost")
+                            .font(.subheadline.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        Text(cadWhole((stats?.total ?? 0) - back))
+                            .font(.figure(.title2))
+                            .contentTransition(.numericText())
+                    }
+                    .padding(.top, 10)
+                    Text("after \(cadWhole(back)) back from selling \(sales.count) \(sales.count == 1 ? "watch" : "watches")")
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                }
             }
 
             VStack(alignment: .leading, spacing: 7) {

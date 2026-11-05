@@ -65,6 +65,9 @@ struct Watch: Codable, Identifiable, Hashable, Sendable {
     var acquisitionMethod: String? = nil
     var costSourceWatchID: String? = nil
     var photoFocus: [String: PhotoFocus]? = nil
+    /// What a sold watch brought back, in CAD, and the month it sold ("2019-12").
+    var salePrice: Double? = nil
+    var soldOn: String? = nil
 
     var isTrade: Bool { acquisitionMethod == "trade" }
 }

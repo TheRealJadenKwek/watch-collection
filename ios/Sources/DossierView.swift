@@ -229,6 +229,9 @@ struct WatchDossierView: View {
                 }
             }
             if !watch.purchasedText.isEmpty { GroupedRow(watch.isTrade ? "Acquired" : "Purchased", value: watch.purchasedText) }
+            if let sale = watch.salePrice {
+                GroupedRow("Sold for", value: [cad(sale), soldMonthLabel(watch.soldOn)].filter { !$0.isEmpty }.joined(separator: " · "))
+            }
             GroupedRow("Catalogue", value: catalogueLabel(number))
         }
     }
