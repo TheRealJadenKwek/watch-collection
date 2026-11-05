@@ -13,11 +13,125 @@ struct StatsScreen: View {
     @State private var path = NavigationPath()
     @Environment(\.openPage) private var openPage
 
-    private var all: [Watch] { store.data?.watches ?? [] }
+    /// The month the time scrubber is set to; nil means now.
+    @State private var asOfIndex: Int?
+    @State private var playingTime = false
+
+    private var everyWatch: [Watch] { store.data?.watches ?? [] }
+    /// Every watch bought by the scrubber's month. Insights is built from this, so dragging back in time
+    /// replays the stats as they stood then.
+    private var all: [Watch] {
+        guard let key = asOfKey else { return everyWatch }
+        return everyWatch.filter { (datedSource($0, in: everyWatch).purchased ?? "9999-99") <= key }
+    }
     private var owned: [Watch] { all.filter { $0.status == "owned" } }
     private var scoped: [Watch] { scope == "owned" ? owned : all }
     private var costScoped: [Watch] { uniqueCostRecords(scoped) }
     private var wrist: WristProfile { store.data?.settings.wrist ?? WristProfile(inches: 6, sweetSpotMin: 35, sweetSpotMax: 40, perfect: 38, lugMax: 47) }
+
+    // MARK: Time scrubber
+
+    /// Every month from the first purchase to this one.
+    private var timeMonths: [String] {
+        let firsts = everyWatch.compactMap { datedSource($0, in: everyWatch).purchased }.compactMap(purchaseMonthParts)
+        guard let start = firsts.min(by: { ($0.year, $0.month) < ($1.year, $1.month) }),
+              let end = purchaseMonthParts(currentPurchaseMonth())
+        else { return [] }
+        var months: [String] = []
+        var (year, month) = start
+        while (year, month) <= end {
+            months.append(purchaseMonthKey(year: year, month: month))
+            month += 1
+            if month > 12 { month = 1; year += 1 }
+        }
+        return months
+    }
+
+    /// Every year from the first purchase to the last, so the year charts keep the same columns in every
+    /// view. A year with nothing in it has a zero bar, which grows into place instead of popping in.
+    private var chartYears: [String] {
+        let years = everyWatch.compactMap { purchaseMonthParts(datedSource($0, in: everyWatch).purchased)?.year }
+        guard let first = years.min(), let last = years.max() else { return [] }
+        return (first...last).map(String.init)
+    }
+
+    private func everyYear(_ values: [YearSpend]) -> [YearSpend] {
+        let byYear = Dictionary(uniqueKeysWithValues: values.map { ($0.year, $0.total) })
+        let years = chartYears
+        guard !years.isEmpty else { return values }
+        return years.map { YearSpend(year: $0, total: byYear[$0] ?? 0) }
+    }
+
+    private var asOfKey: String? {
+        guard let asOfIndex else { return nil }
+        return timeMonths[safe: asOfIndex]
+    }
+
+    private var headline: HeadlineStatsPayload? {
+        guard asOfKey != nil else { return store.data?.headlineStats?[scope] }
+        return DecisionEngine.headlineStats(scope == "owned" ? owned : all)
+    }
+
+    private var timeScrubber: some View {
+        let months = timeMonths
+        let last = max(months.count - 1, 1)
+        let label = asOfKey.map(purchaseMonthLabel) ?? "Now"
+        return HStack(spacing: 10) {
+            Button {
+                playingTime.toggle()
+            } label: {
+                Image(systemName: playingTime ? "pause.fill" : "play.fill")
+                    .contentTransition(.symbolEffect(.replace))
+                    .frame(width: 18)
+            }
+            .buttonStyle(.borderless)
+            .help("Replay your collection month by month")
+            .accessibilityLabel(playingTime ? "Pause" : "Replay over time")
+            Slider(
+                value: Binding(
+                    get: { Double(asOfIndex ?? last) },
+                    // Whole months only, so the charts change once per month while you drag.
+                    set: { value in
+                        let index = Int(value.rounded())
+                        let next = index >= last ? nil : index
+                        if next != asOfIndex { asOfIndex = next }
+                    }
+                ),
+                in: 0...Double(last)
+            )
+            .frame(minWidth: 180, maxWidth: Platform.isMac ? 360 : .infinity)
+            Text(label)
+                .font(.subheadline.weight(.semibold).monospacedDigit())
+                .frame(width: 128, alignment: .leading)
+                .contentTransition(.numericText())
+            if asOfIndex != nil {
+                Button("Now") {
+                    playingTime = false
+                    asOfIndex = nil
+                }
+                .buttonStyle(.borderless)
+            }
+        }
+        .task(id: playingTime) {
+            // Replay: from the start (or where the slider is) to now, about eight months a second.
+            guard playingTime else { return }
+            let count = timeMonths.count
+            var index = asOfIndex ?? 0
+            if asOfIndex == nil || index >= count - 1 { index = 0 }
+            asOfIndex = index
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled else { return }
+                index += 1
+                if index >= count - 1 {
+                    asOfIndex = nil
+                    playingTime = false
+                    return
+                }
+                asOfIndex = index
+            }
+        }
+    }
 
     var body: some View {
         SectionStack(path: $path) {
@@ -26,6 +140,7 @@ struct StatsScreen: View {
                     LazyVStack(spacing: 14) {
                         #if os(iOS)
                         scopePicker
+                        timeScrubber
                             .padding(.bottom, 4)
                         #endif
                         if Platform.isMac {
@@ -75,11 +190,17 @@ struct StatsScreen: View {
                     .padding(.bottom, 24)
                     // Charts morph between Current and All Time: bars grow, shrink, appear and leave.
                     .animation(.smooth(duration: 0.5), value: scope)
+                    .animation(.easeOut(duration: 0.2), value: asOfIndex)
                 }
                 .screenBackground()
             }
             #if os(macOS)
-            .desktopHeader("Insights", leading: { scopePicker.fixedSize() })
+            .desktopHeader("Insights", leading: {
+                HStack(spacing: 18) {
+                    scopePicker.fixedSize()
+                    timeScrubber
+                }
+            })
             #else
             .navigationTitle("Insights")
             .toolbar {
@@ -117,7 +238,7 @@ struct StatsScreen: View {
     }
 
     private var headlineTiles: some View {
-        let stats = store.data?.headlineStats?[scope]
+        let stats = headline
         let measured = owned.filter { $0.diameter != nil }
         let inRange = measured.filter { watch in
             guard let diameter = watch.diameter else { return false }
@@ -143,7 +264,7 @@ struct StatsScreen: View {
                     .minimumScaleFactor(0.7)
                     .lineLimit(1)
                     .padding(.top, 6)
-                Text("across \(count) watch\(count == 1 ? "" : "es")\(scope == "owned" ? " you own" : " ever owned")")
+                Text("across \(count) watch\(count == 1 ? "" : "es")\(asOfKey.map { " bought by \(purchaseMonthLabel($0))\(scope == "owned" ? " that you still own" : "")" } ?? (scope == "owned" ? " you own" : " ever owned"))")
                     .font(.subheadline)
                     .foregroundStyle(.secondary)
             }
@@ -244,7 +365,7 @@ struct StatsScreen: View {
 
     private var costChart: some View {
         let bins = costHistogram(costScoped)
-        let headline = store.data?.headlineStats?[scope]
+        let headline = headline
         return SectionCard("Price Tiers", systemImage: "chart.bar.fill", color: .green, detail: "Cost histogram") {
             HStack(spacing: 6) {
                 Capsule()
@@ -338,8 +459,8 @@ struct StatsScreen: View {
 
     /// Watches bought each year. A lot or a trade counts once, as on the year's purchase page.
     private var countChart: some View {
-        let values = purchasesByYear(scoped, all: all)
-        let busiest = values.max { $0.total < $1.total }
+        let values = everyYear(purchasesByYear(scoped, all: all))
+        let busiest = values.filter { $0.total > 0 }.max { $0.total < $1.total }
         let ceiling = values.map(\.total).max() ?? 1
         return SectionCard("Watches Bought", systemImage: "number", color: .teal, detail: "By year") {
             HStack {
@@ -362,7 +483,7 @@ struct StatsScreen: View {
     }
 
     private var spendChart: some View {
-        let values = spendByYear(scoped, all: all)
+        let values = everyYear(spendByYear(scoped, all: all))
         let cumulative = cumulativeSpend(values)
         return SectionCard("Spending", systemImage: "calendar", color: .green, detail: "By year") {
             HStack {
