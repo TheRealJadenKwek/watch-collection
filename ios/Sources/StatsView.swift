@@ -949,13 +949,15 @@ private struct YearBarChart: View {
                         }
                         .buttonStyle(.plain)
                         .frame(width: plot.width / CGFloat(max(values.count, 1)), height: plot.height)
-                        .position(x: plot.minX + x, y: plot.midY)
+                        // Hover goes on the column itself, before it's positioned: .position makes a
+                        // view fill the whole chart, so after it every column's hover covered every bar.
                         .onHover { inside in
                             withAnimation(.easeOut(duration: 0.12)) {
                                 if inside { selected = value.year } else if selected == value.year { selected = nil }
                             }
                         }
                         .pointerStyle(.link)
+                        .position(x: plot.minX + x, y: plot.midY)
                         .accessibilityLabel("\(value.year), \(describe(value.total)). Open purchases")
                     }
                 }
