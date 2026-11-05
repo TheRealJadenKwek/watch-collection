@@ -1,5 +1,8 @@
 import Charts
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 struct StatsScreen: View {
     @ObservedObject var store: AppStore
@@ -664,7 +667,7 @@ struct StatsScreen: View {
                         .hoverRow(clickable: true)
                     }
                 }
-                .modifier(ScrollWithin(limit: timelineListLimit))
+                .modifier(ScrollWithin(limit: timelineListLimit, reportsViewport: true, overflowing: .constant(false)))
 
                 if missingCount > 0 {
                     Label(
@@ -1205,9 +1208,12 @@ private struct LugToLugChart: View {
     let unmeasured: [Watch]
     let wrist: WristProfile
     let open: (Watch) -> Void
-    @State private var showAll = false
 
-    private static let collapsedCount = 12
+    /// About twelve rows show at once; the rest scroll inside the card instead of pushing the page down.
+    private static let visibleHeight: CGFloat = 350
+    /// True while the rows scroll. A Mac set to always show scroll bars then gives the bar some width,
+    /// so the scale below moves in by the same amount to stay lined up with the dots.
+    @State private var scrolling = false
     private var labelWidth: CGFloat { Platform.isMac ? 200 : 132 }
     private var valueWidth: CGFloat { 42 }
 
@@ -1232,7 +1238,6 @@ private struct LugToLugChart: View {
     var body: some View {
         let domain = domain
         let rows = rows
-        let visible = showAll ? rows : Array(rows.prefix(Self.collapsedCount))
         let over = rows.filter { $0.value > wrist.lugMax }.count
         let limit = rows.filter { $0.value > wrist.lugMax - 1 && $0.value <= wrist.lugMax }.count
         VStack(alignment: .leading, spacing: 10) {
@@ -1246,21 +1251,16 @@ private struct LugToLugChart: View {
             .foregroundStyle(Color.secondary)
 
             VStack(spacing: 0) {
-                ForEach(visible) { row in
-                    Button { open(row.watch) } label: { rowView(row, domain: domain) }
-                        .buttonStyle(.plain)
-                        .hoverRow(clickable: true)
+                VStack(spacing: 0) {
+                    ForEach(rows) { row in
+                        Button { open(row.watch) } label: { rowView(row, domain: domain) }
+                            .buttonStyle(.plain)
+                            .hoverRow(clickable: true)
+                    }
                 }
+                .modifier(ScrollWithin(limit: Self.visibleHeight, reportsViewport: false, overflowing: $scrolling))
                 axis(domain)
-            }
-
-            if rows.count > Self.collapsedCount {
-                Button(showAll ? "Show fewer" : "Show all \(rows.count)") {
-                    withAnimation(.smooth(duration: 0.3)) { showAll.toggle() }
-                }
-                .font(.caption.weight(.semibold))
-                .buttonStyle(.plain)
-                .foregroundStyle(Color.purple)
+                    .padding(.trailing, scrolling ? Platform.reservedScrollBarWidth : 0)
             }
 
             if !unmeasured.isEmpty {
@@ -1767,6 +1767,17 @@ private func counts(_ values: [String]) -> [String: Int] {
 
 // MARK: - Mac column fitting
 
+private extension Platform {
+    /// Width a vertical scroll bar takes from its content: only on a Mac set to always show scroll bars.
+    static var reservedScrollBarWidth: CGFloat {
+        #if os(macOS)
+        NSScroller.preferredScrollerStyle == .legacy ? NSScroller.scrollerWidth(for: .regular, scrollerStyle: .legacy) : 0
+        #else
+        0
+        #endif
+    }
+}
+
 private struct LeftColumnHeightKey: PreferenceKey {
     static let defaultValue: CGFloat = 0
     static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) { value = max(value, nextValue()) }
@@ -1798,6 +1809,9 @@ private struct HeightReader<Key: PreferenceKey>: View where Key.Value == CGFloat
 /// shorter). Without one it lays out as before.
 private struct ScrollWithin: ViewModifier {
     let limit: CGFloat?
+    /// Only the purchase timeline reports its height, for the Mac column fitting.
+    let reportsViewport: Bool
+    @Binding var overflowing: Bool
     @State private var contentHeight: CGFloat = 0
 
     func body(content: Content) -> some View {
@@ -1808,9 +1822,11 @@ private struct ScrollWithin: ViewModifier {
             .scrollIndicators(.visible)
             .onPreferenceChange(TimelineContentHeightKey.self) { height in
                 if abs(contentHeight - height) > 1 { contentHeight = height }
+                let scrolls = height > limit + 1
+                if overflowing != scrolls { overflowing = scrolls }
             }
             .frame(height: contentHeight > 0 ? min(contentHeight, limit) : limit)
-            .background(HeightReader(key: TimelineViewportKey.self))
+            .background { if reportsViewport { HeightReader(key: TimelineViewportKey.self) } }
         } else {
             content
         }
