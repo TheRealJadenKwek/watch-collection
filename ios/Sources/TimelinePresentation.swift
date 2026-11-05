@@ -25,10 +25,16 @@ struct TimelinePresentationScreen: View {
         let slides = buildSlides()
         let index = slides.firstIndex { $0.id == position } ?? 0
         GeometryReader { geo in
+            // Each page lays out between the timeline bar (and on the Mac the picker) at the top and the
+            // play controls at the bottom, so nothing slides underneath them.
+            let content = CGSize(width: geo.size.width, height: max(geo.size.height - TimelineBarMetrics.chromeTop - TimelineBarMetrics.chromeBottom, 240))
             ScrollView(.vertical) {
                 LazyVStack(spacing: 0) {
                     ForEach(slides) { slide in
-                        page(slide, size: geo.size)
+                        page(slide, size: content)
+                            .frame(width: content.width, height: content.height)
+                            .padding(.top, TimelineBarMetrics.chromeTop)
+                            .padding(.bottom, TimelineBarMetrics.chromeBottom)
                             .frame(width: geo.size.width, height: geo.size.height)
                     }
                 }
@@ -37,17 +43,20 @@ struct TimelinePresentationScreen: View {
             // Free scrolling: the page in the middle of the window counts as the current one.
             .scrollPosition(id: $position, anchor: .center)
             .scrollIndicators(.hidden)
-            .overlay(alignment: .top) { progressBar(index: index, count: slides.count) }
+            .overlay(alignment: .top) { timelineBar(slides: slides, index: index) }
             .overlay(alignment: .topLeading) {
-                Picker("Show", selection: $ownedOnly) {
-                    Text("Every watch").tag(false)
-                    Text("Current").tag(true)
+                // On the phone this lives in the navigation bar instead, to leave the page room.
+                if Platform.isMac {
+                    Picker("Show", selection: $ownedOnly) {
+                        Text("Every watch").tag(false)
+                        Text("Current").tag(true)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    .padding(.leading, 24)
+                    .padding(.top, TimelineBarMetrics.height + 20)
                 }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-                .padding(.leading, Platform.isMac ? 24 : 16)
-                .padding(.top, 18)
             }
             .overlay(alignment: .trailing) { yearRail(slides: slides, current: slides[safe: index]) }
             .overlay(alignment: .bottom) { controls(slides: slides, index: index) }
@@ -83,7 +92,20 @@ struct TimelinePresentationScreen: View {
         }
         .navigationTitle("Purchase Timeline")
         #if os(iOS)
+        .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Picker("Show", selection: $ownedOnly) {
+                        Text("Every watch").tag(false)
+                        Text("Current").tag(true)
+                    }
+                } label: {
+                    Text(ownedOnly ? "Current" : "Every watch")
+                }
+            }
+        }
         #endif
     }
 
@@ -269,17 +291,22 @@ struct TimelinePresentationScreen: View {
         let inner = size.width - (wide ? 72 + rail : 24 + rail)
         let detailsWidth = wide ? min(440, max(300, inner * 0.42)) : inner
         let photoWidth = wide
-            ? max(160, min(inner - detailsWidth - 56, size.height * 0.72 * PhotoShape.plate))
-            : max(160, min(inner, size.height * 0.46 * PhotoShape.plate))
+            ? max(160, min(inner - detailsWidth - 56, size.height * 0.92 * PhotoShape.plate))
+            : max(160, min(inner, size.height * 0.62 * PhotoShape.plate))
         let photoHeight = photoWidth / PhotoShape.plate
-        let photo = RemoteWatchImage(
-            asset: watch.photos.first.flatMap { store.photoAsset(itemID: watch.id, filename: $0, wishlist: false) },
-            allowsRemoteFetch: !store.isOffline,
-            focus: watch.focus(for: watch.photos.first),
-            maxPixel: DisplayImageCache.page
-        )
-        .frame(width: photoWidth, height: photoHeight)
-        .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+        // The photo takes whatever height the text leaves, up to its full size, keeping its shape.
+        let photo = Color.clear
+            .aspectRatio(PhotoShape.plate, contentMode: .fit)
+            .frame(maxWidth: photoWidth, maxHeight: photoHeight)
+            .overlay {
+                RemoteWatchImage(
+                    asset: watch.photos.first.flatMap { store.photoAsset(itemID: watch.id, filename: $0, wishlist: false) },
+                    allowsRemoteFetch: !store.isOffline,
+                    focus: watch.focus(for: watch.photos.first),
+                    maxPixel: DisplayImageCache.page
+                )
+            }
+            .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
         .shadow(color: .black.opacity(0.4), radius: 30, y: 18)
         .background {
             // A soft glow in the dial's colour, so each page takes on the watch's character. As a
@@ -335,6 +362,7 @@ struct TimelinePresentationScreen: View {
         }
         .multilineTextAlignment(wide ? .leading : .center)
         .frame(width: detailsWidth, alignment: wide ? .leading : .center)
+        .layoutPriority(1)
         // The text travels further than the photo, so the two separate as a page scrolls.
         .scrollTransition(.interactive, axis: .vertical) { content, phase in
             content
@@ -384,14 +412,100 @@ struct TimelinePresentationScreen: View {
 
     // MARK: Chrome
 
-    private func progressBar(index: Int, count: Int) -> some View {
-        GeometryReader { geo in
-            Capsule()
-                .fill(Color.primary.opacity(0.7))
-                .frame(width: geo.size.width * CGFloat(index + 1) / CGFloat(max(count, 1)), height: 3)
-                .animation(.smooth(duration: 0.5), value: index)
+    /// A time axis from the first arrival to the last: one dot per watch at its month (stacked when a month
+    /// has several), lit once the presentation has passed it, with the month on screen under the playhead.
+    /// Click or drag along it to jump.
+    private func timelineBar(slides: [TimelineSlide], index: Int) -> some View {
+        let entries = slides.compactMap { slide -> PurchaseTimelineEntry? in
+            if case let .purchase(entry, _, _, _, _) = slide { return entry }
+            return nil
         }
-        .frame(height: 3)
+        let months = entries.map { monthNumber($0.sortKey) }
+        let first = months.first ?? 0
+        let span = Double(max((months.last ?? 0) - first, 1))
+        var rows: [Int] = []
+        var perMonth: [Int: Int] = [:]
+        for month in months {
+            rows.append(perMonth[month, default: 0])
+            perMonth[month, default: 0] += 1
+        }
+        let step = min(6, TimelineBarMetrics.dotsHeight / CGFloat(max(perMonth.values.max() ?? 1, 1)))
+        let state = barState(slides[safe: index], entries: entries, first: first)
+        let lineY = TimelineBarMetrics.dotsHeight + 6
+
+        return GeometryReader { geo in
+            let width = geo.size.width
+            let x = { (month: Int) -> CGFloat in CGFloat(Double(month - first) / span) * width }
+            let head = x(state.month)
+            ZStack(alignment: .topLeading) {
+                ForEach(Array(entries.enumerated()), id: \.element.id) { offset, entry in
+                    let isCurrent = entry.id == state.currentID
+                    Circle()
+                        .fill(Color.primary.opacity(isCurrent ? 1 : offset < state.lit ? 0.55 : 0.13))
+                        .frame(width: isCurrent ? 9 : 5, height: isCurrent ? 9 : 5)
+                        .shadow(color: isCurrent ? Color.primary.opacity(0.6) : .clear, radius: 4)
+                        .position(x: x(months[offset]), y: lineY - 10 - CGFloat(rows[offset]) * step)
+                }
+                Capsule()
+                    .fill(Color.primary.opacity(0.13))
+                    .frame(width: width, height: 3)
+                    .position(x: width / 2, y: lineY)
+                Capsule()
+                    .fill(Color.primary.opacity(0.7))
+                    .frame(width: max(head, 3), height: 3)
+                    .position(x: max(head, 3) / 2, y: lineY)
+                Circle()
+                    .fill(Color.primary)
+                    .frame(width: 9, height: 9)
+                    .position(x: head, y: lineY)
+                if let label = state.label {
+                    Text(label)
+                        .font(.callout.weight(.semibold).monospacedDigit())
+                        .fixedSize()
+                        .contentTransition(.numericText())
+                        .position(x: min(max(head, 36), width - 36), y: lineY + 17)
+                }
+            }
+            .frame(width: width, height: TimelineBarMetrics.height, alignment: .topLeading)
+            .contentShape(Rectangle())
+            .gesture(
+                DragGesture(minimumDistance: 0).onChanged { drag in
+                    guard !entries.isEmpty, width > 0 else { return }
+                    let month = first + Int((Double(min(max(drag.location.x, 0), width) / width) * span).rounded())
+                    let target = entries.indices.last { months[$0] <= month } ?? 0
+                    playing = false
+                    position = "watch-\(entries[target].id)"
+                }
+            )
+            .animation(.smooth(duration: 0.5), value: index)
+        }
+        .frame(height: TimelineBarMetrics.height)
+        .padding(.horizontal, Platform.isMac ? 28 : 18)
+        .padding(.top, 12)
+        .accessibilityElement()
+        .accessibilityLabel("Timeline")
+        .accessibilityValue(state.label ?? "")
+    }
+
+    /// How far along the bar is for a page: dots lit, the month the playhead sits at, and its label.
+    private func barState(_ slide: TimelineSlide?, entries: [PurchaseTimelineEntry], first: Int)
+        -> (lit: Int, month: Int, label: String?, currentID: String?) {
+        switch slide {
+        case let .purchase(entry, number, _, _, _):
+            (number, monthNumber(entry.sortKey), "\(entry.month) \(entry.year)", entry.id)
+        case let .year(year, _, _, _, sinceStart):
+            (sinceStart, max(first, (Int(year) ?? 0) * 12), year, nil)
+        case .outro:
+            (entries.count, entries.last.map { monthNumber($0.sortKey) } ?? first, entries.last.map { "\($0.month) \($0.year)" }, nil)
+        case .intro, nil:
+            (0, first, nil, nil)
+        }
+    }
+
+    private func monthNumber(_ key: String) -> Int {
+        let parts = key.split(separator: "-")
+        guard parts.count == 2, let year = Int(parts[0]), let month = Int(parts[1]) else { return 0 }
+        return year * 12 + month - 1
     }
 
     private func yearRail(slides: [TimelineSlide], current: TimelineSlide?) -> some View {
@@ -439,6 +553,16 @@ struct TimelinePresentationScreen: View {
         .controlSize(.large)
         .padding(.bottom, Platform.isMac ? 24 : 12)
     }
+}
+
+private enum TimelineBarMetrics {
+    /// Room for the stacked dots above the line; a month with many arrivals squeezes its stack to fit.
+    static let dotsHeight: CGFloat = 30
+    static let height: CGFloat = dotsHeight + 6 + 30
+    /// Space kept clear above each page: the bar, plus the picker under it on the Mac.
+    static var chromeTop: CGFloat { 12 + height + (Platform.isMac ? 20 + 32 + 16 : 8) }
+    /// Space kept clear below each page for the play controls.
+    static var chromeBottom: CGFloat { Platform.isMac ? 24 + 52 + 12 : 12 + 52 + 10 }
 }
 
 private enum TimelineSlide: Identifiable {
