@@ -478,32 +478,11 @@ struct WishlistCard: View {
 
             Hairline().padding(.horizontal, WatchTheme.panelPadding)
 
-            HStack(spacing: 8) {
-                if item.status == "considering" {
-                    Button("Bought It", action: bought)
-                        .prominentButton()
-                    Button("Pass", action: pass)
-                        .quietButton()
-                } else {
-                    CapsuleChip(text: item.status.capitalized)
-                }
-                Spacer(minLength: 0)
-                Button("Edit", action: edit)
-                    .quietButton()
-                Menu {
-                    Button(action: findImage) { Label("Find Image Online", systemImage: "photo.badge.magnifyingglass") }
-                } label: {
-                    Image(systemName: "ellipsis")
-                        .font(.body.weight(.bold))
-                        .foregroundStyle(WatchTheme.ink)
-                        .frame(width: 34, height: 34)
-                        .background(WatchTheme.fill, in: Circle())
-                        .contentShape(Circle())
-                }
-                .buttonStyle(.plain)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                .accessibilityLabel("More")
+            // "Try in my box" is a pill where the row has room for it (the Mac, wide windows), otherwise an item in
+            // the ellipsis menu.
+            ViewThatFits(in: .horizontal) {
+                actionRow(tryPill: true)
+                actionRow(tryPill: false)
             }
             .controlSize(.small)
             .padding(.horizontal, WatchTheme.panelPadding)
@@ -512,6 +491,44 @@ struct WishlistCard: View {
         }
         .background(WatchTheme.card)
         .opacity(item.status == "passed" ? 0.55 : 1)
+    }
+
+    private func actionRow(tryPill: Bool) -> some View {
+        HStack(spacing: 8) {
+            if item.status == "considering" {
+                Button("Bought It", action: bought)
+                    .prominentButton()
+                Button("Pass", action: pass)
+                    .quietButton()
+            } else {
+                CapsuleChip(text: item.status.capitalized)
+            }
+            Spacer(minLength: 0)
+            if tryPill {
+                Button("Try in my box") { store.openBoxes(.tryOn(item.id)) }
+                    .quietButton()
+                    .fixedSize()
+            }
+            Button("Edit", action: edit)
+                .quietButton()
+            Menu {
+                if !tryPill {
+                    Button { store.openBoxes(.tryOn(item.id)) } label: { Label("Try in my box", systemImage: "square.grid.3x2") }
+                }
+                Button(action: findImage) { Label("Find Image Online", systemImage: "photo.badge.magnifyingglass") }
+            } label: {
+                Image(systemName: "ellipsis")
+                    .font(.body.weight(.bold))
+                    .foregroundStyle(WatchTheme.ink)
+                    .frame(width: 34, height: 34)
+                    .background(WatchTheme.fill, in: Circle())
+                    .contentShape(Circle())
+            }
+            .buttonStyle(.plain)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .accessibilityLabel("More")
+        }
     }
 
     /// One compact segment per lens; tap to expand the reasons.
@@ -631,15 +648,33 @@ struct TopPickView: View {
                     }
                 }
             }
-            HStack(spacing: 12) {
-                Button("Bought It", action: bought)
-                    .prominentButton()
-                Button("Details", action: edit)
-                    .quietButton()
-                Spacer(minLength: 0)
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 12) {
+                    Button("Bought It", action: bought)
+                        .prominentButton()
+                    Button("Details", action: edit)
+                        .quietButton()
+                    tryInBox
+                    Spacer(minLength: 0)
+                }
+                VStack(alignment: .leading, spacing: 12) {
+                    HStack(spacing: 12) {
+                        Button("Bought It", action: bought)
+                            .prominentButton()
+                        Button("Details", action: edit)
+                            .quietButton()
+                    }
+                    tryInBox
+                }
             }
             .padding(.top, 4)
             .disabled(store.isOffline)
+    }
+
+    private var tryInBox: some View {
+        Button("Try in my box") { store.openBoxes(.tryOn(item.id)) }
+            .quietButton()
+            .fixedSize()
     }
 }
 
@@ -728,6 +763,18 @@ struct WishlistDetailScreen: View {
                         if let wrist = store.data?.settings.wrist,
                            let fit = fitInfo(for: draft.diameter, lugToLug: draft.lugToLug, wrist: wrist) {
                             HStack { Text("Fit"); Spacer(); FitChip(info: fit) }
+                        }
+                    }
+                    if !isNew && baseline.status != "bought" {
+                        Section {
+                            Button("Try in my box") {
+                                let id = draft.id
+                                dismiss()
+                                store.openBoxes(.tryOn(id))
+                            }
+                            .disabled(draft != baseline)
+                        } footer: {
+                            if draft != baseline { Text("Save the changes first.") }
                         }
                     }
                     Section("Notes") {

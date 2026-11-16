@@ -358,6 +358,24 @@ struct WatchDossierView: View {
                 GroupedRow("Sold for", value: [cad(sale), soldMonthLabel(watch.soldOn)].filter { !$0.isEmpty }.joined(separator: " · "))
             }
             GroupedRow("Catalogue", value: catalogueLabel(number))
+            if watch.status == "owned" { boxRow(watch) }
+        }
+    }
+
+    /// "Box": where the watch sits, or "Put in a box". Either opens the Boxes tab on it.
+    private func boxRow(_ watch: Watch) -> some View {
+        let space = store.data.flatMap { BoxModel.location(of: watch.id, in: $0) }
+        let place = space.flatMap { space in
+            store.data?.boxes?.first { $0.id == space.boxID }?.placeName(space.slot)
+        }
+        return GroupedRow("Box") {
+            Button {
+                store.openBoxes(place == nil ? .place(watch.id) : .show(watch.id))
+            } label: {
+                Text(place ?? "Put in a box")
+                    .foregroundStyle(WatchTheme.accent)
+            }
+            .buttonStyle(.plain)
         }
     }
 
