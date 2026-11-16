@@ -1100,11 +1100,15 @@ private struct CostTierChart: View {
                     .foregroundStyle(WatchTheme.muted)
                     .lineStyle(StrokeStyle(lineWidth: 1.4, dash: [6, 5]))
                     .annotation(position: .top, alignment: .leading) {
+                        // It often lands on the tallest bar: ink on a small page-coloured capsule reads in both modes.
                         Text("mean \(cad(headline.mean))")
                             .font(.caption2.weight(.bold))
-                            .foregroundStyle(WatchTheme.muted)
+                            .foregroundStyle(WatchTheme.ink)
                             .fixedSize()
-                            .offset(y: 15)
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(WatchTheme.background, in: Capsule())
+                            .offset(x: -6, y: 17)
                     }
             }
         }

@@ -204,7 +204,8 @@ struct TimelinePresentationScreen: View {
                 Text("\(label) · \(cadWhole(total))")
                     .font(.title2.weight(.light))
                     .foregroundStyle(WatchTheme.muted)
-                photoFan(photos, size: wide ? 92 : 58)
+                // Inside the page's padding, so the fan never runs off the edge or under the year rail.
+                photoFan(photos, size: wide ? 92 : 58, maxWidth: size.width - 2 * (32 + (wide ? 0 : 16)))
                     .padding(.top, 18)
                 Label(Platform.isMac ? "Scroll, use the arrow keys, or press play" : "Swipe up, or press play", systemImage: "chevron.down")
                     .font(.callout)
@@ -245,7 +246,8 @@ struct TimelinePresentationScreen: View {
                         .font(.callout)
                         .foregroundStyle(WatchTheme.muted)
                 }
-                photoFan(photos, size: wide ? 84 : 52)
+                // Inside the card: the card's own padding, and its insets from the page and the year rail.
+                photoFan(photos, size: wide ? 84 : 52, maxWidth: min(wide ? 720 : .infinity, size.width - (wide ? 72 : 24) - (Platform.isMac ? 112 : 44)) - 48)
                     .padding(.top, 20)
                     .scrollTransition(.interactive, axis: .vertical) { content, phase in
                         content
@@ -411,8 +413,11 @@ struct TimelinePresentationScreen: View {
         }
     }
 
-    private func photoFan(_ entries: [PurchaseTimelineEntry], size: CGFloat) -> some View {
-        HStack(spacing: -size * 0.28) {
+    /// The photos overlapping like a hand of cards, each up to `size` square, smaller where `maxWidth` is too narrow
+    /// for the whole fan (its tilt included).
+    private func photoFan(_ entries: [PurchaseTimelineEntry], size: CGFloat, maxWidth: CGFloat) -> some View {
+        let size = Self.fanTileSize(count: entries.count, preferred: size, maxWidth: maxWidth)
+        return HStack(spacing: -size * 0.28) {
             ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
                 RemoteWatchImage(
                     asset: entry.watch.photos.first.flatMap { store.photoAsset(itemID: entry.watch.id, filename: $0, wishlist: false) },
@@ -430,6 +435,14 @@ struct TimelinePresentationScreen: View {
                 .shadow(color: .black.opacity(0.3), radius: 8, y: 4)
             }
         }
+    }
+
+    /// The fan's tiles overlap by 28% and the outermost tilt up to 16 degrees, which adds about a quarter of a
+    /// tile to the fan's width.
+    static func fanTileSize(count: Int, preferred: CGFloat, maxWidth: CGFloat) -> CGFloat {
+        guard count > 0, maxWidth > 0 else { return preferred }
+        let tiles = CGFloat(count) - 0.28 * CGFloat(count - 1) + 0.24
+        return min(preferred, (maxWidth / tiles).rounded(.down))
     }
 
     // MARK: Chrome
