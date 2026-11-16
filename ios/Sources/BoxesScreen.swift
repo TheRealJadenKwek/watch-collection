@@ -160,7 +160,10 @@ struct BoxesScreen: View {
     @State private var lastHold = (slot: -1, at: Date.distantPast)
     @State private var liftTick = 0
     @State private var dropTick = 0
-    @State private var scroll = ScrollPosition(edge: .top)
+    /// Where the page is scrolled, kept across a fold as the other tabs keep theirs.
+    @State private var fold = FoldScroll()
+    /// How far down the scrolling pane the parts every posture shares (the controls row onward) start.
+    @State private var sharedTop: CGFloat = 0
     @State private var autoScroll: Task<Void, Never>?
     @State private var turnAngle = 0.0
     @State private var turnScale: CGFloat = 1
@@ -187,6 +190,8 @@ struct BoxesScreen: View {
     @Environment(\.openPage) private var openPage
 
     static let space = "boxes"
+    /// The scrolling pane's content.
+    private static let page = "boxes-page"
 
     // MARK: What is on screen
 
@@ -309,6 +314,7 @@ struct BoxesScreen: View {
         let scene = makeScene()
         SectionStack(path: $path) {
             page(scene)
+                .keepsScrollAcrossFolds($fold)
                 #if os(iOS)
                 .navigationDestination(for: WatchRoute.self) { route in
                     WatchDossierView(store: store, watchID: route.id)
@@ -469,8 +475,8 @@ struct BoxesScreen: View {
 
     /// The pane that scrolls: on a phone the whole page over a docked tray; on a book's right page, below a table's
     /// crease and in a column everything but what the fixed pane holds, with chip grids in place of the tray; the
-    /// Mac's side column holds only the chips. Always the same scroll view, so its offset survives a change of
-    /// posture.
+    /// Mac's side column holds only the chips. Always the same scroll view; what stands above the shared parts
+    /// changes with the posture, so `FoldScroll` puts the reader back on the same lines after a fold.
     private func scrollPane(_ scene: Scene) -> some View {
         let arrangement = scene.arrangement
         let mac = Platform.isMac
@@ -493,6 +499,7 @@ struct BoxesScreen: View {
                         controls(scene)
                             .padding(.horizontal, margin)
                             .padding(.top, arrangement == .table ? 18 : 0)
+                            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.page)).minY } action: { sharedTop = $0 }
                     }
                     if !scene.trial.isEmpty {
                         trialSwitch(scene)
@@ -516,13 +523,20 @@ struct BoxesScreen: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.bottom, 28)
+            .coordinateSpace(.named(Self.page))
         }
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { width in
             pageWidth = width
         }
-        .scrollPosition($scroll)
+        // Across a fold the reader comes back to the same lines from the controls row on; what each posture puts above
+        // them (the box on a phone, only the masthead on a book's right page) differs.
+        #if os(iOS)
+        .foldScroll($fold, lead: sharedTop)
+        #else
+        .scrollPosition($fold.position)
+        #endif
         .scrollDisabled(dragging != nil)
         .onScrollGeometryChange(for: [CGFloat].self) { geometry in
             [geometry.contentOffset.y + geometry.contentInsets.top,
@@ -1072,7 +1086,7 @@ struct BoxesScreen: View {
                 guard next != frames.offset else { continue }
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
-                withTransaction(transaction) { scroll.scrollTo(y: next) }
+                withTransaction(transaction) { fold.position.scrollTo(y: next) }
             }
         }
     }
@@ -1582,9 +1596,9 @@ struct BoxesScreen: View {
             guard delta != 0 else { return }
             let next = min(frames.maxOffset, max(0, frames.offset + delta))
             if reduceMotion {
-                scroll.scrollTo(y: next)
+                fold.position.scrollTo(y: next)
             } else {
-                withAnimation(.easeInOut(duration: 0.35)) { scroll.scrollTo(y: next) }
+                withAnimation(.easeInOut(duration: 0.35)) { fold.position.scrollTo(y: next) }
             }
         }
     }
@@ -1635,7 +1649,7 @@ struct BoxesScreen: View {
                     try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                     try? png.write(to: folder.appendingPathComponent(value + ".png"), options: .atomic)
                 }
-            case "scroll": scroll.scrollTo(y: CGFloat(Double(value) ?? 0))
+            case "scroll": fold.position.scrollTo(y: CGFloat(Double(value) ?? 0))
             case "brown", "black": selectedBoxID = parts[0]
             #if os(macOS)
             case "appearance": NSApp.appearance = NSAppearance(named: value == "dark" ? .darkAqua : .aqua)

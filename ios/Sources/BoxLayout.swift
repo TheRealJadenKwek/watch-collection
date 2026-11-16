@@ -1,9 +1,9 @@
 import SwiftUI
 
 // How the Boxes tab stands in each posture (brief section 9). One view tree: the screen always hands `BoxPanes` the
-// same two panes, a fixed one and a scrolling one, and only where they go changes. The scroll view keeps its place
-// in the tree, so its offset, like the selection, the lid and the trial, carries over when the phone is opened or
-// shut.
+// same two panes, a fixed one and a scrolling one, and only where they go changes. The selection, the lid and the
+// trial carry over when the phone is opened or shut; the scroll view keeps its place in the tree, and `FoldScroll`
+// brings the reader back to the same lines.
 
 /// Where the box and the rest of the screen go.
 enum BoxArrangement: Equatable {
