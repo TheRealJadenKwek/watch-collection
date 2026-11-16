@@ -2,12 +2,64 @@
 from copy import deepcopy
 import hashlib
 import json
+import re
 
 MISSING = object()
 COLLECTIONS = {"watches": "id", "wishlist": "id", "brandWatchlist": "brand",
-               "wearSessions": "id", "serviceRecords": "id"}
+               "wearSessions": "id", "serviceRecords": "id", "boxes": "id"}
 SETTINGS = {"autoImage", "suggestExclude", "wrist"}
-TOP = {"settings", "watches", "wishlist", "brandWatchlist", "categories", "dialColors", "materials"}
+TOP = {"settings", "watches", "wishlist", "brandWatchlist", "categories", "dialColors", "materials",
+       "boxes", "emptyBoxTiles"}
+MAX_BOXES = 8
+# A slot key is the compartment index written the one way Swift and Python both read it: "5", never "05" or "+5".
+SLOT_KEY = re.compile(r"0|[1-9][0-9]*")
+
+
+def clean_boxes(data):
+    """The Python twin of BoxModel.sanitized in the app: the same four rules in the same order.
+
+    1. Drop slot keys that are not a decimal integer in 0..<columns*rows.
+    2. Drop slots whose watch id is not a watch with status owned.
+    3. A watch id placed more than once keeps its first place (box order, then numeric slot order).
+    4. Boxes beyond the eighth are dropped; duplicate box ids keep the first.
+    Works in place and returns data.
+    """
+    boxes = data.get("boxes")
+    if not isinstance(boxes, list):
+        return data
+    owned = {watch.get("id") for watch in data.get("watches", [])
+             if isinstance(watch, dict) and watch.get("status") == "owned"}
+    placed = set()
+    for box in boxes:
+        if not isinstance(box, dict) or not isinstance(box.get("slots"), dict):
+            continue
+        columns, rows = box.get("columns"), box.get("rows")
+        sizes_ok = all(isinstance(v, int) and not isinstance(v, bool) for v in (columns, rows))
+        capacity = max(0, columns) * max(0, rows) if sizes_ok else 0
+        slots = box["slots"]
+        candidates = sorted(
+            (int(key), key) for key, value in slots.items()
+            if isinstance(key, str) and SLOT_KEY.fullmatch(key) and int(key) < capacity
+            and isinstance(value, str) and value in owned
+        )
+        kept = set()
+        for _index, key in candidates:
+            if slots[key] in placed:
+                continue
+            placed.add(slots[key])
+            kept.add(key)
+        box["slots"] = {key: value for key, value in slots.items() if key in kept}
+    seen = set()
+    survivors = []
+    for box in boxes[:MAX_BOXES]:
+        identity = box.get("id") if isinstance(box, dict) else None
+        if isinstance(identity, str):
+            if identity in seen:
+                continue
+            seen.add(identity)
+        survivors.append(box)
+    data["boxes"] = survivors
+    return data
 
 
 def normalize(data):
@@ -93,4 +145,6 @@ def merge(base, local, remote, resolutions=None):
     output = deepcopy(remote)
     output.update({k: v for k, v in result.items() if k != "settings"})
     output.setdefault("settings", {}).update(result.get("settings", {}))
+    if "boxes" in output:
+        clean_boxes(output)
     return output, conflicts

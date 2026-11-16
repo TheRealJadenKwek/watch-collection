@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
 import mimetypes
@@ -14,6 +15,7 @@ import sys
 import threading
 import unicodedata
 import uuid
+from copy import deepcopy
 from datetime import datetime, timezone
 from email import policy
 from email.parser import BytesParser
@@ -41,6 +43,15 @@ PURCHASED = re.compile(r"^\d{4}-(0[1-9]|1[0-2])$")
 SOLD_ON = re.compile(r"^\d{4}(-(0[1-9]|1[0-2]))?$")  # month optional: "2019" when only the year is known
 ALLOWED_PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".heic"}
 AUTO_IMAGE_LIMIT = 5 * 1024 * 1024
+# Watch boxes (see sync.clean_boxes). Tiles are rendered pictures of a watch on its pillow, one per
+# box finish; the hub owns the names, clients only read them and send them back.
+BOX_ID = re.compile(r"^[a-z0-9-]{1,40}$")
+BOX_FINISHES = ("black", "brown")
+BOX_SLOT_KEY = re.compile(r"^[0-9]+$")
+BOX_TILE_DIRECTORY = "_box"
+BOX_TILE_LIMIT = 3 * 1024 * 1024
+BOX_TILE_NAME = re.compile(r"^box-(black|brown)-[0-9a-f]{8}\.jpg$")
+EMPTY_TILE_NAME = re.compile(r"^empty-(black|brown)-[0-9a-f]{8}\.jpg$")
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) WatchCollection/1.10"
 STATUSES = {
     "owned", "given_away", "sold", "traded", "broken", "donated", "ousted",
@@ -212,6 +223,92 @@ def validate_taxonomy_values(data: dict, changes: dict) -> None:
         value = changes.get(field)
         if value is not None and field in changes and value not in data.get(top_level, []):
             raise ApiError(HTTPStatus.BAD_REQUEST, f"Unknown {field}: {value}")
+
+
+def tile_names(tiles: object) -> list[str]:
+    """The file names in a boxTiles or emptyBoxTiles object, in finish order, safe ones only."""
+    if not isinstance(tiles, dict):
+        return []
+    return [tiles[finish] for finish in BOX_FINISHES
+            if isinstance(tiles.get(finish), str) and is_safe_component(tiles[finish])]
+
+
+def present_tiles(tiles: object, directory: str) -> dict:
+    """The entries of a tile object that name a well-formed tile the hub holds in that folder."""
+    pattern = EMPTY_TILE_NAME if directory == BOX_TILE_DIRECTORY else BOX_TILE_NAME
+    if not isinstance(tiles, dict):
+        return {}
+    kept = {}
+    for finish in BOX_FINISHES:
+        name = tiles.get(finish)
+        match = pattern.fullmatch(name) if isinstance(name, str) else None
+        if match and match.group(1) == finish and (PHOTOS_DIR / directory / name).is_file():
+            kept[finish] = name
+    return kept
+
+
+def _set_tiles(owner: dict, key: str, tiles: dict) -> None:
+    if tiles:
+        owner[key] = tiles
+    else:
+        owner.pop(key, None)
+
+
+def adopt_hub_tiles(data: dict | None, current: dict) -> None:
+    """Before a merge: give a client's copy the hub's tile names, so they can never conflict.
+
+    Items the hub has never seen keep what the client sent; restore_hub_tiles checks those after.
+    """
+    if not isinstance(data, dict):
+        return
+    for key in ("watches", "wishlist"):
+        hub = {item.get("id"): item for item in current.get(key, []) if isinstance(item, dict)}
+        for item in data.get(key, []):
+            if isinstance(item, dict) and item.get("id") in hub:
+                _set_tiles(item, "boxTiles", deepcopy(hub[item["id"]].get("boxTiles")) or {})
+    _set_tiles(data, "emptyBoxTiles", deepcopy(current.get("emptyBoxTiles")) or {})
+
+
+def restore_hub_tiles(merged: dict, current: dict) -> None:
+    """After a merge: boxTiles and emptyBoxTiles are the hub's. One exception, a watch the hub has
+    never seen (a wishlist watch bought on a device moves its folder from wl-<id> to <id>): its
+    tile names are taken from the client for the files the hub holds or was just sent. A name whose
+    file is not here is dropped, so a lost tile can never block a sync."""
+    for key, prefix in (("watches", ""), ("wishlist", "wl-")):
+        hub = {item.get("id"): item for item in current.get(key, []) if isinstance(item, dict)}
+        for item in merged.get(key, []):
+            if not isinstance(item, dict) or not isinstance(item.get("id"), str):
+                continue
+            source = hub[item["id"]] if item["id"] in hub else item
+            _set_tiles(item, "boxTiles", present_tiles(source.get("boxTiles"), prefix + item["id"]))
+    _set_tiles(merged, "emptyBoxTiles", present_tiles(current.get("emptyBoxTiles"), BOX_TILE_DIRECTORY))
+
+
+def validate_boxes(boxes: object) -> None:
+    """Shape check for the top-level boxes list; raises AssertionError, KeyError or TypeError."""
+    assert isinstance(boxes, list) and len(boxes) <= 8
+    for box in boxes:
+        assert isinstance(box, dict)
+        assert isinstance(box["id"], str) and BOX_ID.fullmatch(box["id"])
+        assert isinstance(box["name"], str) and box["name"].strip() and len(box["name"]) <= 40
+        assert isinstance(box["finish"], str) and box["finish"] in BOX_FINISHES
+        for field, highest in (("columns", 8), ("rows", 4)):
+            value = box[field]
+            assert isinstance(value, int) and not isinstance(value, bool) and 1 <= value <= highest
+        slots = box["slots"]
+        assert isinstance(slots, dict)
+        assert all(isinstance(k, str) and BOX_SLOT_KEY.fullmatch(k) and isinstance(v, str) for k, v in slots.items())
+
+
+def loopback_client(host: str) -> bool:
+    """True only for a caller on this Mac (127.0.0.0/8, ::1, or either mapped into IPv6)."""
+    try:
+        address = ipaddress.ip_address(host.split("%")[0])
+    except ValueError:
+        return False
+    if isinstance(address, ipaddress.IPv6Address) and address.ipv4_mapped:
+        address = address.ipv4_mapped
+    return address.is_loopback
 
 
 def photo_owner(data: dict, kind: str, item_id: str) -> tuple[dict | None, str]:
@@ -542,14 +639,20 @@ class WatchHandler(BaseHTTPRequestHandler):
                 self.send_json(HTTPStatus.OK, auto_image_for_wishlist(parts[2]))
             elif len(parts) == 4 and parts[:2] == ["api", "wishlist"] and parts[3] == "bought":
                 self.mark_bought(parts[2], self.read_json_body())
+            elif len(parts) == 4 and parts[:2] == ["api", "boxtiles"]:
+                self.publish_box_tile(parts[2], parts[3])
             else:
                 raise ApiError(HTTPStatus.NOT_FOUND, "Not found")
         self._dispatch_errors(dispatch)
 
     @staticmethod
     def sync_photo_paths(data):
-        return [f"{prefix}{item['id']}/{photo}" for key, prefix in (("watches", ""), ("wishlist", "wl-"))
-                for item in data.get(key, []) for photo in item.get("photos", [])]
+        """Every file the document references: photos, then box tiles. Tile names never go in photos."""
+        paths = [f"{prefix}{item['id']}/{photo}" for key, prefix in (("watches", ""), ("wishlist", "wl-"))
+                 for item in data.get(key, []) for photo in item.get("photos", [])]
+        paths += [f"{prefix}{item['id']}/{name}" for key, prefix in (("watches", ""), ("wishlist", "wl-"))
+                  for item in data.get(key, []) for name in tile_names(item.get("boxTiles"))]
+        return paths + [f"{BOX_TILE_DIRECTORY}/{name}" for name in tile_names(data.get("emptyBoxTiles"))]
 
     def sync_snapshot(self, data):
         return {"data": data, "revision": fingerprint(data), "photos": [p for p in self.sync_photo_paths(data)
@@ -598,6 +701,8 @@ class WatchHandler(BaseHTTPRequestHandler):
             brands = data["brandWatchlist"]
             assert isinstance(brands, list) and all(isinstance(v["brand"], str) for v in brands)
             assert len({v["brand"] for v in brands}) == len(brands)
+            if "boxes" in data:
+                validate_boxes(data["boxes"])
         except (AssertionError, KeyError, TypeError, ValueError):
             raise ApiError(HTTPStatus.BAD_REQUEST, "Invalid sync collection")
 
@@ -610,11 +715,15 @@ class WatchHandler(BaseHTTPRequestHandler):
             self.validate_sync_data(base)
         with DATA_LOCK:
             current = read_data()
+            # Tile names are the hub's: what a client sends back for them never counts.
+            adopt_hub_tiles(local, current)
+            adopt_hub_tiles(base, current)
             merged, conflicts = merge_sync(base, local, current, body.get("resolutions"))
             self.note_remote_sync()
             if conflicts:
                 self.send_json(HTTPStatus.OK, {**self.sync_snapshot(current), "conflicts": conflicts})
                 return
+            restore_hub_tiles(merged, current)
             self.validate_sync_data(merged)
             missing = [p for p in self.sync_photo_paths(merged) if not (PHOTOS_DIR / p).is_file()]
             if missing:
@@ -663,6 +772,8 @@ class WatchHandler(BaseHTTPRequestHandler):
                 self.delete_radar_brand(parts[2])
             elif len(parts) == 5 and parts[0] == "api" and parts[1] in ("watches", "wishlist") and parts[3] == "photos":
                 self.delete_photo("watch" if parts[1] == "watches" else "wishlist", parts[2], parts[4])
+            elif len(parts) == 4 and parts[:2] == ["api", "boxtiles"]:
+                self.delete_box_tile(parts[2], parts[3])
             else:
                 raise ApiError(HTTPStatus.NOT_FOUND, "Not found")
         self._dispatch_errors(dispatch)
@@ -746,9 +857,94 @@ class WatchHandler(BaseHTTPRequestHandler):
             if position is None:
                 raise ApiError(HTTPStatus.NOT_FOUND, f"{kind.title()} not found")
             removed = data[key].pop(position)
+            if kind == "watch":
+                # The web page can delete a watch; it must not stay in a box.
+                for box in data.get("boxes") or []:
+                    if isinstance(box, dict) and isinstance(box.get("slots"), dict):
+                        box["slots"] = {slot: watch for slot, watch in box["slots"].items() if watch != item_id}
             atomic_write_data(data)
             shutil.rmtree(PHOTOS_DIR / directory, ignore_errors=True)
         self.send_json(HTTPStatus.OK, {"ok": True, kind: removed})
+
+    def tile_owner(self, data: dict, directory: str) -> dict | None:
+        """The document object whose tile key a folder's tiles are named in, or None."""
+        if directory == BOX_TILE_DIRECTORY:
+            return data
+        watch = next((item for item in data.get("watches", []) if item.get("id") == directory), None)
+        if watch is not None or not directory.startswith("wl-"):
+            return watch
+        return next((item for item in data.get("wishlist", []) if item.get("id") == directory[3:]), None)
+
+    def check_tile_request(self, directory: str, finish: str) -> None:
+        # Tiles are published by the tile script on this Mac only; a browser page never gets here.
+        if not loopback_client(self.client_address[0]) or self.headers.get("Origin"):
+            raise ApiError(HTTPStatus.FORBIDDEN, "Box tiles can only be published from this Mac")
+        if not is_safe_component(directory):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Unsafe folder")
+        if finish not in BOX_FINISHES:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "finish must be black or brown")
+
+    def publish_box_tile(self, directory: str, finish: str) -> None:
+        self.check_tile_request(directory, finish)
+        if not self.headers.get("Content-Type", "").lower().startswith("image/jpeg"):
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Content-Type must be image/jpeg")
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError as exc:
+            raise ApiError(HTTPStatus.BAD_REQUEST, "Invalid Content-Length") from exc
+        if length <= 0 or length > BOX_TILE_LIMIT:
+            raise ApiError(HTTPStatus.REQUEST_ENTITY_TOO_LARGE, "A tile must be between 1 byte and 3 MB")
+        payload = self.rfile.read(length)
+        if len(payload) != length or image_extension(payload) != ".jpg":
+            raise ApiError(HTTPStatus.BAD_REQUEST, "A tile must be a JPEG")
+        prefix = "empty" if directory == BOX_TILE_DIRECTORY else "box"
+        filename = f"{prefix}-{finish}-{hashlib.sha256(payload).hexdigest()[:8]}.jpg"
+        key = "emptyBoxTiles" if directory == BOX_TILE_DIRECTORY else "boxTiles"
+        with DATA_LOCK:
+            data = read_data()
+            owner = self.tile_owner(data, directory)
+            if owner is None:
+                raise ApiError(HTTPStatus.NOT_FOUND, "No watch or candidate uses that folder")
+            tiles = owner.get(key) if isinstance(owner.get(key), dict) else {}
+            previous = tiles.get(finish)
+            destination = PHOTOS_DIR / directory / filename
+            created = not destination.exists()
+            if created:
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                temporary = destination.with_name(".tile-" + uuid.uuid4().hex)
+                with temporary.open("xb") as handle:
+                    handle.write(payload)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(temporary, destination)
+            try:
+                owner[key] = {**tiles, finish: filename}
+                atomic_write_data(data)
+            except Exception:
+                if created:
+                    destination.unlink(missing_ok=True)
+                raise
+            if isinstance(previous, str) and previous != filename and is_safe_component(previous):
+                (PHOTOS_DIR / directory / previous).unlink(missing_ok=True)
+            result = dict(owner[key])
+        self.send_json(HTTPStatus.OK, {"ok": True, "file": filename, key: result})
+
+    def delete_box_tile(self, directory: str, finish: str) -> None:
+        self.check_tile_request(directory, finish)
+        key = "emptyBoxTiles" if directory == BOX_TILE_DIRECTORY else "boxTiles"
+        with DATA_LOCK:
+            data = read_data()
+            owner = self.tile_owner(data, directory)
+            tiles = owner.get(key) if owner is not None and isinstance(owner.get(key), dict) else {}
+            if finish not in tiles:
+                raise ApiError(HTTPStatus.NOT_FOUND, "No tile to delete")
+            previous = tiles[finish]
+            _set_tiles(owner, key, {k: v for k, v in tiles.items() if k != finish})
+            atomic_write_data(data)
+            if isinstance(previous, str) and is_safe_component(previous):
+                (PHOTOS_DIR / directory / previous).unlink(missing_ok=True)
+            result = dict(owner.get(key, {}))
+        self.send_json(HTTPStatus.OK, {"ok": True, key: result})
 
     def upload_photo(self, kind: str, item_id: str) -> None:
         if not is_safe_component(item_id):
