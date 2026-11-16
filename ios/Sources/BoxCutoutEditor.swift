@@ -1,4 +1,7 @@
 import SwiftUI
+#if os(macOS)
+import AppKit
+#endif
 
 /// The ring editor (brief section 7): fixes what the automatic cutout got wrong. The ring is the whole "move, size"
 /// control: moving it moves the watch, resizing it rescales. Shaped like PhotoFramingSheet.
@@ -44,6 +47,8 @@ struct BoxCutoutEditor: View {
     @State private var thumbnails: [String: CGImage] = [:]
     @State private var result: CutoutResult?
     @State private var gestureStart: (ring: Ring, turn: Double)?
+    /// True while a ring gesture runs; it resets by itself when the gesture ends or is cancelled.
+    @GestureState private var ringGestureActive = false
     @State private var saving = false
     private let initial: Edit
 
@@ -158,7 +163,14 @@ struct BoxCutoutEditor: View {
             }
             .frame(height: 320)
             .background(Color.black)
+            #if os(macOS)
+            .background(ScrollWheelReader { points in scrollResize(points) })
+            #endif
             .clipped()
+            .onChange(of: ringGestureActive) { _, active in
+                // A cancelled gesture never reaches onEnded: start the next one from where the ring is.
+                if !active { gestureStart = nil }
+            }
             .accessibilityElement()
             .accessibilityLabel("Photo with the case ring")
             .accessibilityAdjustableAction { direction in
@@ -166,7 +178,7 @@ struct BoxCutoutEditor: View {
                 next.r = clampRadius(next.r + (direction == .increment ? 0.01 : -0.01))
                 ring = next
             }
-            Text(Platform.isMac ? "Drag the ring onto the case. Pinch on the trackpad to size it." : "Drag the ring onto the case. Pinch to size it, twist to turn it.")
+            Text(Platform.isMac ? "Drag the ring onto the case. Pinch or scroll to size it." : "Drag the ring onto the case. Pinch to size it, twist to turn it.")
                 .font(AtelierType.caption)
                 .foregroundStyle(WatchTheme.muted)
         }
@@ -206,6 +218,7 @@ struct BoxCutoutEditor: View {
 
     private func ringGesture(frame: CGRect) -> some Gesture {
         SimultaneousGesture(SimultaneousGesture(DragGesture(minimumDistance: 1), MagnifyGesture()), RotateGesture())
+            .updating($ringGestureActive) { _, active, _ in active = true }
             .onChanged { value in
                 guard frame.width > 0, frame.height > 0 else { return }
                 let start = gestureStart ?? (shownRing, turn)
@@ -226,6 +239,20 @@ struct BoxCutoutEditor: View {
 
     private func clampRadius(_ r: Double) -> Double {
         min(BoxCutout.ringRadius.upperBound, max(BoxCutout.ringRadius.lowerBound, r))
+    }
+
+    /// The Mac's scroll wheel or two-finger scroll over the photo sizes the ring (brief 7.2): 100 points of scroll
+    /// make it about half as big again.
+    private func scrollResize(_ points: Double) {
+        guard image != nil, points != 0 else { return }
+        var next = shownRing
+        next.r = clampRadius(next.r * Self.scrollFactor(points))
+        ring = next
+    }
+
+    /// How much a scroll of `points` (up positive) scales the ring.
+    static func scrollFactor(_ points: Double) -> Double {
+        exp(points * 0.004)
     }
 
     // MARK: Turn
@@ -339,12 +366,73 @@ struct BoxCutoutEditor: View {
         }
     }
 
+    /// Back to automatic. A refused tile stays refused: `useCutout` is kept, on the photo automatic picks (brief 6.2),
+    /// so the box shows the automatic cutout and not his photo's tile.
     private func reset() {
         saving = true
         Task {
-            await store.setBoxCutout(itemID: piece.itemID, wishlist: piece.wishlist, cutout: nil)
+            var value: BoxCutout?
+            if piece.setting?.useCutout == true {
+                let automatic = CutoutSource(itemID: piece.itemID, wishlist: piece.wishlist, photos: piece.photos, setting: nil, focus: piece.focus)
+                let picked = await CutoutStore.shared.cutout(automatic)?.photo
+                if let photo = picked.flatMap({ piece.photos.contains($0) ? $0 : nil }) ?? piece.photos.first {
+                    value = BoxCutout(photo: photo, useCutout: true)
+                }
+            }
+            await store.setBoxCutout(itemID: piece.itemID, wishlist: piece.wishlist, cutout: value)
             saving = false
             dismiss()
         }
     }
 }
+
+#if os(macOS)
+/// Hands the scroll wheel over this view's area to `onScroll` (points, up positive) instead of the scroll view around
+/// it. It takes no clicks, so the drag and pinch on the photo work as before.
+private struct ScrollWheelReader: NSViewRepresentable {
+    var onScroll: (Double) -> Void
+
+    func makeNSView(context: Context) -> WheelView {
+        let view = WheelView()
+        view.onScroll = onScroll
+        return view
+    }
+
+    func updateNSView(_ view: WheelView, context: Context) {
+        view.onScroll = onScroll
+    }
+
+    static func dismantleNSView(_ view: WheelView, coordinator: ()) {
+        view.stopListening()
+    }
+
+    final class WheelView: NSView {
+        var onScroll: ((Double) -> Void)?
+        private var monitor: Any?
+
+        override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+        override func viewDidMoveToWindow() {
+            super.viewDidMoveToWindow()
+            stopListening()
+            guard window != nil else { return }
+            monitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                guard let self, let window = self.window, event.window === window, !self.isHiddenOrHasHiddenAncestor,
+                      self.visibleRect.contains(self.convert(event.locationInWindow, from: nil)) else { return event }
+                // A mouse wheel reports lines, a trackpad points. The glide after a trackpad flick is swallowed too,
+                // so the sheet does not scroll under the pointer, but it does not keep resizing the ring.
+                if event.momentumPhase.isEmpty {
+                    let points = event.hasPreciseScrollingDeltas ? event.scrollingDeltaY : event.scrollingDeltaY * 10
+                    self.onScroll?(Double(points))
+                }
+                return nil
+            }
+        }
+
+        func stopListening() {
+            if let monitor { NSEvent.removeMonitor(monitor) }
+            monitor = nil
+        }
+    }
+}
+#endif

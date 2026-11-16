@@ -100,10 +100,116 @@ final class CutoutPipelinePureTests: XCTestCase {
         let centre = CGPoint(x: 100, y: 100), radius = 50.0
         let circle = field(w, h) { x, y in (x - 100) * (x - 100) + (y - 100) * (y - 100) <= radius * radius }
         XCTAssertGreaterThan(CutoutPipeline.circleSupport(gray: circle, matte: nil, w: w, h: h, center: centre, radius: radius), 0.9)
-        // A square of the same size: its corners on the ring.
-        let half = radius / 2.0.squareRoot()
-        let square = field(w, h) { x, y in abs(x - 100) <= half && abs(y - 100) <= half }
-        XCTAssertLessThan(CutoutPipeline.circleSupport(gray: square, matte: nil, w: w, h: h, center: centre, radius: radius), 0.3)
+        // A square of the same size (side twice the radius): its sides touch the ring, its corners stand outside it.
+        // The rim test cannot push it under 0.3 (it scores about 0.57), but it stays under `roundEnough`, so a square
+        // blob is questioned and searched for a better circle.
+        let square = field(w, h) { x, y in abs(x - 100) <= radius && abs(y - 100) <= radius }
+        let support = CutoutPipeline.circleSupport(gray: square, matte: nil, w: w, h: h, center: centre, radius: radius)
+        XCTAssertLessThan(support, CutoutPipeline.roundEnough)
+        XCTAssertLessThan(support, 0.9)
+    }
+
+    func testAnEmptyMatteHasNoInscribedCircle() {
+        // What the skin test leaves when it clears the whole subject: radius 0, which `make` turns into the disc at
+        // the usual size rather than an infinite scale.
+        let (_, r) = CutoutPipeline.largestInscribedCircle([Float](repeating: 0, count: 64 * 48), w: 64, h: 48)
+        XCTAssertEqual(r, 0)
+    }
+
+    func testHandRingIsKeptOnThePhoto() {
+        var hint = CutoutHint()
+        XCTAssertNil(CutoutPipeline.handRing(hint, w: 400, h: 300), "no ring")
+        hint.centerX = 0.25; hint.centerY = 0.5; hint.radius = 0.2
+        let ring = CutoutPipeline.handRing(hint, w: 400, h: 300)
+        XCTAssertEqual(ring?.center.x ?? 0, 100, accuracy: 0.001)
+        XCTAssertEqual(ring?.center.y ?? 0, 150, accuracy: 0.001)
+        XCTAssertEqual(ring?.radius ?? 0, 60, accuracy: 0.001)
+        hint.centerX = 1e300; hint.centerY = -4; hint.radius = 1e300
+        let wild = CutoutPipeline.handRing(hint, w: 400, h: 300)
+        XCTAssertEqual(wild?.center.x ?? 0, 400, accuracy: 0.001)
+        XCTAssertEqual(wild?.center.y ?? -1, 0, accuracy: 0.001)
+        XCTAssertEqual(wild?.radius ?? 0, 150, accuracy: 0.001)
+        hint.radius = .nan
+        XCTAssertNil(CutoutPipeline.handRing(hint, w: 400, h: 300), "not a number is no ring")
+    }
+
+    func testTheRingPicksTheSubjectUnderIt() {
+        let (w, h) = (300, 200)
+        // The watch in the middle and a second one at the edge, as in his Casio photo.
+        let middle = field(w, h) { x, y in (x - 150) * (x - 150) + (y - 100) * (y - 100) <= 50 * 50 }
+        let edge = field(w, h) { x, y in (x - 20) * (x - 20) + (y - 120) * (y - 120) <= 30 * 30 }
+        let speck = field(w, h) { x, y in abs(x - 20) <= 2 && abs(y - 120) <= 2 }
+        let onEdge = CGPoint(x: 20, y: 120)
+        XCTAssertGreaterThan(CutoutPipeline.ringOverlap(edge, w: w, h: h, center: onEdge, radius: 30),
+                             CutoutPipeline.ringOverlap(middle, w: w, h: h, center: onEdge, radius: 30))
+        XCTAssertEqual(CutoutPipeline.ringOverlap(middle, w: w, h: h, center: onEdge, radius: 30), 0, "nothing of it under the ring")
+        XCTAssertEqual(CutoutPipeline.ringOverlap(speck, w: w, h: h, center: onEdge, radius: 30), 0, "a speck counts for nothing")
+    }
+
+    func testCaseCover() {
+        let side = 100, radius = 20.0
+        let solid = [Float](repeating: 1, count: side * side)
+        XCTAssertEqual(CutoutPipeline.caseCover(solid, side: side, radius: radius), 1, accuracy: 0.001)
+        XCTAssertEqual(CutoutPipeline.caseCover([Float](repeating: 0, count: side * side), side: side, radius: radius), 0)
+        var left = solid
+        for y in 0..<side { for x in 50..<side { left[y * side + x] = 0 } }
+        XCTAssertEqual(CutoutPipeline.caseCover(left, side: side, radius: radius), 0.5, accuracy: 0.03)
+        XCTAssertLessThan(0.0, CutoutPipeline.emptyCase)
+    }
+
+    /// A grey photo with a dark disc at the left edge.
+    private func photo(_ w: Int, _ h: Int) -> CGImage {
+        let context = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.setFillColor(CGColor(red: 0.8, green: 0.8, blue: 0.75, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: w, height: h))
+        context.setFillColor(CGColor(red: 0.1, green: 0.1, blue: 0.12, alpha: 1))
+        context.fillEllipse(in: CGRect(x: -20, y: Double(h) / 2 - 40, width: 80, height: 80))
+        return context.makeImage()!
+    }
+
+    /// Alpha of a premultiplied RGBA image, top row first.
+    private func alpha(_ image: CGImage) -> [UInt8] {
+        guard let pixels = Raster.rgba(image) else { return [] }
+        return stride(from: 3, to: pixels.count, by: 4).map { pixels[$0] }
+    }
+
+    func testTheDiscIsClearPastThePhotosEdge() {
+        let image = photo(300, 200)
+        // Centre 6 pixels from the left edge, radius 40: most of the left half of the disc is off the photo.
+        let side = 280, scale = 280 * Double(CutoutPipeline.caseFraction) / 40
+        guard let cut = CutoutPipeline.discCut(image, side: side, center: CGPoint(x: 6, y: 100), angle: 0, scale: scale) else {
+            return XCTFail("no cut")
+        }
+        let mid = side / 2, r = Int(Double(side) * Double(CutoutPipeline.caseFraction))
+        // Inside the disc but left of the photo: clear. Inside the disc on the photo: solid.
+        XCTAssertEqual(cut.alpha[mid * side + mid - r / 2], 0)
+        XCTAssertEqual(cut.alpha[mid * side + mid + r / 2], 1, accuracy: 0.001)
+        let coverage = Raster.coverage(width: 300, height: 200, side: side, center: CGPoint(x: 6, y: 100), angle: 0, scale: scale)
+        XCTAssertEqual(coverage?[mid * side + 2], 0, "past the left edge")
+        XCTAssertEqual(coverage?[mid * side + side - 3], 255, "on the photo")
+    }
+
+    func testCaseOnlyAtThePhotosEdgeLeavesNoGrey() {
+        // End to end: the iOS Simulator cannot lift, so this is the disc path whatever Vision does.
+        var hint = CutoutHint()
+        hint.centerX = 0.02; hint.centerY = 0.5; hint.radius = 0.2
+        hint.discOnly = true
+        guard let cut = CutoutPipeline.make(photo: photo(300, 200), hint: hint) else { return XCTFail("no cutout") }
+        XCTAssertEqual(cut.method, .disc)
+        let a = alpha(cut.image), side = cut.image.width, mid = side / 2, r = Int(cut.caseRadius)
+        XCTAssertEqual(a[mid * side + mid - r * 3 / 4], 0, "left of the photo, inside the case circle")
+        XCTAssertEqual(a[mid * side + mid + r / 2], 255)
+    }
+
+    func testARingOfNoSizeGivesTheUsualDisc() {
+        var hint = CutoutHint()
+        hint.centerX = 0.5; hint.centerY = 0.5; hint.radius = 0
+        guard let cut = CutoutPipeline.make(photo: photo(300, 200), hint: hint) else { return XCTFail("no cutout") }
+        XCTAssertEqual(cut.method, .disc)
+        XCTAssertEqual(cut.radius, CutoutPipeline.defaultCase, accuracy: 0.0001)
+        XCTAssertEqual(cut.centerX, 0.5, accuracy: 0.0001, "the ring's centre is kept")
+        XCTAssertGreaterThan(alpha(cut.image).filter { $0 > 127 }.count, 40_000, "a whole case disc, not grey or nothing")
     }
 
     func testStrapAxisReturnsTheTiltAndNilOnABareDisc() {
@@ -167,6 +273,108 @@ final class CutoutCacheKeyTests: XCTestCase {
         let partial = CutoutStore.hint(for: BoxCutout(photo: "a.jpg", x: 0.4), focus: nil)
         XCTAssertNil(partial.centerX)
         XCTAssertEqual(CutoutStore.hintHash(partial), CutoutStore.hintHash(CutoutHint()))
+    }
+
+    func testHintKeepsDocumentValuesInRange() {
+        // A hand-edited or foreign document: the pipeline must never see these.
+        let wild = CutoutStore.hint(for: BoxCutout(photo: "a.jpg", x: 1e300, y: -3, r: 1e300, turn: 1e9),
+                                    focus: PhotoFocus(x: 7, y: -2, zoom: 1))
+        XCTAssertEqual(wild.centerX, 1)
+        XCTAssertEqual(wild.centerY, 0)
+        XCTAssertEqual(wild.radius, BoxCutout.ringRadius.upperBound)
+        XCTAssertEqual(wild.rotation, 180)
+        XCTAssertEqual(wild.focusX, 1)
+        XCTAssertEqual(wild.focusY, 0)
+        let tiny = CutoutStore.hint(for: BoxCutout(photo: "a.jpg", x: 0.5, y: 0.5, r: 0), focus: nil)
+        XCTAssertEqual(tiny.radius, BoxCutout.ringRadius.lowerBound)
+        let nan = CutoutStore.hint(for: BoxCutout(photo: "a.jpg", x: .nan, y: 0.5, r: 0.2, turn: .infinity),
+                                   focus: PhotoFocus(x: .nan, y: 0.3, zoom: 1))
+        XCTAssertNil(nan.centerX, "not a number: no ring")
+        XCTAssertEqual(nan.rotation, 0)
+        XCTAssertEqual(nan.focusX, 0.5)
+        XCTAssertEqual(nan.focusY, 0.5)
+        // Values already in range are untouched, so the editor's hint and the saved one still share a cache key.
+        let editor = CutoutStore.hint(for: BoxCutout(photo: "a.jpg", x: 0.4, y: 0.6, r: 0.2, turn: 0, caseOnly: false), focus: nil)
+        let saved = CutoutStore.hint(for: BoxCutout(photo: "a.jpg", x: 0.4, y: 0.6, r: 0.2).normalized, focus: nil)
+        XCTAssertEqual(CutoutStore.hintHash(editor), CutoutStore.hintHash(saved))
+    }
+
+    func testOnlyOtherVersionFoldersAreRemoved() {
+        let names = ["v1", "v2", "v10", "v", "vx", "v-1", "v+3", "notes", ".DS_Store", "v3.tmp"]
+        XCTAssertEqual(CutoutStore.staleVersionFolders(names, current: 2), ["v1", "v10"])
+    }
+
+    func testAHandSetRingClearsCheckTheCutout() {
+        let image = CGContext(data: nil, width: 2, height: 2, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!.makeImage()!
+        var result = CutoutResult(image: image, caseRadius: 117.6, strap: [0.1, 0.1, 0.1], strapAbove: 0, strapBelow: 0, method: .disc,
+                                  confidence: 0.3, photo: "a.jpg", centerX: 0.5, centerY: 0.5, radius: 0.2, rotation: 0)
+        XCTAssertTrue(result.isDoubtful, "automatic disc")
+        result.handSet = true
+        XCTAssertFalse(result.isDoubtful, "the disc inside his own ring")
+        result.method = .failed
+        XCTAssertTrue(result.isDoubtful, "an empty cut is flagged even inside his ring")
+        var hint = CutoutHint()
+        XCTAssertFalse(CutoutStore.isHandSet(hint))
+        hint.centerX = 0.5; hint.centerY = 0.5; hint.radius = 0.2
+        XCTAssertTrue(CutoutStore.isHandSet(hint))
+    }
+}
+
+final class BoxArtworkTests: XCTestCase {
+    private func cutout(_ photo: String) -> CutoutResult {
+        let image = CGContext(data: nil, width: 2, height: 2, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!.makeImage()!
+        return CutoutResult(image: image, caseRadius: 117.6, strap: [0.1, 0.1, 0.1], strapAbove: 1, strapBelow: 1, method: .lift,
+                            confidence: 0.9, photo: photo, centerX: 0.5, centerY: 0.5, radius: 0.2, rotation: 0)
+    }
+
+    private func source(_ photos: [String]) -> CutoutSource {
+        CutoutSource(itemID: "zenith-220s", wishlist: false, photos: photos, setting: nil, focus: nil)
+    }
+
+    func testAPhotoNotHereYetKeepsThePictureAndAsksAgain() {
+        let old = BoxArtwork.Cutout(source: source(["a.jpg"]), result: cutout("a.jpg"), revision: 1)
+        // A new cover that has not downloaded: nothing to make yet.
+        XCTAssertNil(BoxArtwork.updated(old, with: nil, source: source(["b.jpg", "a.jpg"])),
+                     "the old picture stays, under its old source, so the next load is not skipped")
+        let arrived = cutout("b.jpg")
+        let next = BoxArtwork.updated(old, with: arrived, source: source(["b.jpg", "a.jpg"]))
+        XCTAssertTrue(next?.result?.image === arrived.image)
+        XCTAssertEqual(next?.revision, 2)
+        XCTAssertEqual(next?.source, source(["b.jpg", "a.jpg"]))
+    }
+
+    func testNoPhotosLeftShowsTheToken() {
+        let old = BoxArtwork.Cutout(source: source(["a.jpg"]), result: cutout("a.jpg"), revision: 3)
+        let next = BoxArtwork.updated(old, with: nil, source: source([]))
+        XCTAssertNotNil(next)
+        XCTAssertNil(next?.result)
+        XCTAssertEqual(next?.revision, 4)
+    }
+
+    func testTheSamePictureKeepsItsRevision() {
+        let made = cutout("a.jpg")
+        let old = BoxArtwork.Cutout(source: source(["a.jpg"]), result: made, revision: 5)
+        XCTAssertEqual(BoxArtwork.updated(old, with: made, source: source(["a.jpg"]))?.revision, 5)
+        XCTAssertEqual(BoxArtwork.updated(nil, with: nil, source: source(["a.jpg"]))?.revision, 0)
+    }
+
+    func testTilesAtAnotherSizeStayUntilTheirReplacementDecodes() {
+        // Turning the phone: every tile on screen is at the old size. Each is decoded again, and none is dropped first.
+        let shown = ["w1/box-black-1.jpg": 640, "w2/box-black-1.jpg": 896]
+        XCTAssertEqual(BoxArtwork.tilesToDecode(["w1/box-black-1.jpg", "w2/box-black-1.jpg", "w3/box-black-1.jpg"], pixels: 896, shown: shown),
+                       ["w1/box-black-1.jpg", "w3/box-black-1.jpg"])
+        XCTAssertEqual(BoxArtwork.tilesToDecode(["w2/box-black-1.jpg"], pixels: 896, shown: shown), [])
+    }
+}
+
+final class BoxCutoutEditorTests: XCTestCase {
+    func testScrollSizesTheRing() {
+        XCTAssertEqual(BoxCutoutEditor.scrollFactor(0), 1)
+        XCTAssertGreaterThan(BoxCutoutEditor.scrollFactor(10), 1)
+        XCTAssertLessThan(BoxCutoutEditor.scrollFactor(-10), 1)
+        XCTAssertEqual(BoxCutoutEditor.scrollFactor(100) * BoxCutoutEditor.scrollFactor(-100), 1, accuracy: 1e-9, "up then down comes back")
     }
 }
 

@@ -23,9 +23,12 @@ struct CutoutResult: @unchecked Sendable {
     var radius: Double
     /// Degrees the photo was turned to stand the strap upright (the detected direction plus any `turn`).
     var rotation: Double
+    /// Made from a ring he set by hand: he has looked at it, so a disc there is his choice.
+    var handSet = false
 
-    /// The disc fallback, a failed lift or a weak circle: the screen says "Check the cutout".
-    var isDoubtful: Bool { method == .disc || method == .failed || confidence < 0.5 }
+    /// The disc fallback, a failed lift or a weak circle: the screen says "Check the cutout". Not for a ring he set by
+    /// hand, unless the cut came out empty.
+    var isDoubtful: Bool { method == .failed || (!handSet && (method == .disc || confidence < 0.5)) }
     /// A lift good enough to stop looking at other photos (brief 6.2).
     var isGoodLift: Bool { (method == .lift || method == .liftCleaned) && confidence >= 0.5 }
 }
@@ -103,10 +106,12 @@ actor CutoutStore {
     }
 
     /// The pipeline hint a saved setting asks for. The photo's framing focus is only a weak prior for which subject
-    /// to keep, so it is not part of the cache key.
+    /// to keep, so it is not part of the cache key. Values come from the document, so they are kept in range here:
+    /// the ring on the photo and 5 to 50 percent of its short side, the turn within a half turn either way, the focus
+    /// on the photo; a value that is not a number is dropped.
     nonisolated static func hint(for setting: BoxCutout?, focus: PhotoFocus?) -> CutoutHint {
         var hint = CutoutHint()
-        if let setting {
+        if let setting = setting?.normalized {
             if let x = setting.x, let y = setting.y, let r = setting.r {
                 hint.centerX = x
                 hint.centerY = y
@@ -115,9 +120,9 @@ actor CutoutStore {
             hint.rotation = setting.turn ?? 0
             hint.discOnly = setting.caseOnly == true
         }
-        if let focus {
-            hint.focusX = focus.x
-            hint.focusY = focus.y
+        if let focus, focus.x.isFinite, focus.y.isFinite {
+            hint.focusX = min(1, max(0, focus.x))
+            hint.focusY = min(1, max(0, focus.y))
         }
         return hint
     }
@@ -151,11 +156,11 @@ actor CutoutStore {
     /// first other photo with a good lift. A first answer for drawing at once; `cutout(_:)` settles it.
     func cached(_ source: CutoutSource) -> CutoutResult? {
         if let setting = source.setting {
-            return load(Self.cacheKey(directory: source.directory, photo: setting.photo, hint: hint(source, setting.photo)))
+            return load(directory: source.directory, photo: setting.photo, hint: hint(source, setting.photo))
         }
         var first: CutoutResult?
         for photo in source.photos {
-            guard let hit = load(Self.cacheKey(directory: source.directory, photo: photo, hint: hint(source, photo))) else { continue }
+            guard let hit = load(directory: source.directory, photo: photo, hint: hint(source, photo)) else { continue }
             if hit.isGoodLift { return hit }
             if first == nil { first = hit }
         }
@@ -182,14 +187,14 @@ actor CutoutStore {
     /// One photo's cutout with this hint: memory, then disk, then Vision (one job at a time).
     func cutout(directory: String, photo: String, hint: CutoutHint, wishlist: Bool, itemID: String) async -> CutoutResult? {
         let key = Self.cacheKey(directory: directory, photo: photo, hint: hint)
-        if let hit = load(key) { return hit }
+        if let hit = load(directory: directory, photo: photo, hint: hint) { return hit }
         guard let asset = PhotoStore.asset(itemID: itemID, filename: photo, wishlist: wishlist, baseURL: nil),
               let url = PhotoStore.existingLocalURL(for: asset) else { return nil }
         let ticket = generation
         await acquire()
         defer { release() }
         // Someone else may have made it while this waited; a job from before a cancel stops here.
-        if let hit = load(key) { return hit }
+        if let hit = load(directory: directory, photo: photo, hint: hint) { return hit }
         guard !Task.isCancelled, ticket == generation else { return nil }
         let made = await Task.detached(priority: .utility) { () -> WatchCutout? in
             guard let image = CutoutPipeline.load(url) else { return nil }
@@ -199,10 +204,16 @@ actor CutoutStore {
         let result = CutoutResult(
             image: made.image, caseRadius: made.caseRadius, strap: [made.strapColor.r, made.strapColor.g, made.strapColor.b],
             strapAbove: made.strapAbove, strapBelow: made.strapBelow, method: made.method, confidence: made.confidence,
-            photo: photo, centerX: made.centerX, centerY: made.centerY, radius: made.radius, rotation: made.rotation
+            photo: photo, centerX: made.centerX, centerY: made.centerY, radius: made.radius, rotation: made.rotation,
+            handSet: Self.isHandSet(hint)
         )
         save(result, key: key, notes: made.notes)
         return result
+    }
+
+    /// The hint carries a ring set by hand.
+    nonisolated static func isHandSet(_ hint: CutoutHint) -> Bool {
+        hint.centerX != nil && hint.centerY != nil && hint.radius != nil
     }
 
     /// Jobs waiting for Vision give up (the Boxes tab went away). A job already running finishes and is cached.
@@ -233,6 +244,13 @@ actor CutoutStore {
     }
 
     // MARK: Disk and memory
+
+    /// One photo's cutout with this hint from memory or disk, marked when the hint's ring was set by hand.
+    private func load(directory: String, photo: String, hint: CutoutHint) -> CutoutResult? {
+        guard var hit = load(Self.cacheKey(directory: directory, photo: photo, hint: hint)) else { return nil }
+        hit.handSet = Self.isHandSet(hint)
+        return hit
+    }
 
     private func load(_ key: String) -> CutoutResult? {
         if let hit = memory.object(forKey: key as NSString) { return hit.result }
@@ -271,6 +289,29 @@ actor CutoutStore {
             try encoder.encode(sidecar).write(to: json, options: .atomic)
         } catch {
             // A cache that cannot be written only means the cutout is made again next time.
+        }
+    }
+
+    // MARK: Old versions
+
+    private var prunedVersions = false
+
+    /// Once a launch: removes the cache folders of other pipeline versions (`v<N>` beside the current one), which
+    /// nothing reads any more. Caches is not purged by the system on the Mac in normal use.
+    func removeOldVersions() {
+        guard !prunedVersions else { return }
+        prunedVersions = true
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: Self.root.path)) ?? []
+        for name in Self.staleVersionFolders(names, current: CutoutPipeline.version) {
+            try? FileManager.default.removeItem(at: Self.root.appendingPathComponent(name, isDirectory: true))
+        }
+    }
+
+    /// The names among `names` that are another version's folder: `v` and digits, not the current version.
+    nonisolated static func staleVersionFolders(_ names: [String], current: Int) -> [String] {
+        names.filter { name in
+            let digits = name.dropFirst()
+            return name.hasPrefix("v") && !digits.isEmpty && digits.allSatisfy { $0.isASCII && $0.isNumber } && name != "v\(current)"
         }
     }
 
