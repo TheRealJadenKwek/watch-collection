@@ -13,6 +13,10 @@ struct WatchDossierView: View {
     @State private var titleHeight: CGFloat = 120
     @Environment(\.pageMargin) private var margin
     @Environment(\.duo) private var duo
+    /// Where the page is scrolled to, kept when the phone is opened or shut.
+    @State private var fold = FoldScroll()
+    /// The hero's height where it scrolls with the page.
+    @State private var heroLead: CGFloat = 0
 
     private var watch: Watch? { store.data?.watches.first { $0.id == watchID } }
 
@@ -24,7 +28,9 @@ struct WatchDossierView: View {
                 EmptyCollectionView(title: "Watch removed", detail: "This watch is no longer in the collection.")
             }
         }
-        .navigationTitle(titleInBar ? watch?.name ?? "" : "")
+        .keepsScrollAcrossFolds($fold)
+        // Held like a book the bar's title would sit on the crease: the right page pins the name instead.
+        .navigationTitle(titleInBar && !duo.isBook ? watch?.name ?? "" : "")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             if let watch {
@@ -136,10 +142,12 @@ struct WatchDossierView: View {
                 hero(watch)
                     // On a cover screen the photo runs under the status strip to the edge.
                     .runsUnderStatusStrip(duo)
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { heroLead = $0 }
                 pageText(watch)
             }
         }
         .atelierProbeScroll("dossier")
+        .foldScroll($fold, lead: heroLead)
         .screenBackground()
         .ignoresSafeArea(edges: .top)
         // Once the large name has scrolled up under the bar, show it in the bar.
@@ -153,23 +161,63 @@ struct WatchDossierView: View {
     /// The inner screen held like a book or half open on a table: the photos fill the left page (or the pane above
     /// the crease) and stay put, the title, statement and specs scroll on the right page (or below the crease).
     private func panesContent(_ watch: Watch) -> some View {
-        // The photos run up under the navigation bar, as the phone's hero does.
+        // The photos run up under the navigation bar, as the phone's hero does. A page-style TabView keeps its pages
+        // below the bars wherever it is put, unless it stands in a scroll view that runs under them, as the hero does:
+        // so it stands in one that cannot scroll, the size of the pane.
         CreasePanes(firstRunsToTop: true) {
-            photos(watch, underBars: .top)
-                .clipped()
+            GeometryReader { pane in
+                ScrollView {
+                    photos(watch)
+                        .frame(width: pane.size.width, height: pane.size.height)
+                }
+                .scrollDisabled(true)
+                .ignoresSafeArea(.container, edges: .top)
+            }
+            .clipped()
         } second: {
             ScrollView {
                 pageText(watch)
             }
             .atelierProbeScroll("dossier")
+            .foldScroll($fold)
             // Once the title block has scrolled away under the bar, show the name in the bar.
             .onScrollGeometryChange(for: Bool.self) { geometry in
                 geometry.contentOffset.y + geometry.contentInsets.top > 24 + titleHeight - 20
             } action: { _, past in
                 withAnimation(.easeInOut(duration: 0.2)) { titleInBar = past }
             }
+            .overlay(alignment: .top) {
+                if duo.isBook && titleInBar {
+                    pinnedTitle(watch)
+                        .transition(.opacity)
+                }
+            }
         }
         .screenBackground()
+    }
+
+    /// Held like a book, the name pinned to the top of the right page once the title block has scrolled away: the
+    /// bar's title would sit on the crease.
+    private func pinnedTitle(_ watch: Watch) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let kicker = watch.brand?.isEmpty == false ? watch.brand : watch.category { Eyebrow(kicker) }
+            Text(watch.name)
+                .font(AtelierType.cardTitle)
+                .foregroundStyle(WatchTheme.ink)
+                .lineLimit(1)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, margin)
+        .padding(.top, 8)
+        .padding(.bottom, 10)
+        .overlay(alignment: .bottom) {
+            Hairline()
+                .padding(.horizontal, margin)
+        }
+        // Runs on up behind the bar, so the text pane does not show through above the name.
+        .background(WatchTheme.background)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
     }
 
     /// Everything under the photo: the title block, the statement, and the spec lists.
@@ -224,14 +272,13 @@ struct WatchDossierView: View {
         }
     }
 
-    /// The photos to swipe through, each filling the frame in its saved framing, running on under the bars at
-    /// `underBars` when the frame reaches up there.
+    /// The photos to swipe through, each filling the frame in its saved framing.
     @ViewBuilder
-    private func photos(_ watch: Watch, underBars: Edge.Set = []) -> some View {
+    private func photos(_ watch: Watch) -> some View {
         if watch.photos.isEmpty {
             WatchPlaceholder()
         } else {
-            PhotoPager(selection: $page, count: watch.photos.count, pagesIgnoreSafeArea: underBars) { index in
+            PhotoPager(selection: $page, count: watch.photos.count) { index in
                 RemoteWatchImage(
                     asset: store.photoAsset(itemID: watch.id, filename: watch.photos[index], wishlist: false),
                     allowsRemoteFetch: !store.isOffline,
@@ -303,7 +350,8 @@ struct WatchDossierView: View {
             .padding(.vertical, 28)
             .padding(.horizontal, Platform.isMac ? 24 : margin)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(WatchTheme.card)
+            // Edge to edge, but on a cover screen it stops at the status strip rather than running on under it.
+            .background(WatchTheme.card, ignoresSafeAreaEdges: duo.statusStrip > 0 ? Edge.Set.all.subtracting(.trailing) : .all)
             .accessibilityElement(children: .ignore)
             .accessibilityLabel(statementSentence(parts))
         )

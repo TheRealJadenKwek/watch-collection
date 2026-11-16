@@ -343,7 +343,7 @@ struct CreasePanes<First: View, Second: View>: View {
                 .onGeometryChange(for: CGPoint.self) { $0.frame(in: .global).origin } action: { safeOrigin = $0 }
             CreaseSplit(axis: axis, crease: crease) {
                 // The pane's content fills it to the top. A page-style TabView inside still keeps its pages below
-                // the bars: give it `PhotoPager(pagesIgnoreSafeArea: .top)`.
+                // the bars unless it stands in a scroll view that runs under them (see the watch page).
                 first.ignoresSafeArea(.container, edges: firstRunsToTop ? .top : [])
                 second
                     // Beside the photo the second pane also starts at the top: its content still starts below the bars.
@@ -352,6 +352,95 @@ struct CreasePanes<First: View, Second: View>: View {
             .onGeometryChange(for: CGPoint.self) { $0.frame(in: .global).origin } action: { origin = $0 }
             .ignoresSafeArea(.container, edges: firstRunsToTop ? .top : [])
         }
+    }
+}
+
+// MARK: Scroll kept across a fold (this app's addition)
+
+/// Where a screen is scrolled to, owned by the screen above its switch between postures. Opening or shutting the phone
+/// can give a screen another scroll view (a book's scrolling page beside a fixed one) or new content in the same one,
+/// and either would start again at the top. The offset is kept past whatever only one layout puts above the content
+/// they share (the phone's hero photo, Collection's masthead and feature), so the reader comes back to the same lines.
+struct FoldScroll {
+    var position = ScrollPosition()
+    /// Not observed, so scrolling does not redraw the screen.
+    fileprivate let seen = Seen()
+
+    fileprivate final class Seen {
+        /// How far into the shared content the reader has scrolled.
+        var y: CGFloat = 0
+        /// What the scroll view showing now puts above the shared content.
+        var lead: CGFloat = 0
+        /// While a fold is laid out the scroll views report the new layout's offsets, not the reader's.
+        var folding = 0
+    }
+}
+
+/// What changes a screen's layout when the phone is opened, shut or turned.
+private struct FoldShape: Equatable {
+    let posture: DuoLayout.Posture
+    let isBook: Bool
+
+    init(_ duo: DuoLayout) {
+        posture = duo.posture
+        isBook = duo.isBook
+    }
+}
+
+private struct KeepsFoldScroll: ViewModifier {
+    @Binding var fold: FoldScroll
+    @Environment(\.duo) private var duo
+
+    func body(content: Content) -> some View {
+        content.onChange(of: FoldShape(duo)) {
+            let seen = fold.seen
+            let y = seen.y
+            seen.folding += 1
+            let pass = seen.folding
+            Task { @MainActor in
+                // Once as the new layout comes in, and again once the fold's animation has settled.
+                for wait in [30, 450] {
+                    try? await Task.sleep(for: .milliseconds(wait))
+                    guard seen.folding == pass else { return }
+                    fold.position.scrollTo(y: max(0, y + seen.lead))
+                }
+                try? await Task.sleep(for: .milliseconds(100))
+                if seen.folding == pass { seen.folding = 0 }
+            }
+        }
+    }
+}
+
+extension View {
+    /// On a screen's scroll view, in every layout: binds it to the screen's `FoldScroll` and follows how far it is
+    /// scrolled. `lead` is the height this layout puts above the content the layouts share.
+    func foldScroll(_ fold: Binding<FoldScroll>, lead: CGFloat = 0) -> some View {
+        #if os(iOS)
+        self
+            .scrollPosition(fold.position)
+            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y + $0.contentInsets.top } action: { _, y in
+                let seen = fold.wrappedValue.seen
+                if seen.folding == 0 { seen.y = y - lead }
+            }
+            .onChange(of: lead, initial: true) { old, lead in
+                // Measured late (a lazy stack lays out what is above the shared content only as it comes into view):
+                // the reader has not moved, so the offset into the shared content moves the other way.
+                let seen = fold.wrappedValue.seen
+                if seen.folding == 0 { seen.y += old - lead }
+                seen.lead = lead
+            }
+        #else
+        self
+        #endif
+    }
+
+    /// On the screen, above its switch between postures: after a fold, scrolls back to where the reader was.
+    func keepsScrollAcrossFolds(_ fold: Binding<FoldScroll>) -> some View {
+        #if os(iOS)
+        modifier(KeepsFoldScroll(fold: fold))
+        #else
+        self
+        #endif
     }
 }
 

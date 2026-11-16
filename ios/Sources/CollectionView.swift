@@ -11,6 +11,10 @@ struct CollectionScreen: View {
     @Namespace private var zoom
     @Environment(\.pageMargin) private var margin
     @Environment(\.duo) private var duo
+    /// Where the tiles are scrolled to, kept when the phone is opened or shut.
+    @State private var fold = FoldScroll()
+    /// How far down the scrolling page the tiles start, under the masthead and the feature.
+    @State private var tilesTop: CGFloat = 0
     #if DEBUG
     @State private var probePath = NavigationPath()
     #endif
@@ -67,6 +71,7 @@ struct CollectionScreen: View {
             RefreshableScreen(store: store) {
                 pages
             }
+            .keepsScrollAcrossFolds($fold)
             #if os(macOS)
             .desktopHeader(title, subtitle: subtitle) {
                 scopePicker.fixedSize()
@@ -133,6 +138,7 @@ struct CollectionScreen: View {
                 .navigationTitle("")
                 .navigationBarTitleDisplayMode(.inline)
                 .atelierProbeScroll("collection")
+                .foldScroll($fold)
             }
             .screenBackground()
         } else {
@@ -142,6 +148,8 @@ struct CollectionScreen: View {
         scrollingPage
         #endif
     }
+
+    private static let page = "collection-page"
 
     private var scrollingPage: some View {
         ScrollView {
@@ -169,13 +177,16 @@ struct CollectionScreen: View {
                 }
 
                 tileArea(shown)
+                    .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.page)).minY } action: { tilesTop = $0 }
             }
             .animation(.easeInOut(duration: 0.2), value: contentKey)
+            .coordinateSpace(.named(Self.page))
             .padding(.top, Platform.isMac ? 4 : 0)
             .padding(.bottom, 24)
         }
         .mastheadTitle(title)
         .atelierProbeScroll("collection")
+        .foldScroll($fold, lead: tilesTop)
         .screenBackground()
     }
 
@@ -279,6 +290,8 @@ struct CollectionScreen: View {
     /// Its zoom source has its own id, so it never collides with the same watch's tile in the grid.
     private func featureBlock(_ watch: Watch, aspect: CGFloat?, kicker: String = "Latest arrival") -> some View {
         let zoomID = "feature-\(watch.id)"
+        // Half open on a table the pane above the crease is short: the words close up so a two-line name still fits.
+        let tight = aspect == nil && duo.isTableTop
         return NavigationLink(value: WatchRoute(id: watch.id, zoomID: zoomID)) {
             Group {
                 if let aspect {
@@ -320,7 +333,7 @@ struct CollectionScreen: View {
                 .allowsHitTesting(false)
             }
             .overlay(alignment: .bottom) {
-                VStack(spacing: 12) {
+                VStack(spacing: tight ? 6 : 12) {
                     Eyebrow(kicker, color: .white)
                     Text(watch.name)
                         .font(AtelierType.display)
@@ -330,10 +343,10 @@ struct CollectionScreen: View {
                         .minimumScaleFactor(0.7)
                         .multilineTextAlignment(.center)
                     AtelierPill(kind: .quietOverPhoto) { Text("View watch") }
-                        .padding(.top, 8)
+                        .padding(.top, tight ? 0 : 8)
                 }
                 .padding(.horizontal, 28)
-                .padding(.bottom, 32)
+                .padding(.bottom, tight ? 14 : 32)
                 // Under a cover screen's status strip the text stays centred in the width left of it.
                 .padding(.trailing, duo.statusStrip)
             }

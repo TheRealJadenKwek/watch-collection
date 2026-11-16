@@ -416,6 +416,9 @@ struct AtelierPill<Label: View>: View {
         label
             .font(AtelierType.button)
             .lineLimit(1)
+            // A row of small pills (a wishlist card's) is short of room on a narrow phone: the label shrinks a little
+            // before it is cut off. Where it fits it keeps its size.
+            .minimumScaleFactor(compact ? 0.75 : 1)
             .foregroundStyle(kind == .quiet ? WatchTheme.ink : Color.white)
             .padding(.horizontal, compact ? 16 : 30)
             .frame(minHeight: minHeight)
