@@ -11,6 +11,9 @@ SETTINGS = {"autoImage", "suggestExclude", "wrist"}
 TOP = {"settings", "watches", "wishlist", "brandWatchlist", "categories", "dialColors", "materials",
        "boxes", "emptyBoxTiles"}
 MAX_BOXES = 8
+# Identity lists whose order means something (the boxes' order is the order of their tabs). Their
+# merge keeps the client's order when only the client reordered; every other list keeps the hub's.
+ORDERED = {"boxes"}
 # A slot key is the compartment index written the one way Swift and Python both read it: "5", never "05" or "+5".
 SLOT_KEY = re.compile(r"0|[1-9][0-9]*")
 
@@ -73,6 +76,15 @@ def normalize(data):
     return result
 
 
+def reordered(old, new):
+    """True when the ids the two lists share are in a different order in `new` than in `old`.
+
+    Adding or removing an entry is not a reorder; only moving one past another is.
+    """
+    shared = set(old) & set(new)
+    return [key for key in old if key in shared] != [key for key in new if key in shared]
+
+
 def fingerprint(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
@@ -127,7 +139,12 @@ def merge(base, local, remote, resolutions=None):
             identity = COLLECTIONS.get(path[-1] if path else "")
             if identity:
                 indexes = [{v[identity]: v for v in values} for values in (previous, left, right)]
-                keys = list(dict.fromkeys([v[identity] for v in right + left + previous]))
+                ids = [[v[identity] for v in values] for values in (previous, left, right)]
+                keys = list(dict.fromkeys(ids[2] + ids[1] + ids[0]))
+                if len(path) == 1 and path[0] in ORDERED and reordered(ids[0], ids[1]) \
+                        and not reordered(ids[0], ids[2]):
+                    # Only the client moved entries: its order stands, the hub's additions go after it.
+                    keys = list(dict.fromkeys(ids[1] + ids[2] + ids[0]))
                 result = []
                 for key in keys:
                     value = walk(*(index.get(key, MISSING) for index in indexes), path + [key])

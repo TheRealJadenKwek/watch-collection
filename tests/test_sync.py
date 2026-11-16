@@ -293,6 +293,74 @@ class BoxMergeTests(unittest.TestCase):
         self.assertEqual(merged["boxes"], server_copy["boxes"])
         self.assertEqual(merged["watches"][0]["story"], "Edited on an old build")
 
+    def test_box_order_changed_on_the_phone_survives_the_merge(self):
+        base = boxed()
+        phone, mac = deepcopy(base), deepcopy(base)
+        phone["boxes"].reverse()
+        # The Mac moved a watch meanwhile, so the hub's boxes differ from the base too.
+        slots(mac, "brown")["2"] = "dress"
+        merged, conflicts = merge(base, phone, mac)
+        self.assertFalse(conflicts)
+        self.assertEqual([b["id"] for b in merged["boxes"]], ["brown", "black"])
+        self.assertEqual(slots(merged, "brown"), {"2": "dress"})
+        # The next exchange, with the merged copy as the phone's base and the hub's copy, keeps it.
+        again, conflicts = merge(merged, deepcopy(merged), merged)
+        self.assertFalse(conflicts)
+        self.assertEqual(again, merged)
+
+    def test_phone_order_holds_with_independent_hub_edits(self):
+        base = boxed()
+        phone, mac = deepcopy(base), deepcopy(base)
+        phone["boxes"].reverse()
+        slots(mac, "black")["3"] = "diver"
+        mac["boxes"][1]["name"] = "Walnut"
+        mac["boxes"].append({"id": "box-0000beef", "name": "Travel", "finish": "black", "columns": 3, "rows": 2, "slots": {}})
+        merged, conflicts = merge(base, phone, mac)
+        self.assertFalse(conflicts)
+        # The phone's order, then what the hub added; the hub's edits inside the boxes kept.
+        self.assertEqual([b["id"] for b in merged["boxes"]], ["brown", "black", "box-0000beef"])
+        self.assertEqual(slots(merged, "black"), {"0": "field", "3": "diver"})
+        self.assertEqual(merged["boxes"][0]["name"], "Walnut")
+
+    def test_hub_order_wins_when_both_reordered(self):
+        base = boxed()
+        base["boxes"].append({"id": "box-0000beef", "name": "Travel", "finish": "black", "columns": 3, "rows": 2, "slots": {}})
+        phone, mac = deepcopy(base), deepcopy(base)
+        phone["boxes"] = [phone["boxes"][i] for i in (2, 0, 1)]
+        mac["boxes"] = [mac["boxes"][i] for i in (1, 0, 2)]
+        merged, conflicts = merge(base, phone, mac)
+        self.assertFalse(conflicts)
+        self.assertEqual([b["id"] for b in merged["boxes"]], ["brown", "black", "box-0000beef"])
+
+    def test_hub_order_stands_when_only_the_hub_reordered_or_the_phone_only_added(self):
+        base = boxed()
+        phone, mac = deepcopy(base), deepcopy(base)
+        mac["boxes"].reverse()
+        merged, _ = merge(base, phone, mac)
+        self.assertEqual([b["id"] for b in merged["boxes"]], ["brown", "black"])
+        # An added or removed box is not a reorder: with the hub's boxes edited too, the hub's order,
+        # the phone's new box after it.
+        phone, mac = deepcopy(base), deepcopy(base)
+        phone["boxes"].insert(0, {"id": "box-0000cafe", "name": "New", "finish": "brown", "columns": 4, "rows": 2, "slots": {}})
+        slots(mac, "brown")["1"] = "dress"
+        merged, conflicts = merge(base, phone, mac)
+        self.assertFalse(conflicts)
+        self.assertEqual([b["id"] for b in merged["boxes"]], ["black", "brown", "box-0000cafe"])
+        # A first join (no base) has no order to keep: the hub's.
+        phone = deepcopy(base)
+        phone["boxes"].reverse()
+        merged, _ = merge(None, phone, base)
+        self.assertEqual([b["id"] for b in merged["boxes"]], ["black", "brown"])
+
+    def test_other_lists_keep_the_hubs_order(self):
+        base = boxed()
+        phone, mac = deepcopy(base), deepcopy(base)
+        phone["watches"].reverse()
+        mac["watches"][1]["story"] = "Edited on the Mac"
+        merged, conflicts = merge(base, phone, mac)
+        self.assertFalse(conflicts)
+        self.assertEqual([w["id"] for w in merged["watches"]], [w["id"] for w in base["watches"]])
+
     def test_empty_box_tiles_and_boxes_survive_normalize(self):
         data = boxed()
         data["emptyBoxTiles"] = {"black": "empty-black-0123abcd.jpg"}
@@ -378,6 +446,17 @@ class BoxSyncAPITests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual([c["path"] for c in result["conflicts"]], [["boxes", "black", "slots", "5"]])
         self.assertEqual(server.read_data(), mac)
+
+    def test_box_order_from_the_phone_is_written(self):
+        base = self.seed_boxes()
+        local = deepcopy(base)
+        local["boxes"].reverse()
+        status, result = self.request("POST", "/api/sync", {"base": base, "local": local})
+        self.assertEqual(status, 200)
+        self.assertFalse(result["conflicts"])
+        self.assertEqual([b["id"] for b in server.read_data()["boxes"]], ["brown", "black"])
+        status, snapshot = self.request("GET", "/api/sync")
+        self.assertEqual([b["id"] for b in snapshot["data"]["boxes"]], ["brown", "black"])
 
     def test_old_client_edit_leaves_server_boxes_unchanged(self):
         base = self.seed_boxes()
