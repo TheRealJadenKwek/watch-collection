@@ -89,6 +89,7 @@ final class BoxArtwork {
     }
 
     func load(_ request: Request) async {
+        await CutoutStore.shared.removeOldVersions()
         await CutoutStore.shared.seedIfAsked()
         // Tiles first: they are what a compartment shows when they exist, and they decode quickly.
         if request.pixels != pixels {

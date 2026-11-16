@@ -274,6 +274,51 @@ final class CutoutCacheKeyTests: XCTestCase {
         XCTAssertNil(partial.centerX)
         XCTAssertEqual(CutoutStore.hintHash(partial), CutoutStore.hintHash(CutoutHint()))
     }
+
+    func testHintKeepsDocumentValuesInRange() {
+        // A hand-edited or foreign document: the pipeline must never see these.
+        let wild = CutoutStore.hint(for: BoxCutout(photo: "a.jpg", x: 1e300, y: -3, r: 1e300, turn: 1e9),
+                                    focus: PhotoFocus(x: 7, y: -2, zoom: 1))
+        XCTAssertEqual(wild.centerX, 1)
+        XCTAssertEqual(wild.centerY, 0)
+        XCTAssertEqual(wild.radius, BoxCutout.ringRadius.upperBound)
+        XCTAssertEqual(wild.rotation, 180)
+        XCTAssertEqual(wild.focusX, 1)
+        XCTAssertEqual(wild.focusY, 0)
+        let tiny = CutoutStore.hint(for: BoxCutout(photo: "a.jpg", x: 0.5, y: 0.5, r: 0), focus: nil)
+        XCTAssertEqual(tiny.radius, BoxCutout.ringRadius.lowerBound)
+        let nan = CutoutStore.hint(for: BoxCutout(photo: "a.jpg", x: .nan, y: 0.5, r: 0.2, turn: .infinity),
+                                   focus: PhotoFocus(x: .nan, y: 0.3, zoom: 1))
+        XCTAssertNil(nan.centerX, "not a number: no ring")
+        XCTAssertEqual(nan.rotation, 0)
+        XCTAssertEqual(nan.focusX, 0.5)
+        XCTAssertEqual(nan.focusY, 0.5)
+        // Values already in range are untouched, so the editor's hint and the saved one still share a cache key.
+        let editor = CutoutStore.hint(for: BoxCutout(photo: "a.jpg", x: 0.4, y: 0.6, r: 0.2, turn: 0, caseOnly: false), focus: nil)
+        let saved = CutoutStore.hint(for: BoxCutout(photo: "a.jpg", x: 0.4, y: 0.6, r: 0.2).normalized, focus: nil)
+        XCTAssertEqual(CutoutStore.hintHash(editor), CutoutStore.hintHash(saved))
+    }
+
+    func testOnlyOtherVersionFoldersAreRemoved() {
+        let names = ["v1", "v2", "v10", "v", "vx", "v-1", "v+3", "notes", ".DS_Store", "v3.tmp"]
+        XCTAssertEqual(CutoutStore.staleVersionFolders(names, current: 2), ["v1", "v10"])
+    }
+
+    func testAHandSetRingClearsCheckTheCutout() {
+        let image = CGContext(data: nil, width: 2, height: 2, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!.makeImage()!
+        var result = CutoutResult(image: image, caseRadius: 117.6, strap: [0.1, 0.1, 0.1], strapAbove: 0, strapBelow: 0, method: .disc,
+                                  confidence: 0.3, photo: "a.jpg", centerX: 0.5, centerY: 0.5, radius: 0.2, rotation: 0)
+        XCTAssertTrue(result.isDoubtful, "automatic disc")
+        result.handSet = true
+        XCTAssertFalse(result.isDoubtful, "the disc inside his own ring")
+        result.method = .failed
+        XCTAssertTrue(result.isDoubtful, "an empty cut is flagged even inside his ring")
+        var hint = CutoutHint()
+        XCTAssertFalse(CutoutStore.isHandSet(hint))
+        hint.centerX = 0.5; hint.centerY = 0.5; hint.radius = 0.2
+        XCTAssertTrue(CutoutStore.isHandSet(hint))
+    }
 }
 
 final class BoxSlotContentTests: XCTestCase {
