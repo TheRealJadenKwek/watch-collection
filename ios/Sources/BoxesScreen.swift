@@ -1548,6 +1548,8 @@ struct BoxesScreen: View {
         guard let probe = UserDefaults.standard.string(forKey: "boxProbe") else { return }
         try? await Task.sleep(for: .seconds(2.5))
         for token in probe.split(separator: ",").map(String.init) {
+            // A screen the system built and dropped at launch (the Mac's window does) runs no probe.
+            guard !Task.isCancelled else { return }
             let parts = token.split(separator: ":", maxSplits: 1).map(String.init)
             let value = parts.count > 1 ? parts[1] : ""
             switch parts[0] {
@@ -1583,6 +1585,28 @@ struct BoxesScreen: View {
                 }
             case "scroll": scroll.scrollTo(y: CGFloat(Double(value) ?? 0))
             case "brown", "black": selectedBoxID = parts[0]
+            #if os(macOS)
+            case "appearance": NSApp.appearance = NSAppearance(named: value == "dark" ? .darkAqua : .aqua)
+            case "size":
+                // The window's content size: size:<width>x<height>.
+                let sides = value.split(separator: "x").compactMap { Double($0) }
+                if sides.count == 2, let window = Self.mainWindow {
+                    window.setContentSize(CGSize(width: sides[0], height: sides[1]))
+                }
+            case "window":
+                // The Mac window as drawn, to the app's tmp/box-probe/<value>.png, and a sheet over it to
+                // <value>-sheet.png with its offset from the window's top left in <value>-sheet.txt.
+                let folder = FileManager.default.temporaryDirectory.appendingPathComponent("box-probe", isDirectory: true)
+                try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                if let window = Self.mainWindow {
+                    try? Self.picture(of: window)?.write(to: folder.appendingPathComponent(value + ".png"), options: .atomic)
+                    if let sheet = window.attachedSheet, let png = Self.picture(of: sheet) {
+                        try? png.write(to: folder.appendingPathComponent(value + "-sheet.png"), options: .atomic)
+                        let offset = "\(sheet.frame.minX - window.frame.minX) \(window.frame.maxY - sheet.frame.maxY)"
+                        try? offset.write(to: folder.appendingPathComponent(value + "-sheet.txt"), atomically: true, encoding: .utf8)
+                    }
+                }
+            #endif
             case "lift":
                 // A watch held over another compartment, as a drag shows it: lift:<from>-<over>.
                 let ends = value.split(separator: "-").compactMap { Int($0) }
@@ -1596,6 +1620,22 @@ struct BoxesScreen: View {
             }
         }
     }
+
+    #if os(macOS)
+    /// The app's window. A sheet's title becomes the window's while it is up, so it is found by size, not by title.
+    private static var mainWindow: NSWindow? {
+        NSApp.windows.filter { $0.isVisible && $0.sheetParent == nil }.max { $0.frame.width * $0.frame.height < $1.frame.width * $1.frame.height }
+    }
+
+    /// A window as its views draw it, title bar included, as a PNG. The app draws its own windows, so this needs no
+    /// screen recording permission.
+    private static func picture(of window: NSWindow) -> Data? {
+        guard let view = window.contentView?.superview ?? window.contentView,
+              let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
+        view.cacheDisplay(in: view.bounds, to: rep)
+        return rep.representation(using: .png, properties: [:])
+    }
+    #endif
     #endif
 }
 
