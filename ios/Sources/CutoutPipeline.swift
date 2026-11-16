@@ -40,7 +40,7 @@ enum CutoutMethod: String, Sendable {
     case lift            // Vision lift used as it came
     case liftCleaned     // lift with wrist or hand removed
     case disc            // fallback: case disc only, strap drawn by the box
-    case failed
+    case failed          // the cut left the case empty: the case disc stands in, and the app asks to check it
 }
 
 struct WatchCutout {
@@ -71,6 +71,9 @@ enum CutoutPipeline {
     static let mirrorInto = 0.45           // ... to a side with less than this
     static let roundEnough = 0.62          // inscribed circle rim support below this is questioned
     static let innerCircleWins = 0.85      // ... and an inner circle with at least this support replaces it
+    static let smallestCase = 0.045        // a case radius under this share of the short side is a speck
+    static let defaultCase = 0.2           // the disc's radius, as a share of the short side, when there is nothing to measure
+    static let emptyCase = 0.25            // a cut whose case disc is less solid than this shows nothing of the watch
 
     // MARK: Loading
 
@@ -91,8 +94,10 @@ enum CutoutPipeline {
         guard w > 32, h > 32, let rgba = Raster.rgba(photo) else { return nil }
         var notes: [String] = []
         let handler = VNImageRequestHandler(cgImage: photo)
+        let minSide = Double(min(w, h))
+        let ring = handRing(hint, w: w, h: h)
 
-        // 1. Subject lift.
+        // 1. Subject lift. Under Case only too: the case circle and the strap's direction still come from it (step 8).
         let lift = VNGenerateForegroundInstanceMaskRequest()
         let person = VNGeneratePersonSegmentationRequest()
         person.qualityLevel = .balanced
@@ -103,18 +108,21 @@ enum CutoutPipeline {
         let handHeld = !(hands.results ?? []).isEmpty
 
         var matte: [Float]? = nil
-        if let observation = lift.results?.first, !hint.discOnly {
+        if let observation = lift.results?.first {
             var best: (score: Double, matte: [Float])? = nil
             for instance in observation.allInstances {
                 guard let buffer = try? observation.generateScaledMaskForImage(forInstances: IndexSet(integer: instance), from: handler),
                       let m = Raster.floats(buffer, width: w, height: h) else { continue }
-                let s = instanceScore(m, w: w, h: h, hint: hint)
+                // A ring set by hand picks the subject under it; otherwise size and the framing decide.
+                let s = ring.map { ringOverlap(m, w: w, h: h, center: $0.center, radius: $0.radius) } ?? instanceScore(m, w: w, h: h, hint: hint)
                 if s > (best?.score ?? 0) { best = (s, m) }
             }
             matte = best?.matte
-            if observation.allInstances.count > 1 { notes.append("\(observation.allInstances.count) subjects, kept the central one") }
+            if observation.allInstances.count > 1, ring == nil || matte != nil {
+                notes.append("\(observation.allInstances.count) subjects, kept the \(ring == nil ? "central one" : "one under the ring")")
+            }
         }
-        if matte == nil && !hint.discOnly { notes.append("no subject found") }
+        if matte == nil { notes.append(ring == nil ? "no subject found" : "no subject under the ring") }
 
         // 2. Skin out, only when Vision sees a person.
         var method = CutoutMethod.lift
@@ -135,7 +143,7 @@ enum CutoutPipeline {
 
         // 3. Case circle.
         var center = CGPoint(x: Double(w) / 2, y: Double(h) / 2)
-        var radius = Double(min(w, h)) * 0.2
+        var radius = minSide * defaultCase
         var confidence = 0.0
         let gray = Raster.gray(rgba, w: w, h: h)
         if let m = matte {
@@ -157,68 +165,74 @@ enum CutoutPipeline {
                     notes.append("no clear case edge")
                 }
             }
-            let minSide = Double(min(w, h))
-            if radius < minSide * 0.045 || radius > minSide * 0.5 { method = .disc; confidence = min(confidence, 0.2); notes.append("case size implausible") }
+            if radius < minSide * smallestCase || radius > minSide * 0.5 { method = .disc; confidence = min(confidence, 0.2); notes.append("case size implausible") }
         } else {
             method = .disc
+            // A ring set by hand is the circle: nothing to search for.
             let guess = CGPoint(x: hint.focusX * Double(w), y: hint.focusY * Double(h))
-            if let found = strongestCircle(gray: gray, w: w, h: h, near: guess, within: Double(min(w, h)) * 0.3,
-                                           radii: (Double(min(w, h)) * 0.08)...(Double(min(w, h)) * 0.42)) {
+            if ring == nil, let found = strongestCircle(gray: gray, w: w, h: h, near: guess, within: Double(min(w, h)) * 0.3,
+                                                        radii: (Double(min(w, h)) * 0.08)...(Double(min(w, h)) * 0.42)) {
                 center = found.center; radius = found.radius; confidence = found.support * 0.6
             }
         }
-        if let x = hint.centerX, let y = hint.centerY, let r = hint.radius {
-            center = CGPoint(x: x * Double(w), y: y * Double(h)); radius = r * Double(min(w, h)); confidence = 1
+        if let ring {
+            center = ring.center; radius = ring.radius; confidence = 1
             notes.append("ring set by hand")
         }
-        if hint.discOnly { method = .disc }
+        // A speck, or nothing at all (the skin test emptied the lift): the disc at the usual size, never an infinite
+        // scale. With nothing to centre on, it goes where the photo is framed.
+        if !(radius >= minSide * smallestCase) {
+            if ring == nil, !(radius >= 1) { center = CGPoint(x: hint.focusX * Double(w), y: hint.focusY * Double(h)) }
+            radius = minSide * defaultCase
+            method = .disc; confidence = min(confidence, 0.2)
+            notes.append("no case to measure, disc at the usual size")
+        }
 
-        // 4. Strap axis.
+        // 4. Strap axis. Measured before Case only applies, so the case disc stands the way the watch did.
         var angle = 0.0   // radians, clockwise from straight up
         if method != .disc, let m = matte, let a = strapAxis(m, w: w, h: h, center: center, radius: radius) { angle = a }
         angle += hint.rotation * .pi / 180
+        if hint.discOnly { method = .disc }
 
         // 5 and 6. Cut.
         let side = outputSide
         let scale = (Double(side) * Double(caseFraction)) / radius
-        guard let photoOut = Raster.resample(photo, side: side, center: center, sourceHeight: h, angle: angle, scale: scale, gray: false),
-              var out = Raster.rgba(photoOut) else { return nil }
-        var alpha = [Float](repeating: 1, count: side * side)
-        if method != .disc, let m = matte, let matteImage = Raster.grayImage(m, w: w, h: h),
-           let matteOut = Raster.resample(matteImage, side: side, center: center, sourceHeight: h, angle: angle, scale: scale, gray: true),
-           let bytes = Raster.grayBytes(matteOut) {
-            for i in 0..<(side * side) { alpha[i] = Float(bytes[i]) / 255 }
-        }
         let r = Double(side) * Double(caseFraction)
         let mid = Double(side) / 2
+        var out: [UInt8] = []
+        var alpha: [Float] = []
         var strapSamples: [(UInt8, UInt8, UInt8)] = []
         var above = 0.0, below = 0.0, bandArea = 0.0
-        for y in 0..<side {
-            for x in 0..<side {
-                let u = Double(x) + 0.5 - mid, v = Double(y) + 0.5 - mid
-                let d = (u * u + v * v).squareRoot()
-                var keep: Double
-                if method == .disc {
-                    keep = smooth(r * 1.0 + 1.5, r * 1.0 - 1.5, d)
-                } else {
+        if method != .disc, let m = matte {
+            guard let photoOut = Raster.resample(photo, side: side, center: center, sourceHeight: h, angle: angle, scale: scale, gray: false),
+                  let pixels = Raster.rgba(photoOut) else { return nil }
+            out = pixels
+            alpha = [Float](repeating: 1, count: side * side)
+            if let matteImage = Raster.grayImage(m, w: w, h: h),
+               let matteOut = Raster.resample(matteImage, side: side, center: center, sourceHeight: h, angle: angle, scale: scale, gray: true),
+               let bytes = Raster.grayBytes(matteOut) {
+                for i in 0..<(side * side) { alpha[i] = Float(bytes[i]) / 255 }
+            }
+            for y in 0..<side {
+                for x in 0..<side {
+                    let u = Double(x) + 0.5 - mid, v = Double(y) + 0.5 - mid
+                    let d = (u * u + v * v).squareRoot()
                     let disc = smooth(r * crownAllowance + 2, r * crownAllowance - 2, d)
                     let band = smooth(r * bandHalfWidth + 2, r * bandHalfWidth - 2, abs(u)) * smooth(r * bandReach + 2, r * bandReach - 2, abs(v))
-                    keep = max(disc, band)
-                }
-                let i = y * side + x
-                let a = Double(alpha[i]) * keep
-                alpha[i] = Float(a)
-                if method != .disc, abs(u) < r * 0.5, abs(v) > r * 1.3, abs(v) < r * 2.0 {
-                    bandArea += 0.5
-                    if a > 0.6 { if v < 0 { above += 1 } else { below += 1 } }
-                }
-                // Strap colour: from just past the lugs outward, where a short strap still shows.
-                if method != .disc, a > 0.6, abs(u) < r * 0.4, abs(v) > r * 1.16, abs(v) < r * 2.0, (x + y) % 3 == 0 {
-                    strapSamples.append((out[i * 4], out[i * 4 + 1], out[i * 4 + 2]))
+                    let keep = max(disc, band)
+                    let i = y * side + x
+                    let a = Double(alpha[i]) * keep
+                    alpha[i] = Float(a)
+                    if abs(u) < r * 0.5, abs(v) > r * 1.3, abs(v) < r * 2.0 {
+                        bandArea += 0.5
+                        if a > 0.6 { if v < 0 { above += 1 } else { below += 1 } }
+                    }
+                    // Strap colour: from just past the lugs outward, where a short strap still shows.
+                    if a > 0.6, abs(u) < r * 0.4, abs(v) > r * 1.16, abs(v) < r * 2.0, (x + y) % 3 == 0 {
+                        strapSamples.append((out[i * 4], out[i * 4 + 1], out[i * 4 + 2]))
+                    }
                 }
             }
-        }
-        if method != .disc {
             // Skin left inside the kept shape. Held in a hand: any skin outside the case circle is
             // fingers. On a wrist: only skin beside the strap band, so a tan strap survives.
             if personShare > 0.04 {
@@ -281,6 +295,20 @@ enum CutoutPipeline {
                 notes.append(fillTop ? "far strap mirrored from the near side" : "near strap mirrored from the far side")
                 if fillTop { above = below } else { below = above }
             }
+            // Never an invisible watch: a cut that leaves the case empty (a ring that only grazes a subject) failed.
+            // The case disc stands in for it, at the turn asked for, and the screen says "Check the cutout".
+            if caseCover(alpha, side: side, radius: r) < emptyCase {
+                method = .failed
+                angle = hint.rotation * .pi / 180
+                notes.append("nothing of the watch inside the case circle, disc instead")
+            }
+        }
+        if method == .disc || method == .failed {
+            guard let disc = discCut(photo, side: side, center: center, angle: angle, scale: scale) else { return nil }
+            out = disc.pixels
+            alpha = disc.alpha
+            strapSamples = []
+            above = 0; below = 0; bandArea = 0
         }
         for i in 0..<(side * side) {
             let a = alpha[i]
@@ -294,7 +322,7 @@ enum CutoutPipeline {
         if strapSamples.count > 40 {
             let rs = strapSamples.map(\.0).sorted(), gs = strapSamples.map(\.1).sorted(), bs = strapSamples.map(\.2).sorted()
             strap = (Double(rs[rs.count / 2]) / 255, Double(gs[gs.count / 2]) / 255, Double(bs[bs.count / 2]) / 255)
-        } else if method == .disc {
+        } else if method == .disc || method == .failed {
             strap = ringColor(rgba, w: w, h: h, center: center, radius: radius, angle: angle)
         }
         return WatchCutout(
@@ -309,6 +337,64 @@ enum CutoutPipeline {
     private static func smooth(_ edge0: Double, _ edge1: Double, _ x: Double) -> Double {
         let t = max(0, min(1, (x - edge0) / (edge1 - edge0)))
         return t * t * (3 - 2 * t)
+    }
+
+    /// The ring set by hand, in photo pixels: centre kept on the photo, radius at most half its short side. Nil unless
+    /// all three values are there and are numbers.
+    static func handRing(_ hint: CutoutHint, w: Int, h: Int) -> (center: CGPoint, radius: Double)? {
+        guard let x = hint.centerX, let y = hint.centerY, let r = hint.radius, x.isFinite, y.isFinite, r.isFinite else { return nil }
+        return (CGPoint(x: min(1, max(0, x)) * Double(w), y: min(1, max(0, y)) * Double(h)), min(0.5, max(0, r)) * Double(min(w, h)))
+    }
+
+    /// How much of a hand-set ring's disc one subject covers, in pixels. A subject under 0.4 percent of the photo
+    /// counts for nothing, as in `instanceScore`.
+    static func ringOverlap(_ m: [Float], w: Int, h: Int, center: CGPoint, radius: Double) -> Double {
+        var area = 0, under = 0
+        for y in 0..<h {
+            for x in 0..<w where m[y * w + x] > 0.5 {
+                area += 1
+                let dx = Double(x) + 0.5 - center.x, dy = Double(y) + 0.5 - center.y
+                if dx * dx + dy * dy <= radius * radius { under += 1 }
+            }
+        }
+        guard Double(area) > Double(w * h) * 0.004 else { return 0 }
+        return Double(under)
+    }
+
+    /// Share of the case disc (`radius` about the middle of a `side` square) that is more than half opaque.
+    static func caseCover(_ alpha: [Float], side: Int, radius: Double) -> Double {
+        var inside = 0, solid = 0
+        let mid = Double(side) / 2
+        for y in 0..<side {
+            for x in 0..<side {
+                let u = Double(x) + 0.5 - mid, v = Double(y) + 0.5 - mid
+                guard u * u + v * v <= radius * radius else { continue }
+                inside += 1
+                if alpha[y * side + x] > 0.5 { solid += 1 }
+            }
+        }
+        return inside > 0 ? Double(solid) / Double(inside) : 0
+    }
+
+    /// The disc fallback's cut (step 8): the case circle alone with a soft edge, clear wherever it runs past the
+    /// photo's edge. Alpha is straight, not yet multiplied in.
+    static func discCut(_ photo: CGImage, side: Int, center: CGPoint, angle: Double, scale: Double) -> (pixels: [UInt8], alpha: [Float])? {
+        guard let photoOut = Raster.resample(photo, side: side, center: center, sourceHeight: photo.height, angle: angle, scale: scale, gray: false),
+              let pixels = Raster.rgba(photoOut),
+              let inside = Raster.coverage(width: photo.width, height: photo.height, side: side, center: center, angle: angle, scale: scale)
+        else { return nil }
+        let r = Double(side) * Double(caseFraction)
+        let mid = Double(side) / 2
+        var alpha = [Float](repeating: 0, count: side * side)
+        for y in 0..<side {
+            for x in 0..<side {
+                let u = Double(x) + 0.5 - mid, v = Double(y) + 0.5 - mid
+                let i = y * side + x
+                let onPhoto = Float(inside[i]) / 255
+                alpha[i] = Float(smooth(r * 1.0 + 1.5, r * 1.0 - 1.5, (u * u + v * v).squareRoot())) * onPhoto
+            }
+        }
+        return (pixels, alpha)
     }
 
     /// Bigger, more central, less cut by the photo's edge wins.
@@ -620,12 +706,29 @@ enum Raster {
         ctx.interpolationQuality = .high
         if gray { ctx.setFillColor(gray: 0, alpha: 1) } else { ctx.setFillColor(red: 0.5, green: 0.5, blue: 0.5, alpha: 1) }
         ctx.fill(CGRect(x: 0, y: 0, width: side, height: side))
+        place(ctx, side: side, center: center, sourceHeight: sourceHeight, angle: angle, scale: scale)
+        ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+        return ctx.makeImage()
+    }
+
+    /// How much of each pixel of a `resample` with the same arguments the photo covers, 0...255: 0 past its edge.
+    static func coverage(width: Int, height: Int, side: Int, center: CGPoint, angle: Double, scale: Double) -> [UInt8]? {
+        guard let ctx = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: CGColorSpaceCreateDeviceGray(), bitmapInfo: CGImageAlphaInfo.none.rawValue) else { return nil }
+        ctx.setFillColor(gray: 0, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: side, height: side))
+        place(ctx, side: side, center: center, sourceHeight: height, angle: angle, scale: scale)
+        ctx.setFillColor(gray: 1, alpha: 1)
+        ctx.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        return ctx.makeImage().flatMap(grayBytes)
+    }
+
+    /// The transform `resample` draws the photo with.
+    private static func place(_ ctx: CGContext, side: Int, center: CGPoint, sourceHeight: Int, angle: Double, scale: Double) {
         ctx.translateBy(x: CGFloat(side) / 2, y: CGFloat(side) / 2)
         ctx.rotate(by: CGFloat(angle))
         ctx.scaleBy(x: CGFloat(scale), y: CGFloat(scale))
         ctx.translateBy(x: -center.x, y: -(CGFloat(sourceHeight) - center.y))
-        ctx.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
-        return ctx.makeImage()
     }
 
     /// Keeps the 4-connected regions of `m` that have at least one neighbour passing `touches`.
