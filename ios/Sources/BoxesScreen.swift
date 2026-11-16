@@ -1421,6 +1421,14 @@ struct BoxesScreen: View {
         .accessibilityLabel("\(piece.name), \(piece.wishlist ? "on the wishlist" : "not in a box")")
         .accessibilityHint("Double tap, then choose a space.")
         .accessibilityAddTraits(isArmed ? .isSelected : [])
+        .onDisappear {
+            // A grid dropped the chip being dragged (autoscroll took it far off screen) and its press with it: no
+            // drop will come, so the drag ends here and the chip goes back.
+            if let lift = drag.lift, lift.origin == nil, lift.piece.id == piece.id, !drag.dropping {
+                drag.pressing = false
+                endDrag()
+            }
+        }
     }
 
     // MARK: Chip grids
