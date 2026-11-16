@@ -45,12 +45,15 @@ struct BoxShareCard: View {
                          emptyTile: emptyTile, outlined: dark)
                 .padding(.top, 22)
             if !onTrial.isEmpty {
-                HStack(spacing: 8) {
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
                     Circle().fill(WatchTheme.Box.trial).frame(width: 8, height: 8)
+                        .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 0.5 }
                     Text("On trial: " + Self.list(onTrial) + ".")
                         .font(.system(size: 13, weight: .light))
                         .foregroundStyle(muted)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
+                .padding(.horizontal, 20)
                 .padding(.top, 26)
             }
         }

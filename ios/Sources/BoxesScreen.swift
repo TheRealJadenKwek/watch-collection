@@ -1137,8 +1137,9 @@ struct BoxesScreen: View {
 
     #if DEBUG
     /// Debug builds only, for pictures on a simulator that has no touch input:
-    ///   -boxProbe "lid,select:3,arm:<watch-id>,try:<wishlist-id>,wishlist,asis,editor:3,manage,turn,brown,
-    ///              scroll:600,lift:2-5,wait:1"
+    ///   -boxProbe "lid,select:3,arm:<watch-id>,try:<wishlist-id>,trial:<wishlist-id>@<slot>,notrial,wishlist,asis,
+    ///              editor:3,manage,turn,brown,black,scroll:600,lift:2-5,wait:1,
+    ///              card:<name>,product:<name>"
     private func runProbe() async {
         guard let probe = UserDefaults.standard.string(forKey: "boxProbe") else { return }
         try? await Task.sleep(for: .seconds(2.5))
@@ -1150,6 +1151,14 @@ struct BoxesScreen: View {
             case "select": selection = Int(value)
             case "arm": armed = BoxChip(itemID: value, wishlist: false)
             case "try": consume(.tryOn(value))
+            case "notrial": for box in boxes { store.clearTrial(boxID: box.id) }
+            case "trial":
+                // A candidate on trial in a space of the box on screen: trial:<wishlist-id>@<slot>.
+                let bits = value.split(separator: "@").map(String.init)
+                if bits.count == 2, let slot = Int(bits[1]), let scene = makeScene() {
+                    store.tryOn(wishlistID: bits[0], boxID: scene.box.id, slot: slot)
+                    showsTrial = true
+                }
             case "wishlist": trayShowsWishlist = true
             case "asis": showsTrial = false
             case "manage": managing = true
@@ -1159,8 +1168,17 @@ struct BoxesScreen: View {
                     editing = editTarget(piece, scene)
                 }
             case "wait": try? await Task.sleep(for: .seconds(Double(value) ?? 1))
+            case "card", "product":
+                // The shared picture, written to the app's tmp/box-probe/<value>.png: card:<name>, product:<name>.
+                if let scene = makeScene(),
+                   let image = parts[0] == "card" ? BoxShare.image(shareCard(scene)) : BoxShare.image(productCard(scene)),
+                   let png = BoxShare.png(image) {
+                    let folder = FileManager.default.temporaryDirectory.appendingPathComponent("box-probe", isDirectory: true)
+                    try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+                    try? png.write(to: folder.appendingPathComponent(value + ".png"), options: .atomic)
+                }
             case "scroll": scroll.scrollTo(y: CGFloat(Double(value) ?? 0))
-            case "brown": selectedBoxID = "brown"
+            case "brown", "black": selectedBoxID = parts[0]
             case "lift":
                 // A watch held over another compartment, as a drag shows it: lift:<from>-<over>.
                 let ends = value.split(separator: "-").compactMap { Int($0) }

@@ -46,12 +46,12 @@ struct BoxManageSheet: View {
             .navigationBarTitleDisplayMode(.inline)
             #endif
             .toolbar {
-                #if os(iOS)
-                ToolbarItem(placement: .topBarLeading) { EditButton() }
-                #endif
-                ToolbarItem(placement: .confirmationAction) {
+                ToolbarItem(placement: .cancellationAction) {
                     Button(role: .close) { dismiss() }
                 }
+                #if os(iOS)
+                ToolbarItem(placement: .primaryAction) { EditButton() }
+                #endif
             }
             .navigationDestination(isPresented: $adding) {
                 BoxEditForm(store: store, box: nil) { added in selectedBoxID = added }
@@ -81,6 +81,10 @@ struct BoxManageSheet: View {
                     colors: [box.resolvedFinish == "brown" ? WatchTheme.Box.brown.frameLight : WatchTheme.Box.black.frameLight,
                              box.resolvedFinish == "brown" ? WatchTheme.Box.brown.frameDark : WatchTheme.Box.black.frameDark],
                     startPoint: .topLeading, endPoint: .bottomTrailing))
+                // A hairline edge so the black swatch still reads on a dark row.
+                .overlay {
+                    RoundedRectangle(cornerRadius: 3, style: .continuous).strokeBorder(WatchTheme.separator, lineWidth: 0.5)
+                }
                 .frame(width: 30, height: 20)
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 2) {
