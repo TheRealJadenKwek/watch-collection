@@ -231,3 +231,33 @@ final class BoxSlotContentTests: XCTestCase {
         XCTAssertEqual(single.spaceName(3), "space 4")
     }
 }
+
+/// Where a drag counts as over the box, and the shared picture's names.
+final class BoxScreenPureTests: XCTestCase {
+    func testDropsUnderTheTrayOrTheBarAreOffTheBox() {
+        let frames = BoxFrames()
+        frames.stage = CGRect(x: 16, y: 300, width: 370, height: 900)
+        frames.scroll = CGRect(x: 0, y: 0, width: 402, height: 874)
+        frames.topInset = 100
+        frames.tray = CGRect(x: 0, y: 690, width: 402, height: 120)
+        XCTAssertTrue(frames.showsBox(at: CGPoint(x: 200, y: 400)))
+        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 200, y: 700)), "the box runs on under the tray")
+        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 10, y: 400)), "beside the box")
+        frames.stage.origin.y = -200
+        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 200, y: 50)), "scrolled under the bar")
+        XCTAssertTrue(frames.showsBox(at: CGPoint(x: 200, y: 150)))
+        // Before the tray and the scroll view have reported a frame, only the stage counts.
+        let early = BoxFrames()
+        early.stage = CGRect(x: 0, y: 0, width: 100, height: 100)
+        XCTAssertTrue(early.showsBox(at: CGPoint(x: 50, y: 90)))
+    }
+
+    func testShareNames() {
+        XCTAssertEqual(BoxShare.fileName("Black Box", ""), "black-box")
+        XCTAssertEqual(BoxShare.fileName("Brown Box", "-product"), "brown-box-product")
+        XCTAssertEqual(BoxShare.fileName("!!!", ""), "watch-box")
+        XCTAssertEqual(BoxShareCard.list(["A"]), "A")
+        XCTAssertEqual(BoxShareCard.list(["A", "B"]), "A and B")
+        XCTAssertEqual(BoxShareCard.list(["A", "B", "C"]), "A, B and C")
+    }
+}

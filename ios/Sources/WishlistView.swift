@@ -16,13 +16,19 @@ struct WishlistScreen: View {
     @Environment(\.duo) private var duo
 
     private var ranked: [WishlistItem] {
-        (store.data?.wishlist ?? []).sorted { left, right in
+        Self.ranked(store.data?.wishlist ?? [], scores: store.scores)
+    }
+
+    /// The wishlist's order: considering, then passed, then bought; the best score first; then the lower price.
+    /// The Boxes tray lists candidates in the same order.
+    static func ranked(_ items: [WishlistItem], scores: [String: WishlistScore]) -> [WishlistItem] {
+        items.sorted { left, right in
             let statusRank = ["considering": 0, "passed": 1, "bought": 2]
             let leftStatus = statusRank[left.status] ?? 3
             let rightStatus = statusRank[right.status] ?? 3
             if leftStatus != rightStatus { return leftStatus < rightStatus }
-            let leftScore = store.scores[left.id]?.total ?? Int.min
-            let rightScore = store.scores[right.id]?.total ?? Int.min
+            let leftScore = scores[left.id]?.total ?? Int.min
+            let rightScore = scores[right.id]?.total ?? Int.min
             if leftScore != rightScore { return leftScore > rightScore }
             return (left.priceExpected ?? .infinity) < (right.priceExpected ?? .infinity)
         }

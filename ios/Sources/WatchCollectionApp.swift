@@ -107,6 +107,9 @@ struct RootView: View {
             Tab("Collection", systemImage: "watch.analog", value: AppTab.collection.rawValue) {
                 CollectionScreen(store: store, showSettings: { showSettings = true })
             }
+            Tab("Boxes", systemImage: "square.grid.3x2", value: AppTab.boxes.rawValue) {
+                BoxesScreen(store: store, showSettings: { showSettings = true })
+            }
             Tab("Insights", systemImage: "chart.bar.xaxis", value: AppTab.stats.rawValue) {
                 StatsScreen(store: store, showSettings: { showSettings = true })
             }

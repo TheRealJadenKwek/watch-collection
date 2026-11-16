@@ -69,6 +69,8 @@ final class AppStore: ObservableObject {
     @Published private(set) var syncEnabled = UserDefaults.standard.object(forKey: "syncEnabled") as? Bool ?? true
     /// Wishlist watches being tried in a box, on this device only (never in the document).
     @Published private(set) var boxTrial = BoxTrial.load()
+    /// What the Boxes tab should show when it next appears (set by the watch page and the wishlist).
+    @Published var boxIntent: BoxIntent?
     @Published private(set) var syncAddress = UserDefaults.standard.string(forKey: "syncAddress")
         ?? LegacyServerConfiguration.migrationURL ?? Platform.defaultSyncAddress
 
@@ -807,6 +809,12 @@ final class AppStore: ObservableObject {
                 data.watches[index].boxCutout = clean
             }
         }
+    }
+
+    /// Switches to the Boxes tab with a watch or candidate in hand; the screen consumes the intent.
+    func openBoxes(_ intent: BoxIntent) {
+        boxIntent = intent
+        UserDefaults.standard.set(AppTab.boxes.rawValue, forKey: "selectedTabV4")
     }
 
     /// Puts a wishlist candidate on trial in a box space, on this device only.

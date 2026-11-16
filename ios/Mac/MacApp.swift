@@ -158,6 +158,7 @@ private struct KeptSection: View {
         Group {
             switch tab {
             case .collection: CollectionScreen(store: store, showSettings: {})
+            case .boxes: BoxesScreen(store: store, showSettings: {})
             case .stats: StatsScreen(store: store, showSettings: {})
             case .wishlist: WishlistScreen(store: store, showSettings: {})
             case .search: SearchScreen(store: store)
@@ -182,6 +183,7 @@ private struct MacSidebar: View {
 
     private let items: [(tab: AppTab, title: String, symbol: String)] = [
         (.collection, "Collection", "watch.analog"),
+        (.boxes, "Boxes", "square.grid.3x2"),
         (.stats, "Insights", "chart.bar.xaxis"),
         (.wishlist, "Wishlist", "star"),
         (.search, "Search", "magnifyingglass"),
