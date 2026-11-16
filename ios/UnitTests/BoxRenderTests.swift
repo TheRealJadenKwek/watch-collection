@@ -443,19 +443,54 @@ final class BoxScreenPureTests: XCTestCase {
         // As measured on an iPhone 17 Pro: the scroll view's frame starts below the bar (screen y 116 is y 0 here)
         // and ends at the tray.
         let frames = BoxFrames()
-        frames.stage = CGRect(x: 16, y: 300, width: 370, height: 900)
+        frames.order = ["black"]
+        frames.stages["black"] = BoxFrames.Stage(rect: CGRect(x: 16, y: 300, width: 370, height: 900), scrolls: true)
         frames.scroll = CGRect(x: 0, y: 0, width: 402, height: 545)
         frames.tray = CGRect(x: 0, y: 545, width: 402, height: 130)
-        XCTAssertTrue(frames.showsBox(at: CGPoint(x: 200, y: 400)))
-        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 200, y: 560)), "the box runs on under the tray")
-        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 10, y: 400)), "beside the box")
-        frames.stage.origin.y = -200
-        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 200, y: -10)), "scrolled under the bar")
-        XCTAssertTrue(frames.showsBox(at: CGPoint(x: 200, y: 150)))
+        XCTAssertTrue(frames.shows("black", at: CGPoint(x: 200, y: 400)))
+        XCTAssertFalse(frames.shows("black", at: CGPoint(x: 200, y: 560)), "the box runs on under the tray")
+        XCTAssertFalse(frames.shows("black", at: CGPoint(x: 10, y: 400)), "beside the box")
+        frames.stages["black"]?.rect.origin.y = -200
+        XCTAssertFalse(frames.shows("black", at: CGPoint(x: 200, y: -10)), "scrolled under the bar")
+        XCTAssertTrue(frames.shows("black", at: CGPoint(x: 200, y: 150)))
         // Before the tray and the scroll view have reported a frame, only the stage counts.
         let early = BoxFrames()
-        early.stage = CGRect(x: 0, y: 0, width: 100, height: 100)
-        XCTAssertTrue(early.showsBox(at: CGPoint(x: 50, y: 90)))
+        early.order = ["black"]
+        early.stages["black"] = BoxFrames.Stage(rect: CGRect(x: 0, y: 0, width: 100, height: 100), scrolls: true)
+        XCTAssertTrue(early.shows("black", at: CGPoint(x: 50, y: 90)))
+    }
+
+    @MainActor func testTheStackedCardShowsBothBoxesWithOneTrialLine() throws {
+        let box = BoxGeometry(columns: 6, rows: 2)
+        func card(_ title: String, _ finish: BoxFinish, onTrial: [String], out: [String]) -> BoxShareCard {
+            BoxShareCard(title: title, subtitle: "11 watches, 1 on trial", geometry: box, finish: finish, lidClosed: false,
+                         slots: [:], onTrial: onTrial, steppingOut: out)
+        }
+        let black = card("Black Box", .black, onTrial: ["Commander 1959"], out: ["G-Steel"])
+        let brown = card("Brown Box", .brown, onTrial: ["Ricochet"], out: [])
+        let subtitle = BoxShare.counts(of: [(watches: 10, onTrial: 1, capacity: 12), (watches: 3, onTrial: 1, capacity: 12)])
+        XCTAssertEqual(subtitle, "13 watches, 2 on trial, 9 spaces open")
+        let stacked = BoxStackShareCard(title: "Both Boxes", subtitle: subtitle, boxes: [black, brown])
+        XCTAssertEqual(stacked.trialLine, "On trial: Commander 1959 and Ricochet. G-Steel steps out to make room.")
+        XCTAssertNil(BoxStackShareCard(title: "Both Boxes", subtitle: "", boxes: [card("A", .black, onTrial: [], out: [])]).trialLine)
+        let single = try XCTUnwrap(ImageRenderer(content: black).cgImage)
+        let both = try XCTUnwrap(ImageRenderer(content: stacked).cgImage)
+        XCTAssertEqual(both.width, 760)
+        XCTAssertEqual(single.width, 760)
+        XCTAssertGreaterThan(both.height, single.height + Int(box.canvas.height * BoxStackShareCard.width / box.canvas.width))
+        // The product card stacks the same way, 402 wide.
+        let products = [black, brown].map {
+            BoxProductShareCard(title: $0.title, subtitle: $0.subtitle, geometry: box, finish: $0.finish, slots: [:],
+                                onTrial: $0.onTrial, steppingOut: $0.steppingOut)
+        }
+        let stackedProduct = BoxStackProductShareCard(title: "Both Boxes", subtitle: subtitle, boxes: products)
+        XCTAssertEqual(stackedProduct.trialLine, stacked.trialLine)
+        let product = try XCTUnwrap(ImageRenderer(content: stackedProduct).cgImage)
+        let oneProduct = try XCTUnwrap(ImageRenderer(content: products[0]).cgImage)
+        XCTAssertEqual(product.width, 402)
+        XCTAssertGreaterThan(product.height, oneProduct.height)
+        XCTAssertEqual(BoxShare.fileName("Both Boxes", ""), "both-boxes")
+        XCTAssertEqual(BoxShare.fileName("Both Boxes", "-product"), "both-boxes-product")
     }
 
     func testShareNames() {

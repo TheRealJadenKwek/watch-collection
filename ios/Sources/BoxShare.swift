@@ -125,6 +125,140 @@ struct BoxProductShareCard: View {
     }
 }
 
+/// Every box shown at once, top down: one card, the boxes one under the other in box order at one scale, each under
+/// its name and count, and one trial line for all of them at the foot.
+struct BoxStackShareCard: View {
+    var title: String
+    var subtitle: String
+    var boxes: [BoxShareCard]
+    var dark = false
+
+    private var ink: Color { Color(hex: dark ? 0xF4F4F4 : 0x212121) }
+    private var muted: Color { Color(hex: dark ? 0xA0A0A0 : 0x767676) }
+    /// The width the widest box is drawn at: the card less its side padding.
+    static let width: CGFloat = 760 - 2 * 16
+
+    /// The line under the boxes: every candidate on trial, in box order, and every watch that stepped out for one.
+    var trialLine: String? {
+        BoxShare.trialLine(onTrial: boxes.flatMap(\.onTrial), steppingOut: boxes.flatMap(\.steppingOut))
+    }
+
+    var body: some View {
+        let widest = boxes.map(\.geometry.canvas.width).max() ?? 1
+        VStack(spacing: 0) {
+            Text("WATCH BOXES")
+                .font(.system(size: 10.5, weight: .regular).width(.expanded))
+                .tracking(1.4)
+                .foregroundStyle(muted)
+            Text(title)
+                .font(.system(size: 44, weight: .bold))
+                .tracking(-0.6)
+                .foregroundStyle(ink)
+                .padding(.top, 6)
+            Text(subtitle)
+                .font(.system(size: 15, weight: .light))
+                .foregroundStyle(muted)
+                .padding(.top, 6)
+            ForEach(Array(boxes.enumerated()), id: \.offset) { index, box in
+                let width = Self.width * box.geometry.canvas.width / widest
+                VStack(spacing: 8) {
+                    BoxStackShareLabel(name: box.title, counts: box.subtitle, color: muted)
+                        .frame(width: width)
+                    BoxSceneView(geometry: box.geometry, finish: box.finish, lidClosed: box.lidClosed, slots: box.slots,
+                                 emptyTile: box.emptyTile, outlined: dark)
+                        .frame(width: width)
+                }
+                .padding(.top, index == 0 ? 22 : 26)
+            }
+            if let trialLine {
+                BoxTrialLine(text: trialLine, color: muted)
+                    .padding(.top, 26)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 28)
+        .padding(.bottom, 34)
+        .frame(width: 760)
+        .background(Color(hex: dark ? 0x0E0E0E : 0xFFFFFF))
+        .environment(\.colorScheme, dark ? .dark : .light)
+    }
+}
+
+/// Every box shown at once in the product view: one card, the product shots one under the other at one scale.
+struct BoxStackProductShareCard: View {
+    var title: String
+    var subtitle: String
+    var boxes: [BoxProductShareCard]
+    var dark = false
+
+    private var muted: Color { Color(hex: dark ? 0xA0A0A0 : 0x767676) }
+    static let width: CGFloat = 402 - 2 * 16
+
+    var trialLine: String? {
+        BoxShare.trialLine(onTrial: boxes.flatMap(\.onTrial), steppingOut: boxes.flatMap(\.steppingOut))
+    }
+
+    var body: some View {
+        let widest = boxes.map(\.geometry.canvas.width).max() ?? 1
+        VStack(spacing: 0) {
+            Text("WATCH BOXES")
+                .font(.system(size: 10.5, weight: .regular).width(.expanded))
+                .tracking(1.4)
+                .foregroundStyle(muted)
+            Text(title)
+                .font(.system(size: 34, weight: .bold))
+                .tracking(-0.6)
+                .foregroundStyle(Color(hex: dark ? 0xF4F4F4 : 0x212121))
+                .padding(.top, 6)
+            Text(subtitle)
+                .font(.system(size: 15, weight: .light))
+                .foregroundStyle(muted)
+                .padding(.top, 6)
+            ForEach(Array(boxes.enumerated()), id: \.offset) { _, box in
+                let width = Self.width * box.geometry.canvas.width / widest
+                VStack(spacing: 8) {
+                    BoxStackShareLabel(name: box.title, counts: box.subtitle, color: muted)
+                        .frame(width: width)
+                    BoxProductView(geometry: box.geometry, finish: box.finish, slots: box.slots, emptyTile: box.emptyTile)
+                        .frame(width: width)
+                }
+                .padding(.top, 26)
+            }
+            if let trialLine {
+                BoxTrialLine(text: trialLine, color: muted)
+                    .padding(.top, 26)
+            }
+        }
+        .padding(.horizontal, 16)
+        .padding(.top, 28)
+        .padding(.bottom, 40)
+        .frame(width: 402)
+        .background(Color(hex: dark ? 0x0E0E0E : 0xFFFFFF))
+        .environment(\.colorScheme, dark ? .dark : .light)
+    }
+}
+
+/// A box's line in a stacked card: its name in the kicker's style, its count at the trailing end.
+struct BoxStackShareLabel: View {
+    var name: String
+    var counts: String
+    var color: Color
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Text(name.uppercased())
+                .font(.system(size: 10.5, weight: .regular).width(.expanded))
+                .tracking(1.4)
+                .lineLimit(1)
+            Spacer(minLength: 0)
+            Text(counts)
+                .font(.system(size: 13, weight: .light))
+                .lineLimit(1)
+        }
+        .foregroundStyle(color)
+    }
+}
+
 /// A shared picture, drawn only when it is shared (the PNG is made then, not on every redraw).
 struct BoxSharePicture: Transferable {
     var name: String
@@ -184,6 +318,13 @@ enum BoxShare {
         return parts.joined(separator: ", ")
     }
 
+    /// Several boxes counted as one: what each picture shows (its owned watches, its candidates on trial, its spaces),
+    /// added up. "14 watches, 10 spaces open".
+    static func counts(of boxes: [(watches: Int, onTrial: Int, capacity: Int)]) -> String {
+        counts(watches: boxes.reduce(0) { $0 + $1.watches }, onTrial: boxes.reduce(0) { $0 + $1.onTrial },
+               capacity: boxes.reduce(0) { $0 + $1.capacity })
+    }
+
     /// "On trial: A and B." and, when owned watches made room for them, "C steps out to make room."; nil without a
     /// trial in the picture.
     static func trialLine(onTrial: [String], steppingOut: [String]) -> String? {
@@ -203,18 +344,20 @@ enum BoxShare {
     }
 }
 
-/// The Share pill: the top-down picture and the product view, and on the Mac "Save Picture…" into Downloads.
-struct BoxShareMenu: View {
+/// The Share pill: the top-down picture and the product view, and on the Mac "Save Picture…" into Downloads. `title`
+/// names the files: "black-box.png", "both-boxes-product.png".
+struct BoxShareMenu<Card: View, Product: View>: View {
     let store: AppStore
-    var card: BoxShareCard
-    var product: BoxProductShareCard
+    var title: String
+    var card: Card
+    var product: Product
 
     var body: some View {
         Menu {
-            ShareLink(item: picture(card, name: BoxShare.fileName(card.title, "")), preview: SharePreview(card.title)) {
+            ShareLink(item: picture(card, name: BoxShare.fileName(title, "")), preview: SharePreview(title)) {
                 Label("Top-down picture", systemImage: "square.grid.3x2")
             }
-            ShareLink(item: picture(product, name: BoxShare.fileName(product.title, "-product")), preview: SharePreview(product.title)) {
+            ShareLink(item: picture(product, name: BoxShare.fileName(title, "-product")), preview: SharePreview(title)) {
                 Label("Product view", systemImage: "shippingbox")
             }
             #if os(macOS)
@@ -243,7 +386,7 @@ struct BoxShareMenu: View {
         }
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.png]
-        panel.nameFieldStringValue = BoxShare.fileName(card.title, "") + ".png"
+        panel.nameFieldStringValue = BoxShare.fileName(title, "") + ".png"
         panel.directoryURL = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
         guard panel.runModal() == .OK, let url = panel.url else { return }
         do {

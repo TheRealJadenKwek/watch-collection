@@ -22,7 +22,7 @@ final class BoxDragModel {
     struct Lift {
         var piece: BoxPiece
         /// The compartment it came from; nil for a chip from the tray.
-        var origin: Int?
+        var origin: BoxSpace?
         var content: BoxSlotContent
         /// The box it is drawn for, at the box's scale.
         var painter: BoxPainter
@@ -82,70 +82,61 @@ struct LiftPress: UIGestureRecognizerRepresentable {
 }
 #endif
 
-/// Frames a drag needs, kept out of view state so scrolling does not redraw the screen.
-final class BoxFrames {
-    var stage: CGRect = .zero
-    /// The scroll view's own frame. It already starts below the bar and ends above the tray (or the tab bar where
-    /// there is no tray): its content insets for those bars are not added again.
-    var scroll: CGRect = .zero
-    var tray: CGRect = .zero
-    /// The scroll view's offset from its top, and how far it can go.
-    var offset: CGFloat = 0
-    var maxOffset: CGFloat = 0
-    /// The box is in the scroll view (a phone or a column); false where it stands in a fixed pane.
-    var stageScrolls = true
+/// A tab over the Boxes screen: one box, or every box at once.
+enum BoxTab: Hashable {
+    case box(String)
+    case all
+}
 
-    /// The top of what the scroll view shows of its content.
-    var visibleTop: CGFloat { scroll.minY }
-    /// The bottom of what the scroll view shows: the docked tray, or the end of its frame.
-    var visibleBottom: CGFloat {
-        let end = scroll.height > 0 ? scroll.maxY : .infinity
-        return tray.height > 0 ? min(tray.minY, end) : end
+/// Which boxes the Boxes tab shows and what it calls them. Pure, for the tests.
+enum BoxShowing {
+    /// Every box in box order when all are asked for and there are two or more; otherwise the chosen box, or the
+    /// first when it has gone. None without boxes.
+    static func boxes(_ boxes: [WatchBox], selected: String, all: Bool) -> [WatchBox] {
+        if all, boxes.count >= 2 { return boxes }
+        guard let box = boxes.first(where: { $0.id == selected }) ?? boxes.first else { return [] }
+        return [box]
     }
 
-    /// True where the box is on screen: inside its frame and, when it scrolls, below the bar and above the tray.
-    func showsBox(at point: CGPoint) -> Bool {
-        guard stage.contains(point) else { return false }
-        guard stageScrolls else { return true }
-        if point.y >= visibleBottom { return false }
-        if scroll.height > 0, point.y < visibleTop { return false }
-        return true
+    /// The tab that shows every box: "Both" for two, "All" for more.
+    static func tabWord(count: Int) -> String { count > 2 ? "All" : "Both" }
+
+    /// The title over every box: "Both Boxes", "All Boxes".
+    static func title(count: Int) -> String { count > 2 ? "All Boxes" : "Both Boxes" }
+
+    /// The Mac header's line under "Boxes": "Both boxes, 14 watches, 10 spaces open".
+    static func macSubtitle(count: Int, counts: String) -> String {
+        (count > 2 ? "All boxes, " : "Both boxes, ") + counts
     }
 
-    /// While a watch is dragged: -8 (up) in the top 60 pt of what the scroll view shows or up to 40 pt above it, 8
-    /// (down) in the bottom 60 pt above the tray or the tab bar, otherwise 0.
-    func autoScrollStep(at y: CGFloat) -> CGFloat {
-        let top = visibleTop, bottom = visibleBottom
-        if y < top + 60, y > top - 40 { return -8 }
-        if y > bottom - 60, y < bottom { return 8 }
-        return 0
-    }
-
-    /// How far to scroll so `rect` (in the screen's space) shows with 12 pt to spare below the bar and above the tray;
-    /// 0 when it already does.
-    func revealDelta(for rect: CGRect) -> CGFloat {
-        let top = visibleTop + 12, bottom = visibleBottom - 12
-        if rect.maxY > bottom { return rect.maxY - bottom }
-        if rect.minY < top { return rect.minY - top }
-        return 0
+    /// A box's tab: its name; on the cover the name without " Box" and its count ("Black 11"); the name without
+    /// " Box" wherever there are four tabs or more.
+    static func tabLabel(_ box: WatchBox, countsInTabs: Bool, tabCount: Int) -> String {
+        let short = box.name.lowercased().hasSuffix(" box") ? String(box.name.dropLast(4)) : box.name
+        if countsInTabs { return "\(short) \(box.slots.count)" }
+        return tabCount >= 4 ? short : box.name
     }
 }
 
 /// The Boxes tab (brief sections 8 and 9): the box on screen, its controls and info panel, and the watches that can
 /// go in it, docked at the bottom on a phone so a drag can always reach them. One view tree in every posture: the
-/// pieces (`header`, `stage`, `controls`, `infoPanel`, `tray`, `chipGrids`) go into the two panes of `BoxPanes`, a
-/// fixed one and a scrolling one, and only where those panes stand changes with the posture.
+/// pieces (`header`, `boxStack`, `controls`, `infoPanel`, `tray`, `chipGrids`) go into the two panes of `BoxPanes`, a
+/// fixed one and a scrolling one, and only where those panes stand changes with the posture. The Both tab shows every
+/// box at once, one under the other in box order, at one scale.
 struct BoxesScreen: View {
     @ObservedObject var store: AppStore
     let showSettings: () -> Void
 
+    /// The last single box shown; the box tabs return to it.
     @AppStorage("boxSelectedV1") private var selectedBoxID = "black"
+    /// Every box at once (per device, never synced).
+    @AppStorage("boxBothV1") private var showsBoth = false
     @State private var lidClosed = false
-    @State private var selection: Int?
+    @State private var selection: BoxSpace?
     /// A box an intent switched to together with its selection, so the switch does not clear what came with it.
     @State private var carriedBoxID: String?
     @State private var armed: BoxChip?
-    @State private var emphasized: Int?
+    @State private var emphasized: BoxSpace?
     @State private var trayShowsWishlist = false
     @State private var showsTrial = true
     @State private var art = BoxArtwork()
@@ -156,7 +147,7 @@ struct BoxesScreen: View {
     @State private var settles: [String: Int] = [:]
     @State private var lastDragEnd = Date.distantPast
     /// The compartment a still press last selected, and when, so the button's own tap at the release does not undo it.
-    @State private var lastHold = (slot: -1, at: Date.distantPast)
+    @State private var lastHold: (space: BoxSpace?, at: Date) = (nil, .distantPast)
     @State private var liftTick = 0
     @State private var dropTick = 0
     /// Where the page is scrolled, kept across a fold as the other tabs keep theirs.
@@ -165,6 +156,10 @@ struct BoxesScreen: View {
     @State private var sharedTop: CGFloat = 0
     @State private var autoScroll: Task<Void, Never>?
     @State private var pageWidth: CGFloat = 0
+    /// What the scroll view shows of its page (bar to tray, or bar to tab bar where there is no tray), and where the
+    /// boxes start on the page, so every box can be fitted between the bar and the tray.
+    @State private var paneHeight: CGFloat = 0
+    @State private var stackTop: CGFloat = 0
     /// The space the fixed pane gives the box (a book's left page, a table's top pane below its header, the Mac's
     /// left side).
     @State private var fixedSpace: CGSize = .zero
@@ -190,10 +185,13 @@ struct BoxesScreen: View {
 
     // MARK: What is on screen
 
-    /// Everything the screen shows, worked out once per update.
+    /// One box as the screen shows it, worked out once per update.
     struct Scene {
         var arrangement: BoxArrangement
         var box: WatchBox
+        /// Its place in the stack (0 at the top), and how many boxes the stack shows (1 in single view).
+        var index: Int
+        var count: Int
         var geometry: BoxGeometry
         var finish: BoxFinish
         /// What each compartment shows: the owned watch, or a candidate on trial while "Trying" is on.
@@ -209,6 +207,10 @@ struct BoxesScreen: View {
         var wishlist: [String: WishlistItem]
         var boxWidth: CGFloat
         var k: CGFloat
+        /// It stands in the scroll view, where the bar and the tray can cover part of it.
+        var scrolls: Bool
+        /// Every box shown, top first, for finding the compartment under a finger.
+        var stack: [(id: String, geometry: BoxGeometry)]
 
         var stageHeight: CGFloat { geometry.canvas.height * k }
         func piece(_ chip: BoxChip) -> BoxPiece? {
@@ -216,7 +218,33 @@ struct BoxesScreen: View {
         }
     }
 
+    /// Everything the screen shows: one scene per box shown, top first, at one scale.
+    struct Board {
+        var arrangement: BoxArrangement
+        /// Box order; one scene in single view.
+        var scenes: [Scene]
+        var both: Bool
+        var k: CGFloat
+        /// What a change of view is keyed on: "both", or the box shown.
+        var key: String
+
+        var lead: Scene { scenes[0] }
+        func scene(_ boxID: String) -> Scene? { scenes.first { $0.box.id == boxID } }
+        var tab: BoxTab { both ? .all : .box(lead.box.id) }
+        var hasTrial: Bool { scenes.contains { !$0.trial.isEmpty } }
+        var steppingOut: [Watch] { scenes.flatMap(\.steppingOut) }
+    }
+
+    /// What a stage reports its frame under, so the frames follow the boxes shown.
+    private struct StageKey: Equatable {
+        var id: String
+        var scrolls: Bool
+    }
+
     private var boxes: [WatchBox] { store.data?.boxes ?? [] }
+
+    /// Every box at once: chosen, and there are two or more. A stored choice waits while there is only one box.
+    private var both: Bool { showsBoth && boxes.count >= 2 }
 
     /// How the screen stands in this posture (brief section 9).
     private var arrangement: BoxArrangement {
@@ -242,41 +270,72 @@ struct BoxesScreen: View {
         }
     }
 
-    private func makeScene() -> Scene? {
-        guard let data = store.data, let box = boxes.first(where: { $0.id == selectedBoxID }) ?? boxes.first else { return nil }
-        let geometry = BoxGeometry(columns: box.columns, rows: box.rows)
-        let finish = BoxFinish(name: box.finish)
+    /// The space every box at once is given. A column keeps its width and is given the height from the stack's top
+    /// to the tray (or the tab bar), so the boxes fit there when they still read; on the Mac's desk the stack has the
+    /// left side to itself, the panel having moved to the side column.
+    private func stackSpace(_ arrangement: BoxArrangement) -> CGSize {
+        switch arrangement {
+        case .phone, .column:
+            let width = stageSpace(arrangement, trial: false).width
+            // Not measured yet: as wide as the column, as a single box is.
+            guard paneHeight > 0, stackTop > 0 else { return CGSize(width: width, height: 0) }
+            // 8 pt to spare: the both-view auto-scroll runs once the stack reaches within 6 pt of the edge, so a box
+            // that fits never scrolls the page from under a watch held over its front row.
+            return CGSize(width: width, height: max(1, paneHeight - stackTop - 8))
+        case .book, .table:
+            return stageSpace(arrangement, trial: false)
+        case .desk:
+            return CGSize(width: fixedSpace.width - 2 * margin, height: fixedSpace.height - 40)
+        }
+    }
+
+    private func makeBoard() -> Board? {
+        guard let data = store.data else { return nil }
+        let both = both
+        let shown = BoxShowing.boxes(boxes, selected: selectedBoxID, all: both)
+        guard !shown.isEmpty else { return nil }
         let arrangement = arrangement
-        let trial = store.boxTrial.candidates(in: box.id)
-        let k = BoxArrangement.stage(geometry, arrangement, space: stageSpace(arrangement, trial: !trial.isEmpty),
-                                     mac: Platform.isMac)
+        let mac = Platform.isMac
+        let geometries = shown.map { BoxGeometry(columns: $0.columns, rows: $0.rows) }
+        let trials = shown.map { store.boxTrial.candidates(in: $0.id) }
+        let k = both
+            ? BoxStack.scale(geometries, arrangement, space: stackSpace(arrangement), mac: mac)
+            : BoxArrangement.stage(geometries[0], arrangement, space: stageSpace(arrangement, trial: !trials[0].isEmpty), mac: mac)
         let watches = Dictionary(data.watches.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let wishlist = Dictionary(data.wishlist.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let showingTrial = showsTrial && !trial.isEmpty
-        var occupants: [Int: BoxPiece] = [:]
-        for slot in 0..<box.capacity {
-            if showingTrial, let id = trial[slot], let candidate = wishlist[id] {
-                occupants[slot] = BoxPiece(candidate: candidate)
-            } else if let id = box.watchID(at: slot), let watch = watches[id] {
-                occupants[slot] = BoxPiece(watch: watch)
+        let loose = BoxModel.tray(data)
+        let candidates = WishlistScreen.ranked(data.wishlist, scores: store.scores).filter { $0.status != "bought" }
+        let stack = zip(shown, geometries).map { (id: $0.id, geometry: $1) }
+        let scenes = shown.indices.map { index -> Scene in
+            let box = shown[index], geometry = geometries[index], trial = trials[index]
+            let finish = BoxFinish(name: box.finish)
+            let showingTrial = showsTrial && !trial.isEmpty
+            var occupants: [Int: BoxPiece] = [:]
+            for slot in 0..<box.capacity {
+                if showingTrial, let id = trial[slot], let candidate = wishlist[id] {
+                    occupants[slot] = BoxPiece(candidate: candidate)
+                } else if let id = box.watchID(at: slot), let watch = watches[id] {
+                    occupants[slot] = BoxPiece(watch: watch)
+                }
             }
+            let emptyFile = data.emptyBoxTiles?[finish.rawValue]
+            let emptyTile = emptyFile.flatMap { art.tile(PhotoStore.boxTileDirectory, $0) }
+            let items = occupants.keys.sorted().compactMap { slot -> BoxStageItem? in
+                guard let piece = occupants[slot] else { return nil }
+                let drawn = content(piece, finish: finish, emptyBoxTiles: data.emptyBoxTiles)
+                return BoxStageItem(piece: piece, slot: slot, content: drawn.content, look: drawn.look)
+            }
+            // A table keeps the first box above the crease; the rest of the stack scrolls below it.
+            let scrolls = arrangement.stageScrolls || (both && arrangement == .table && index > 0)
+            return Scene(
+                arrangement: arrangement, box: box, index: index, count: shown.count, geometry: geometry, finish: finish,
+                occupants: occupants, items: items, emptyTile: emptyTile, trial: trial, showingTrial: showingTrial,
+                steppingOut: showingTrial ? store.boxTrial.steppingOut(of: box.id, in: data).compactMap { watches[$0] } : [],
+                loose: loose, candidates: candidates, watches: watches, wishlist: wishlist,
+                boxWidth: geometry.canvas.width * k, k: k, scrolls: scrolls, stack: stack
+            )
         }
-        let emptyFile = data.emptyBoxTiles?[finish.rawValue]
-        let emptyTile = emptyFile.flatMap { art.tile(PhotoStore.boxTileDirectory, $0) }
-        let items = occupants.keys.sorted().compactMap { slot -> BoxStageItem? in
-            guard let piece = occupants[slot] else { return nil }
-            let drawn = content(piece, finish: finish, emptyBoxTiles: data.emptyBoxTiles)
-            return BoxStageItem(piece: piece, slot: slot, content: drawn.content, look: drawn.look)
-        }
-        let width = geometry.canvas.width * k
-        return Scene(
-            arrangement: arrangement, box: box, geometry: geometry, finish: finish, occupants: occupants, items: items,
-            emptyTile: emptyTile, trial: trial, showingTrial: showingTrial,
-            steppingOut: showingTrial ? store.boxTrial.steppingOut(of: box.id, in: data).compactMap { watches[$0] } : [],
-            loose: BoxModel.tray(data),
-            candidates: WishlistScreen.ranked(data.wishlist, scores: store.scores).filter { $0.status != "bought" },
-            watches: watches, wishlist: wishlist, boxWidth: width, k: k
-        )
+        return Board(arrangement: arrangement, scenes: scenes, both: both, k: k, key: both ? "both" : shown[0].id)
     }
 
     /// What a piece's compartment shows in this finish (brief 5.3 step 5), and a key that changes with the picture.
@@ -303,9 +362,9 @@ struct BoxesScreen: View {
     // MARK: Body
 
     var body: some View {
-        let scene = makeScene()
+        let board = makeBoard()
         SectionStack(path: $path) {
-            page(scene)
+            page(board)
                 .keepsScrollAcrossFolds($fold)
                 #if os(iOS)
                 .navigationDestination(for: WatchRoute.self) { route in
@@ -314,16 +373,16 @@ struct BoxesScreen: View {
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
                     // Half open on a table the compact header stands in the bar, so the box above the crease keeps
-                    // the height.
-                    if let scene, scene.arrangement == .table {
-                        ToolbarItem(placement: .principal) { compactHeader(scene) }
+                    // the height; with every box shown in a column it stands there too, so the boxes fit.
+                    if let board, headerInBar(board) {
+                        ToolbarItem(placement: .principal) { compactHeader(board) }
                     }
                 }
                 #else
-                .desktopHeader("Boxes", subtitle: scene.map { "\($0.box.name), \(subtitle($0))" }) {
-                    deskHeaderLeading(scene)
+                .desktopHeader("Boxes", subtitle: board.map(deskSubtitle)) {
+                    deskHeaderLeading(board)
                 } trailing: {
-                    deskHeaderTrailing(scene)
+                    deskHeaderTrailing(board)
                 }
                 #endif
         }
@@ -356,15 +415,15 @@ struct BoxesScreen: View {
     }
 
     @ViewBuilder
-    private func page(_ scene: Scene?) -> some View {
+    private func page(_ board: Board?) -> some View {
         if store.data != nil, boxes.isEmpty {
             noBoxes
                 .screenBackground()
-        } else if let scene {
+        } else if let board {
             ZStack(alignment: .topLeading) {
-                BoxPanes(arrangement: scene.arrangement, crease: crease(scene.arrangement)) {
-                    fixedPane(scene)
-                    scrollPane(scene)
+                BoxPanes(arrangement: board.arrangement, crease: crease(board.arrangement)) {
+                    fixedPane(board)
+                    scrollPane(board)
                 }
                 .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { panesFrame = $0 }
                 BoxDragPreview(drag: drag)
@@ -374,27 +433,42 @@ struct BoxesScreen: View {
             .screenBackground()
             // Keyed by whether the section is showing too: on the Mac every section is built at launch, so the art
             // loads when Boxes is chosen, and leaving it cancels the task and the cutout jobs it queued.
-            .task(id: ArtTask(request: artRequest(scene), active: sectionIsActive)) {
-                guard sectionIsActive, scene.k > 0 else { return }
-                await art.load(artRequest(scene))
+            .task(id: ArtTask(request: artRequest(board), active: sectionIsActive)) {
+                guard sectionIsActive, board.k > 0 else { return }
+                await art.load(artRequest(board))
             }
             .onChange(of: sectionIsActive) { _, active in
                 if !active { Task { await CutoutStore.shared.cancelPending() } }
             }
-            .onChange(of: scene.box.id) { _, id in
-                // A box switched to with its own selection (the watch page's Box row) keeps it.
-                let carried = carriedBoxID == id
-                carriedBoxID = nil
-                guard !carried else { return }
+            .onChange(of: board.key) { _, key in
+                // A box switched to with its own selection (the watch page's Box row) keeps it. Every box at once
+                // keeps a selection in any box; a single box keeps only its own.
+                if key != "both" {
+                    let carried = carriedBoxID == key
+                    carriedBoxID = nil
+                    guard !carried else { return }
+                } else {
+                    carriedBoxID = nil
+                }
+                let shown = key == "both" ? Set(boxes.map(\.id)) : [key]
                 withAnimation(.easeInOut(duration: 0.2)) {
-                    selection = nil
+                    if let selection, !shown.contains(selection.boxID) { self.selection = nil }
                     armed = nil
                     emphasized = nil
                 }
             }
-            .onChange(of: scene.arrangement, initial: true) { _, arrangement in
-                frames.stageScrolls = arrangement.stageScrolls
+            .onChange(of: board.scenes.map { StageKey(id: $0.box.id, scrolls: $0.scrolls) }, initial: true) { _, stages in
+                // The frames follow the boxes shown: a box no longer shown no longer takes a drop.
+                let ids = stages.map(\.id)
+                frames.order = ids
+                frames.stages = frames.stages.filter { ids.contains($0.key) }
+                for stage in stages { frames.stages[stage.id]?.scrolls = stage.scrolls }
+            }
+            .onChange(of: board.arrangement, initial: true) { _, arrangement in
                 if !arrangement.docksTray { frames.tray = .zero }
+                // A fold mid-drag can take down the stage under the finger with no cancel from UIKit: let go of the
+                // watch where it was (nothing moved), so it shows again and scrolling comes back.
+                if drag.lift != nil, !drag.dropping { endDrag() }
             }
         } else {
             Color.clear.screenBackground()
@@ -411,25 +485,25 @@ struct BoxesScreen: View {
         }
     }
 
-    /// The pane that stays put: a book's left page (the box alone, front on, fitted to the page), a table's top pane
-    /// (the tabs and the box, under the compact header in the bar), the Mac's left side (the box with its panel under it). Empty in a
-    /// column, where the box scrolls with everything else.
-    private func fixedPane(_ scene: Scene) -> some View {
+    /// The pane that stays put: a book's left page (the boxes alone, front on, fitted to the page), a table's top pane
+    /// (the tabs and the first box, under the compact header in the bar), the Mac's left side (the box with its panel
+    /// under it, or every box alone). Empty in a column, where the boxes scroll with everything else.
+    private func fixedPane(_ board: Board) -> some View {
         ZStack {
-            switch scene.arrangement {
+            switch board.arrangement {
             case .book:
-                boxWell(scene)
+                boxWell(board, board.scenes[...])
             case .table:
                 VStack(spacing: 0) {
-                    boxTabs(scene)
+                    boxTabs(board)
                         .padding(.horizontal, margin)
-                    boxWell(scene)
+                    boxWell(board, board.scenes.prefix(1))
                 }
             case .desk:
                 Color.clear
                     .onGeometryChange(for: CGSize.self) { $0.size } action: { fixedSpace = $0 }
                     .overlay {
-                        deskPanel(scene)
+                        deskPanel(board)
                     }
             case .phone, .column:
                 EmptyView()
@@ -437,80 +511,96 @@ struct BoxesScreen: View {
         }
     }
 
-    /// Whatever room is left, measured for the box and with the box centred in it.
-    private func boxWell(_ scene: Scene) -> some View {
+    /// Whatever room is left, measured for the boxes and with them centred in it.
+    private func boxWell(_ board: Board, _ scenes: ArraySlice<Scene>) -> some View {
         Color.clear
             .onGeometryChange(for: CGSize.self) { $0.size } action: { fixedSpace = $0 }
             .overlay {
-                stage(scene)
+                boxStack(board, scenes)
             }
     }
 
-    /// The Mac's left side: the box front on, with the trial switch and the info panel under it, centred.
-    private func deskPanel(_ scene: Scene) -> some View {
+    /// The Mac's left side: the box front on, with the trial switch and the info panel under it, centred. With every
+    /// box shown, the boxes alone: the panel moves to the head of the side column.
+    private func deskPanel(_ board: Board) -> some View {
         VStack(spacing: 22) {
-            stage(scene)
-            VStack(spacing: 18) {
-                if !scene.trial.isEmpty {
-                    trialSwitch(scene)
+            boxStack(board, board.scenes[...])
+            if !board.both {
+                VStack(spacing: 18) {
+                    if board.hasTrial {
+                        trialSwitch(board)
+                    }
+                    infoPanel(board)
+                    if !board.steppingOut.isEmpty {
+                        steppingOut(board)
+                    }
                 }
-                infoPanel(scene)
-                if !scene.steppingOut.isEmpty {
-                    steppingOut(scene)
-                }
+                .frame(maxWidth: min(max(board.lead.boxWidth, 420), 600))
+                .padding(.horizontal, margin)
             }
-            .frame(maxWidth: min(max(scene.boxWidth, 420), 600))
-            .padding(.horizontal, margin)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     /// The pane that scrolls: on a phone the whole page over a docked tray; on a book's right page, below a table's
     /// crease and in a column everything but what the fixed pane holds, with chip grids in place of the tray; the
-    /// Mac's side column holds only the chips. Always the same scroll view; what stands above the shared parts
-    /// changes with the posture, so `FoldScroll` puts the reader back on the same lines after a fold.
-    private func scrollPane(_ scene: Scene) -> some View {
-        let arrangement = scene.arrangement
+    /// Mac's side column holds only the chips (and, with every box shown, the panel above them). Always the same
+    /// scroll view; what stands above the shared parts changes with the posture, so `FoldScroll` puts the reader back
+    /// on the same lines after a fold.
+    private func scrollPane(_ board: Board) -> some View {
+        let arrangement = board.arrangement
         let mac = Platform.isMac
+        let both = board.both
+        let barHeader = both && (arrangement == .phone || arrangement == .column)
+        let desk = arrangement == .desk
         return ScrollView {
             VStack(spacing: 0) {
                 if !mac, arrangement == .phone || arrangement == .column || arrangement == .book {
-                    header(scene)
+                    if !barHeader {
+                        header(board)
+                            .padding(.horizontal, margin)
+                    }
+                    boxTabs(board)
                         .padding(.horizontal, margin)
-                    boxTabs(scene)
-                        .padding(.horizontal, margin)
-                        .padding(.bottom, 22)
+                        .padding(.bottom, barHeader ? 12 : 22)
                 }
                 if arrangement.stageScrolls {
-                    stage(scene)
+                    boxStack(board, board.scenes[...])
+                        .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.page)).minY } action: { stackTop = $0 }
                         .padding(.top, mac ? 20 : 0)
                         .padding(.bottom, 22)
                 }
-                if arrangement != .desk {
+                if arrangement == .table, board.scenes.count > 1 {
+                    // Half open on a table: the boxes after the first, below the crease at the same scale.
+                    boxStack(board, board.scenes.dropFirst())
+                        .padding(.top, 12)
+                        .padding(.bottom, 22)
+                }
+                if !desk || both {
                     if !mac {
-                        controls(scene)
+                        controls(board)
                             .padding(.horizontal, margin)
                             .padding(.top, arrangement == .table ? 18 : 0)
                             .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.page)).minY } action: { sharedTop = $0 }
                     }
-                    if !scene.trial.isEmpty {
-                        trialSwitch(scene)
+                    if board.hasTrial {
+                        trialSwitch(board)
                             .padding(.horizontal, margin)
-                            .padding(.top, mac ? 0 : 18)
+                            .padding(.top, mac ? (desk ? 20 : 0) : 18)
                     }
-                    infoPanel(scene)
+                    infoPanel(board)
                         .padding(.horizontal, margin)
-                        .padding(.top, mac && scene.trial.isEmpty ? 0 : 22)
-                    if !scene.steppingOut.isEmpty {
-                        steppingOut(scene)
+                        .padding(.top, mac && !board.hasTrial ? (desk ? 20 : 0) : 22)
+                    if !board.steppingOut.isEmpty {
+                        steppingOut(board)
                             .padding(.horizontal, margin)
                             .padding(.top, 22)
                     }
                 }
                 if !arrangement.docksTray {
-                    chipGrids(scene, columns: arrangement.chipColumns)
+                    chipGrids(board, columns: arrangement.chipColumns)
                         .padding(.horizontal, margin)
-                        .padding(.top, arrangement == .desk ? 20 : 34)
+                        .padding(.top, desk && !both ? 20 : 34)
                 }
             }
             .frame(maxWidth: .infinity)
@@ -521,6 +611,11 @@ struct BoxesScreen: View {
             proxy.size.width
         } action: { width in
             pageWidth = width
+        }
+        .onGeometryChange(for: CGFloat.self) { proxy in
+            proxy.size.height
+        } action: { height in
+            paneHeight = height
         }
         // Across a fold the reader comes back to the same lines from the controls row on; what each posture puts above
         // them (the box on a phone, only the masthead on a book's right page) differs.
@@ -540,16 +635,16 @@ struct BoxesScreen: View {
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frames.scroll = $0 }
         .safeAreaInset(edge: .bottom, spacing: 0) {
             if arrangement.docksTray {
-                tray(scene)
+                tray(board)
             }
         }
         #if os(iOS)
         // On the inner screen's panes the bar keeps no title: centred in the window it would sit on the crease, and a
-        // table's top pane already shows the name.
-        .mastheadTitle(arrangement == .book || arrangement == .table ? "" : scene.box.name)
+        // table's top pane already shows the name. Where the compact header stands in the bar it is the title.
+        .mastheadTitle(arrangement == .book || arrangement == .table || barHeader ? "" : board.lead.box.name)
         #endif
         .overlay(alignment: .leading) {
-            if arrangement == .desk {
+            if desk {
                 Rectangle()
                     .fill(WatchTheme.separator)
                     .frame(width: WatchTheme.hairline)
@@ -560,54 +655,90 @@ struct BoxesScreen: View {
 
     // MARK: Header
 
-    private func header(_ scene: Scene) -> some View {
-        Masthead(kicker: "Watch Boxes", title: scene.box.name, subtitle: countsInTabs ? nil : subtitle(scene))
+    private func header(_ board: Board) -> some View {
+        Masthead(kicker: "Watch Boxes", title: title(board), subtitle: countsInTabs ? nil : subtitle(board))
+    }
+
+    /// The box's name, or "Both Boxes" ("All Boxes") with every box shown.
+    private func title(_ board: Board) -> String {
+        board.both ? BoxShowing.title(count: board.scenes.count) : board.lead.box.name
     }
 
     /// On the cover screen the count moves into the box tabs ("Black 11") and the masthead keeps no subtitle. With
     /// one box there are no tabs, so the subtitle stays.
     private var countsInTabs: Bool { duo.posture == .folded && boxes.count > 1 }
 
-    /// A box tab's label: the name, or on the cover the name without " Box" and its count of watches.
-    private func tabLabel(_ box: WatchBox) -> String {
-        guard countsInTabs else { return box.name }
-        let short = box.name.lowercased().hasSuffix(" box") ? String(box.name.dropLast(4)) : box.name
-        return "\(short) \(box.slots.count)"
+    /// The tabs: one per box, then the one for every box at once.
+    private var tabOptions: [(value: BoxTab, label: String)] {
+        let count = boxes.count + 1
+        let options = boxes.map { (value: BoxTab.box($0.id), label: BoxShowing.tabLabel($0, countsInTabs: countsInTabs, tabCount: count)) }
+        return options + [(value: .all, label: BoxShowing.tabWord(count: boxes.count))]
     }
 
-    /// Half open on a table: the kicker and the box's name on one centred line, in the bar above the tabs.
-    private func compactHeader(_ scene: Scene) -> some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Eyebrow("Watch Boxes")
-            Text(scene.box.name)
-                .font(AtelierType.title)
-                .foregroundStyle(WatchTheme.ink)
-                .contentTransition(.opacity)
-                .lineLimit(1)
+    /// A tab chosen: a box, the last single box changing with it, or every box at once.
+    private func choose(_ tab: BoxTab) {
+        switch tab {
+        case .box(let id):
+            withAnimation(.easeInOut(duration: both ? 0.3 : 0.25)) {
+                showsBoth = false
+                selectedBoxID = id
+            }
+        case .all:
+            withAnimation(.easeInOut(duration: 0.3)) { showsBoth = true }
+        }
+    }
+
+    /// The compact header stands in the bar half open on a table, and with every box shown on a phone or in a column.
+    private func headerInBar(_ board: Board) -> Bool {
+        board.arrangement == .table || (board.both && (board.arrangement == .phone || board.arrangement == .column))
+    }
+
+    /// The kicker and the title on one centred line, in the bar above the tabs. A bar too narrow for both keeps the
+    /// title.
+    private func compactHeader(_ board: Board) -> some View {
+        let title = title(board)
+        return ViewThatFits(in: .horizontal) {
+            HStack(alignment: .firstTextBaseline, spacing: 12) {
+                Eyebrow("Watch Boxes")
+                compactTitle(title)
+            }
+            compactTitle(title)
         }
         .accessibilityElement(children: .combine)
         .accessibilityAddTraits(.isHeader)
     }
 
+    private func compactTitle(_ title: String) -> some View {
+        Text(title)
+            .font(AtelierType.title)
+            .foregroundStyle(WatchTheme.ink)
+            .contentTransition(.opacity)
+            .lineLimit(1)
+    }
+
     #if os(macOS)
-    /// The Mac's header row: the boxes as a segmented control, then the lid.
+    /// "Black Box, 11 watches, 1 space open"; "Both boxes, 14 watches, 10 spaces open".
+    private func deskSubtitle(_ board: Board) -> String {
+        board.both ? BoxShowing.macSubtitle(count: board.scenes.count, counts: subtitle(board))
+            : "\(board.lead.box.name), \(subtitle(board))"
+    }
+
+    /// The Mac's header row: the boxes (and every box at once) as a segmented control, then the lid.
     @ViewBuilder
-    private func deskHeaderLeading(_ scene: Scene?) -> some View {
-        if let scene {
+    private func deskHeaderLeading(_ board: Board?) -> some View {
+        if let board {
             HStack(spacing: 12) {
                 if boxes.count > 1 {
-                    Picker("Box", selection: Binding(get: { scene.box.id }, set: { id in
-                        withAnimation(.easeInOut(duration: 0.25)) { selectedBoxID = id }
-                    })) {
-                        ForEach(boxes) { box in
-                            Text(box.name).tag(box.id)
+                    Picker("Box", selection: Binding(get: { board.tab }, set: { choose($0) })) {
+                        ForEach(tabOptions, id: \.value) { option in
+                            Text(option.label).tag(option.value)
                         }
                     }
                     .pickerStyle(.segmented)
                     .labelsHidden()
                     .fixedSize()
                 }
-                Button(lidClosed ? "Open lid" : "Close lid") {
+                Button(lidLabel(board)) {
                     withAnimation(.easeInOut(duration: 0.35)) { lidClosed.toggle() }
                 }
                 .buttonStyle(.bordered)
@@ -617,9 +748,9 @@ struct BoxesScreen: View {
 
     /// Share and Edit, at the trailing end of the header row.
     @ViewBuilder
-    private func deskHeaderTrailing(_ scene: Scene?) -> some View {
-        if let scene {
-            BoxShareMenu(store: store, card: shareCard(scene), product: productCard(scene))
+    private func deskHeaderTrailing(_ board: Board?) -> some View {
+        if let board {
+            shareMenu(board)
                 .labelStyle(.iconOnly)
                 .fixedSize()
                 .help("Share")
@@ -635,15 +766,19 @@ struct BoxesScreen: View {
         BoxShare.counts(watches: scene.box.slots.count, capacity: scene.box.capacity)
     }
 
-    /// One tab per box when there are two or more, and Edit for the manage sheet.
-    private func boxTabs(_ scene: Scene) -> some View {
+    /// The box's count, or every shown box's added up: "14 watches, 10 spaces open".
+    private func subtitle(_ board: Board) -> String {
+        guard board.both else { return subtitle(board.lead) }
+        return BoxShare.counts(of: board.scenes.map { (watches: $0.box.slots.count, onTrial: 0, capacity: $0.box.capacity) })
+    }
+
+    /// One tab per box when there are two or more, then the tab for every box at once, and Edit for the manage sheet.
+    private func boxTabs(_ board: Board) -> some View {
         HStack(alignment: .bottom, spacing: 14) {
             if boxes.count > 1 {
                 UnderlineTabs(
-                    selection: Binding(get: { scene.box.id }, set: { id in
-                        withAnimation(.easeInOut(duration: 0.25)) { selectedBoxID = id }
-                    }),
-                    options: boxes.map { (value: $0.id, label: tabLabel($0)) }
+                    selection: Binding(get: { board.tab }, set: { choose($0) }),
+                    options: tabOptions
                 )
             } else {
                 Spacer()
@@ -657,23 +792,77 @@ struct BoxesScreen: View {
         }
     }
 
-    // MARK: The box
+    // MARK: The boxes
+
+    /// The boxes shown, one under the other at one scale, each under its name and count when there is more than one.
+    /// Single view runs through the same `ForEach` with no label, so the box on screen keeps its identity when every
+    /// box is shown and resizes into place while the others fade in. With Reduce Motion the whole stack cross-fades.
+    private func boxStack(_ board: Board, _ scenes: ArraySlice<Scene>) -> some View {
+        VStack(spacing: BoxStack.gap) {
+            ForEach(scenes, id: \.box.id) { scene in
+                VStack(spacing: 8) {
+                    if board.both {
+                        stageLabel(scene)
+                    }
+                    stage(scene)
+                }
+                .transition(.opacity)
+            }
+        }
+        .id(reduceMotion ? board.key : "stack")
+        .transition(.opacity)
+    }
+
+    /// A box's name and count over it, as wide as the box: "BLACK BOX ... 11 watches, 1 space open". The row keeps
+    /// its 14 pt: its type stops growing at xxLarge, and at accessibility sizes the count goes (the tabs and the header
+    /// already say it) so the name keeps the width.
+    private func stageLabel(_ scene: Scene) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Eyebrow(scene.box.name)
+                .lineLimit(1)
+                .layoutPriority(1)
+            Spacer(minLength: 0)
+            if !typeSize.isAccessibilitySize {
+                Text(subtitle(scene))
+                    .font(AtelierType.caption)
+                    .foregroundStyle(WatchTheme.muted)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.8)
+            }
+        }
+        .dynamicTypeSize(...DynamicTypeSize.xxLarge)
+        .frame(width: scene.boxWidth, height: BoxStack.label - 8)
+        .accessibilityElement(children: .combine)
+        // The count still read aloud where it is not drawn.
+        .accessibilityValue(typeSize.isAccessibilitySize ? subtitle(scene) : "")
+        .accessibilityAddTraits(.isHeader)
+        .accessibilitySortPriority(Double((scene.count - scene.index) * 1000 + 1))
+        .frame(maxWidth: .infinity)
+    }
 
     private func stage(_ scene: Scene) -> some View {
         let width = scene.boxWidth, height = scene.stageHeight
-        let marks = BoxGuideMarks(selected: selection, targets: targets(scene), emphasized: emphasized)
-        let drag = drag, frames = frames
+        let id = scene.box.id
+        let marks = BoxGuideMarks(selected: selection?.boxID == id ? selection?.slot : nil, targets: targets(scene),
+                                  emphasized: emphasized?.boxID == id ? emphasized?.slot : nil)
+        let drag = drag, frames = frames, stack = scene.stack, k = scene.k, scrolls = scene.scrolls
         return BoxStage(
             geometry: scene.geometry, finish: scene.finish, lidClosed: lidClosed,
             items: scene.items, emptyTile: scene.emptyTile, hidden: dragging, arriving: arriving, settles: settles,
             marks: marks,
-            hover: { drag.lift == nil ? nil : Self.slot(at: drag.location, frames: frames, scene) },
+            // The ring shows in whichever box is under the finger.
+            hover: {
+                guard drag.lift != nil, let space = frames.space(at: drag.location, boxes: stack, k: k), space.boxID == id else { return nil }
+                return space.slot
+            },
             outlined: colorScheme == .dark
         ) { slot in
             hit(slot, scene)
         }
         .frame(width: width, height: height)
-        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frames.stage = $0 }
+        .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: {
+            frames.stages[id] = BoxFrames.Stage(rect: $0, scrolls: scrolls)
+        }
         .id(scene.box.id)
         .transition(.opacity)
         .animation(.easeInOut(duration: 0.25), value: scene.box.id)
@@ -689,14 +878,6 @@ struct BoxesScreen: View {
         return open.isEmpty ? Set(0..<scene.box.capacity) : open
     }
 
-    /// The compartment at a point in the screen's space, or nil off the compartments (the frame, outside the box, or
-    /// a part of the box that is scrolled under the bar or the tray).
-    static func slot(at point: CGPoint, frames: BoxFrames, _ scene: Scene) -> Int? {
-        guard frames.showsBox(at: point), scene.k > 0 else { return nil }
-        let local = CGPoint(x: (point.x - frames.stage.minX) / scene.k, y: (point.y - frames.stage.minY) / scene.k)
-        return scene.geometry.slotIndex(at: local)
-    }
-
     /// One compartment's touch target: tap to select or place, press and drag to move, and everything VoiceOver needs.
     /// The Mac adds a context menu on a right click. The phone has none: its menu opened on the same press that lifts
     /// a watch and swallowed the drag, so a held watch never moved. Its actions are on the info panel of the selected
@@ -704,14 +885,16 @@ struct BoxesScreen: View {
     @ViewBuilder
     private func hit(_ slot: Int, _ scene: Scene) -> some View {
         let piece = scene.occupants[slot]
+        let space = BoxSpace(boxID: scene.box.id, slot: slot)
         let button = tapTarget(Color.clear.contentShape(Rectangle())) { tap(slot, scene) }
-        let target = lifting(button, piece: piece, origin: slot, scene: scene) { tap(slot, scene) }
+        let target = lifting(button, piece: piece, origin: space, scene: scene) { tap(slot, scene) }
         .accessibilityLabel(spaceLabel(slot, scene))
-        .accessibilityAddTraits(selection == slot ? .isSelected : [])
-        .accessibilitySortPriority(Double(1000 - slot))
+        .accessibilityAddTraits(selection == space ? .isSelected : [])
+        // The top box reads first, each box's label just before its spaces.
+        .accessibilitySortPriority(Double((scene.count - scene.index) * 1000 - slot))
         .accessibilityActions {
             if let armed {
-                Button("Place here") { place(armed, at: slot, scene) }
+                Button("Place here") { place(armed, at: space) }
             }
             if let piece {
                 // What a finger does by dragging, in two steps: pick the watch up here, then "Place here" on another
@@ -767,9 +950,19 @@ struct BoxesScreen: View {
         }
     }
 
-    /// Into the first open space of another box. The selection goes with it out of this box.
+    /// Into the first open space of another box. In single view the selection goes with it out of this box; with
+    /// that box on screen too, the watch settles in its new space as a drop does and the selection follows it.
     private func move(_ watchID: String, to other: WatchBox, slot: Int) {
-        if let scene = makeScene(), let selected = selection, scene.occupants[selected]?.itemID == watchID {
+        let board = makeBoard()
+        if board?.scene(other.id) != nil {
+            let target = BoxSpace(boxID: other.id, slot: slot)
+            Task {
+                await store.placeWatch(id: watchID, boxID: other.id, slot: slot)
+                land(watchID, at: target)
+            }
+            return
+        }
+        if let board, let selected = selection, board.scene(selected.boxID)?.occupants[selected.slot]?.itemID == watchID {
             withAnimation(.easeInOut(duration: 0.2)) { selection = nil }
         }
         Task { await store.placeWatch(id: watchID, boxID: other.id, slot: slot) }
@@ -795,14 +988,15 @@ struct BoxesScreen: View {
     // MARK: Tapping
 
     private func tap(_ slot: Int, _ scene: Scene) {
+        let space = BoxSpace(boxID: scene.box.id, slot: slot)
         guard Date().timeIntervalSince(lastDragEnd) > 0.35 else { return }
-        if lastHold.slot == slot, Date().timeIntervalSince(lastHold.at) < 1.5 { return }
+        if lastHold.space == space, Date().timeIntervalSince(lastHold.at) < 1.5 { return }
         if let armed {
-            place(armed, at: slot, scene)
+            place(armed, at: space)
             return
         }
         withAnimation(.easeInOut(duration: 0.2)) {
-            selection = selection == slot ? nil : slot
+            selection = selection == space ? nil : space
         }
     }
 
@@ -810,19 +1004,21 @@ struct BoxesScreen: View {
     /// clears the selection. The selected compartment's info panel carries what a context menu would.
     private func held(_ slot: Int, _ scene: Scene) {
         guard drag.lift == nil, Date().timeIntervalSince(lastDragEnd) > 0.35 else { return }
-        lastHold = (slot, Date())
+        let space = BoxSpace(boxID: scene.box.id, slot: slot)
+        lastHold = (space, Date())
         if let armed {
-            place(armed, at: slot, scene)
+            place(armed, at: space)
             return
         }
-        withAnimation(.easeInOut(duration: 0.2)) { selection = slot }
+        withAnimation(.easeInOut(duration: 0.2)) { selection = space }
     }
 
-    private func tapChip(_ chip: BoxChip, _ scene: Scene) {
+    private func tapChip(_ chip: BoxChip, _ board: Board) {
         guard Date().timeIntervalSince(lastDragEnd) > 0.35 else { return }
-        // A space chosen first: a candidate goes on trial there; an owned watch goes in when it is free.
-        if let slot = selection, chip.wishlist || scene.box.watchID(at: slot) == nil {
-            place(chip, at: slot, scene)
+        // A space chosen first: a candidate goes on trial there; an owned watch goes in when it is free. Either goes
+        // to that space's box.
+        if let space = selection, let scene = board.scene(space.boxID), chip.wishlist || scene.box.watchID(at: space.slot) == nil {
+            place(chip, at: space)
             return
         }
         withAnimation(.easeInOut(duration: 0.2)) {
@@ -833,41 +1029,47 @@ struct BoxesScreen: View {
     }
 
     /// Puts a chip's watch in a compartment: an owned watch by the place rules, a candidate on trial.
-    private func place(_ chip: BoxChip, at slot: Int, _ scene: Scene) {
+    private func place(_ chip: BoxChip, at space: BoxSpace) {
         let id = chip.wishlist ? "trial:\(chip.itemID)" : chip.itemID
         withAnimation(.easeInOut(duration: 0.2)) {
             armed = nil
             emphasized = nil
         }
         if chip.wishlist {
-            store.tryOn(wishlistID: chip.itemID, boxID: scene.box.id, slot: slot)
+            store.tryOn(wishlistID: chip.itemID, boxID: space.boxID, slot: space.slot)
             showsTrial = true
-            land(id, at: slot)
+            land(id, at: space)
         } else {
             Task {
-                await store.placeWatch(id: chip.itemID, boxID: scene.box.id, slot: slot)
-                land(id, at: slot)
+                await store.placeWatch(id: chip.itemID, boxID: space.boxID, slot: space.slot)
+                land(id, at: space)
             }
         }
     }
 
-    private func land(_ id: String, at slot: Int) {
+    private func land(_ id: String, at space: BoxSpace) {
         arriving = id
         settles[id, default: 0] += 1
-        selection = slot
+        selection = space
         Task {
             try? await Task.sleep(for: .milliseconds(450))
             if arriving == id { arriving = nil }
         }
     }
 
+    /// The selected compartment's piece, wherever it is shown.
+    private func selectedItemID(_ board: Board?) -> String? {
+        guard let board, let space = selection else { return nil }
+        return board.scene(space.boxID)?.occupants[space.slot]?.itemID
+    }
+
     private func takeOut(_ watchID: String) {
-        if let scene = makeScene(), let slot = selection, scene.occupants[slot]?.itemID == watchID { selection = nil }
+        if selectedItemID(makeBoard()) == watchID { selection = nil }
         Task { await store.takeOut(watchID: watchID) }
     }
 
     private func endTrial(_ wishlistID: String) {
-        if let scene = makeScene(), let slot = selection, scene.occupants[slot]?.itemID == wishlistID { selection = nil }
+        if selectedItemID(makeBoard()) == wishlistID { selection = nil }
         withAnimation(.easeInOut(duration: 0.3)) { store.endTrial(wishlistID: wishlistID) }
     }
 
@@ -899,10 +1101,11 @@ struct BoxesScreen: View {
 
     /// Press and drag to move: a watch in a compartment (`origin`), a chip (`origin` nil), or on iPhone an empty
     /// compartment, where nothing lifts but a still hold selects it. `tap` is the button's own action, for a press the
-    /// lift has taken from the button and let go without moving. Locations are in the screen's named space, which the
-    /// box, the tray, the chip grids and the preview share, so a drag crosses the crease freely.
+    /// lift has taken from the button and let go without moving. `scene` is the box it is drawn for: the box it came
+    /// from, or the top box for a chip. Locations are in the screen's named space, which every box, the tray, the chip
+    /// grids and the preview share, so a drag crosses from one box to another and over the crease freely.
     @ViewBuilder
-    private func lifting(_ content: some View, piece: BoxPiece?, origin: Int?, scene: Scene,
+    private func lifting(_ content: some View, piece: BoxPiece?, origin: BoxSpace?, scene: Scene,
                          tap: @escaping () -> Void) -> some View {
         #if os(iOS)
         content.gesture(liftPress(piece: piece, origin: origin, scene: scene, tap: tap))
@@ -915,7 +1118,7 @@ struct BoxesScreen: View {
     /// iPhone: press 0.22 s, then drag; held as long as you like before moving, the watch still lifts. Moving within
     /// the 0.22 s scrolls the page instead. A compartment held still for half a second is selected while the finger is
     /// down, where the system menu used to open; let go before that, or a chip at any time, and it is a tap.
-    private func liftPress(piece: BoxPiece?, origin: Int?, scene: Scene, tap: @escaping () -> Void) -> LiftPress {
+    private func liftPress(piece: BoxPiece?, origin: BoxSpace?, scene: Scene, tap: @escaping () -> Void) -> LiftPress {
         LiftPress(space: Self.space) { phase, location, start in
             switch phase {
             case .began:
@@ -927,7 +1130,7 @@ struct BoxesScreen: View {
                 let held = !drag.pressing
                 drag.pressing = false
                 if drag.lift != nil {
-                    drop(at: location, scene: scene)
+                    drop(at: location)
                 } else if !held {
                     // Let go without moving: the recognizer has cancelled the button's own tap by now.
                     tap()
@@ -943,7 +1146,7 @@ struct BoxesScreen: View {
 
     /// A press has lasted 0.22 s. If it is still down and has not lifted anything a further 0.28 s on, it selects its
     /// compartment (`held`); `pressing` false afterwards tells the release it has been dealt with.
-    private func pressBegan(_ origin: Int?, _ scene: Scene) {
+    private func pressBegan(_ origin: BoxSpace?, _ scene: Scene) {
         drag.press += 1
         drag.pressing = true
         guard let origin else { return }
@@ -952,12 +1155,12 @@ struct BoxesScreen: View {
             try? await Task.sleep(for: .milliseconds(280))
             guard drag.press == press, drag.pressing, drag.lift == nil else { return }
             drag.pressing = false
-            held(origin, scene)
+            held(origin.slot, scene)
         }
     }
     #else
     /// Mac: a plain drag of 4 pt; a right click opens the context menu.
-    private func liftGesture(piece: BoxPiece?, origin: Int?, scene: Scene) -> some Gesture {
+    private func liftGesture(piece: BoxPiece?, origin: BoxSpace?, scene: Scene) -> some Gesture {
         DragGesture(minimumDistance: 4, coordinateSpace: .named(Self.space))
             .updating($gesturing) { _, state, _ in state = true }
             .onChanged { value in
@@ -966,12 +1169,12 @@ struct BoxesScreen: View {
             }
             .onEnded { value in
                 guard drag.lift != nil else { return }
-                drop(at: value.location, scene: scene)
+                drop(at: value.location)
             }
     }
     #endif
 
-    private func follow(_ location: CGPoint, start: CGPoint, piece: BoxPiece, origin: Int?, scene: Scene) {
+    private func follow(_ location: CGPoint, start: CGPoint, piece: BoxPiece, origin: BoxSpace?, scene: Scene) {
         if drag.lift == nil {
             // A watch in the box or a chip lifts once the finger has moved 4 pt, however long it was held first: a
             // press that never moves selects the compartment (`held`) or, on a chip, is a tap that arms it.
@@ -981,13 +1184,16 @@ struct BoxesScreen: View {
         drag.location = location
     }
 
-    private func lift(_ piece: BoxPiece, origin: Int?, start: CGPoint, scene: Scene) {
+    /// Lifts a piece. It keeps the look of the box it came from (tiles are per finish) until it lands; a chip from the
+    /// tray lifts with the top box's look.
+    private func lift(_ piece: BoxPiece, origin: BoxSpace?, start: CGPoint, scene: Scene) {
         let painter = painter(scene)
         let drawn = content(piece, finish: scene.finish, emptyBoxTiles: store.data?.emptyBoxTiles)
         var grab = CGSize.zero
         if let origin {
-            let rect = painter.slotRect(origin)
-            grab = CGSize(width: frames.stage.minX + rect.midX - start.x, height: frames.stage.minY + rect.midY - start.y)
+            let rect = painter.slotRect(origin.slot)
+            let stage = frames.stages[origin.boxID]?.rect ?? .zero
+            grab = CGSize(width: stage.minX + rect.midX - start.x, height: stage.minY + rect.midY - start.y)
         } else {
             // From the tray: held above the finger so the finger does not cover it.
             grab = CGSize(width: 0, height: -painter.slotRect(0).height * 0.35)
@@ -998,16 +1204,24 @@ struct BoxesScreen: View {
         dragging = piece.id
         liftTick += 1
         if !piece.wishlist || origin == nil { armed = nil }
-        startAutoScroll()
+        startAutoScroll(both: scene.count > 1)
     }
 
-    private func drop(at location: CGPoint, scene: Scene) {
+    /// Lets go: on a compartment of any box shown, it goes there (a swap with what is there, across boxes too); on
+    /// its own space it settles back; anywhere else on the stack (a frame, a label, the gap between two boxes, the
+    /// band over a table's crease), or a chip let go off a compartment, back where it was; anywhere else, out to the
+    /// tray.
+    private func drop(at location: CGPoint) {
         guard let lift = drag.lift else { return }
         drag.dropping = true
         dropTick += 1
         lastDragEnd = Date()
-        let inBox = frames.showsBox(at: location)
-        let target = Self.slot(at: location, frames: frames, scene)
+        guard let board = makeBoard() else {
+            endDrag()
+            return
+        }
+        let onStack = frames.showsStack(at: location)
+        let target = frames.space(at: location, boxes: board.lead.stack, k: board.k)
         let piece = lift.piece
         if let target {
             if lift.origin == target {
@@ -1017,22 +1231,22 @@ struct BoxesScreen: View {
             }
             arriving = piece.id
             if piece.wishlist {
-                store.tryOn(wishlistID: piece.itemID, boxID: scene.box.id, slot: target)
+                store.tryOn(wishlistID: piece.itemID, boxID: target.boxID, slot: target.slot)
                 showsTrial = true
                 endDrag()
                 land(piece.id, at: target)
             } else {
                 Task {
-                    await store.placeWatch(id: piece.itemID, boxID: scene.box.id, slot: target)
+                    await store.placeWatch(id: piece.itemID, boxID: target.boxID, slot: target.slot)
                     endDrag()
                     land(piece.id, at: target)
                 }
             }
-        } else if inBox || lift.origin == nil {
-            // On the frame, or a chip dropped anywhere but a compartment: back where it was.
+        } else if onStack || lift.origin == nil {
+            // On a frame, a label or between the boxes, or a chip dropped anywhere but a compartment: back where it was.
             endDrag()
         } else {
-            // Out of the box: back to the tray.
+            // Out of the boxes: back to the tray.
             if selection == lift.origin { selection = nil }
             if piece.wishlist {
                 store.endTrial(wishlistID: piece.itemID)
@@ -1056,14 +1270,15 @@ struct BoxesScreen: View {
     }
 
     /// Near the top or bottom 60 pt of the scroll view, the page scrolls 8 pt a frame (the bottom edge is the tray, or
-    /// the tab bar where there is no tray). Only where the box scrolls: in a fixed pane it is always in reach.
-    private func startAutoScroll() {
+    /// the tab bar where there is no tray). Only where a box scrolls: in a fixed pane it is always in reach. With every
+    /// box shown, only while the stack runs on past that edge (`BoxFrames.autoScrollStep`).
+    private func startAutoScroll(both: Bool) {
         autoScroll?.cancel()
-        guard frames.stageScrolls else { return }
+        guard frames.order.contains(where: { frames.stages[$0]?.scrolls == true }) else { return }
         autoScroll = Task { @MainActor in
             while !Task.isCancelled, drag.lift != nil {
                 try? await Task.sleep(for: .milliseconds(16))
-                let step = frames.autoScrollStep(at: drag.location.y)
+                let step = frames.autoScrollStep(at: drag.location.y, both: both)
                 guard step != 0 else { continue }
                 let next = min(frames.maxOffset, max(0, frames.offset + step))
                 guard next != frames.offset else { continue }
@@ -1076,27 +1291,34 @@ struct BoxesScreen: View {
 
     // MARK: Controls
 
-    private func controls(_ scene: Scene) -> some View {
+    /// "Close lid" / "Open lid"; "Close lids" / "Open lids" with every box shown. One control drives every box.
+    private func lidLabel(_ board: Board) -> String {
+        board.both ? (lidClosed ? "Open lids" : "Close lids") : (lidClosed ? "Open lid" : "Close lid")
+    }
+
+    private func controls(_ board: Board) -> some View {
         HStack(spacing: 8) {
-            Button(lidClosed ? "Open lid" : "Close lid") {
+            Button(lidLabel(board)) {
                 withAnimation(.easeInOut(duration: 0.35)) { lidClosed.toggle() }
             }
-            BoxShareMenu(store: store, card: shareCard(scene), product: productCard(scene))
+            shareMenu(board)
         }
         .quietButton()
         .controlSize(.small)
         .frame(maxWidth: .infinity)
     }
 
-    /// "Trying" / "As it is" flips the same box in place; "Clear trial" ends every trial in this box.
-    private func trialSwitch(_ scene: Scene) -> some View {
-        VStack(spacing: 10) {
+    /// "Trying" / "As it is" flips every box shown in place; "Clear trial" ends every trial in them ("Clear trials"
+    /// when two or more have one).
+    private func trialSwitch(_ board: Board) -> some View {
+        let withTrial = board.scenes.filter { !$0.trial.isEmpty }.count
+        return VStack(spacing: 10) {
             UnderlineTabs(selection: Binding(get: { showsTrial }, set: { value in
                 withAnimation(.easeInOut(duration: 0.3)) { showsTrial = value }
             }), options: [(value: true, label: "Trying"), (value: false, label: "As it is")])
-            Button("Clear trial") {
+            Button(withTrial > 1 ? "Clear trials" : "Clear trial") {
                 withAnimation(.easeInOut(duration: 0.3)) {
-                    store.clearTrial(boxID: scene.box.id)
+                    for scene in board.scenes { store.clearTrial(boxID: scene.box.id) }
                     selection = nil
                 }
             }
@@ -1109,10 +1331,12 @@ struct BoxesScreen: View {
 
     // MARK: Info panel
 
+    /// One panel, for the selected space in whichever box it is.
     @ViewBuilder
-    private func infoPanel(_ scene: Scene) -> some View {
+    private func infoPanel(_ board: Board) -> some View {
         Group {
-            if let slot = selection, slot < scene.box.capacity {
+            if let space = selection, let scene = board.scene(space.boxID), space.slot < scene.box.capacity {
+                let slot = space.slot
                 if let piece = scene.occupants[slot] {
                     if piece.wishlist {
                         candidatePanel(piece, slot: slot, scene)
@@ -1128,12 +1352,12 @@ struct BoxesScreen: View {
                         Text(scene.box.spaceName(slot).capitalizedFirst)
                             .font(AtelierType.detail)
                             .foregroundStyle(WatchTheme.muted)
-                        Text(placeHint(scene.arrangement))
+                        Text(placeHint(board))
                             .font(AtelierType.caption)
                             .foregroundStyle(WatchTheme.muted)
                     }
                 }
-            } else if let armed, let piece = scene.piece(armed) {
+            } else if let armed, let piece = board.lead.piece(armed) {
                 VStack(alignment: .leading, spacing: 8) {
                     if let kicker = piece.kicker { Eyebrow(kicker) }
                     Text(piece.name)
@@ -1157,19 +1381,21 @@ struct BoxesScreen: View {
         .animation(.easeInOut(duration: 0.2), value: selection)
     }
 
-    /// Where the watches to place are: the docked tray, the grids below, or the Mac's side column.
-    private func placeHint(_ arrangement: BoxArrangement) -> String {
-        switch arrangement {
+    /// Where the watches to place are: the docked tray, the grids below, or the Mac's side column (under the panel
+    /// when every box is shown).
+    private func placeHint(_ board: Board) -> String {
+        switch board.arrangement {
         case .phone: "Tap a watch in the tray to place it here."
-        case .desk: "Click a watch on the right to place it here."
+        case .desk: board.both ? "Click a watch below to place it here." : "Click a watch on the right to place it here."
         case .column, .book, .table: Platform.isMac ? "Click a watch below to place it here." : "Tap a watch below to place it here."
         }
     }
 
+    /// "Dive, 42 mm, back row, space 3"; with every box shown, the box too: "Dive, 42 mm, Black Box, back row, space 3".
     private func detailLine(_ piece: BoxPiece, slot: Int, _ scene: Scene) -> String {
         [piece.kicker == piece.category ? nil : piece.category,
          piece.diameter.map { "\(compactNumber($0)) mm" },
-         scene.box.spaceName(slot)]
+         scene.count > 1 ? scene.box.placeName(slot) : scene.box.spaceName(slot)]
             .compactMap { $0 }
             .joined(separator: ", ")
     }
@@ -1208,6 +1434,11 @@ struct BoxesScreen: View {
                 }
                 Button("Take out") { takeOut(piece.itemID) }
                     .quietButton()
+                // With every box shown: pick it up, then choose a space in any box.
+                if scene.count > 1 {
+                    Button("Move") { pickUp(piece) }
+                        .quietButton()
+                }
                 ForEach(boxes.filter { $0.id != scene.box.id }) { other in
                     if let open = firstOpenSpace(in: other) {
                         Button("Move to \(other.name)") { move(piece.itemID, to: other, slot: open) }
@@ -1273,21 +1504,23 @@ struct BoxesScreen: View {
         Task { await store.setBoxCutout(itemID: piece.itemID, wishlist: piece.wishlist, cutout: value) }
     }
 
-    private func steppingOut(_ scene: Scene) -> some View {
+    /// The watches that stepped out for a trial, in every box shown, box order.
+    private func steppingOut(_ board: Board) -> some View {
         GroupedSection {
-            GroupedRow("Stepping out", value: scene.steppingOut.map(\.name).joined(separator: ", "))
+            GroupedRow("Stepping out", value: board.steppingOut.map(\.name).joined(separator: ", "))
         }
     }
 
     // MARK: Tray
 
-    private func tray(_ scene: Scene) -> some View {
+    private func tray(_ board: Board) -> some View {
         let chipSide: CGFloat = typeSize.isAccessibilitySize ? 84 : 64
-        let shown: [BoxPiece] = trayShowsWishlist ? scene.candidates.map(BoxPiece.init(candidate:)) : scene.loose.map(BoxPiece.init(watch:))
+        let lead = board.lead
+        let shown: [BoxPiece] = trayShowsWishlist ? lead.candidates.map(BoxPiece.init(candidate:)) : lead.loose.map(BoxPiece.init(watch:))
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 20) {
-                trayTab("Not in a box", count: scene.loose.count, wishlist: false)
-                trayTab("Wishlist", count: scene.candidates.count, wishlist: true)
+                trayTab("Not in a box", count: lead.loose.count, wishlist: false)
+                trayTab("Wishlist", count: lead.candidates.count, wishlist: true)
                 Spacer(minLength: 0)
             }
             .padding(.horizontal, margin)
@@ -1302,7 +1535,7 @@ struct BoxesScreen: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         LazyHStack(alignment: .top, spacing: 10) {
                             ForEach(shown) { piece in
-                                chip(piece, side: chipSide, scene: scene)
+                                chip(piece, side: chipSide, board: board)
                                     .id(piece.id)
                             }
                         }
@@ -1348,7 +1581,7 @@ struct BoxesScreen: View {
     }
 
     /// A watch or candidate to place: `side` points square in the tray, or as wide as its column in a grid (nil).
-    private func chip(_ piece: BoxPiece, side: CGFloat?, scene: Scene) -> some View {
+    private func chip(_ piece: BoxPiece, side: CGFloat?, board: Board) -> some View {
         let chip = BoxChip(itemID: piece.itemID, wishlist: piece.wishlist)
         let isArmed = armed == chip
         let score = piece.wishlist ? store.scores[piece.itemID]?.total : nil
@@ -1378,8 +1611,8 @@ struct BoxesScreen: View {
                 .frame(maxWidth: side == nil ? .infinity : nil)
         }
         .contentShape(Rectangle())
-        let button = tapTarget(label) { tapChip(chip, scene) }
-        return lifting(button, piece: piece, origin: nil, scene: scene) { tapChip(chip, scene) }
+        let button = tapTarget(label) { tapChip(chip, board) }
+        return lifting(button, piece: piece, origin: nil, scene: board.lead) { tapChip(chip, board) }
         .accessibilityLabel("\(piece.name), \(piece.wishlist ? "on the wishlist" : "not in a box")")
         .accessibilityHint("Double tap, then choose a space.")
         .accessibilityAddTraits(isArmed ? .isSelected : [])
@@ -1397,17 +1630,17 @@ struct BoxesScreen: View {
 
     /// In place of the docked tray where the page has room: "Not in a box" and "Wishlist" as grids, one above the
     /// other. A drop anywhere here takes a watch out, as a drop on the tray does.
-    private func chipGrids(_ scene: Scene, columns: Int) -> some View {
+    private func chipGrids(_ board: Board, columns: Int) -> some View {
         VStack(alignment: .leading, spacing: 30) {
-            chipGrid("Not in a box", pieces: scene.loose.map(BoxPiece.init(watch:)),
-                     empty: "Every watch you own is in a box.", columns: columns, scene: scene)
-            chipGrid("Wishlist", pieces: scene.candidates.map(BoxPiece.init(candidate:)),
-                     empty: "Nothing on the wishlist yet.", columns: columns, scene: scene)
+            chipGrid("Not in a box", pieces: board.lead.loose.map(BoxPiece.init(watch:)),
+                     empty: "Every watch you own is in a box.", columns: columns, board: board)
+            chipGrid("Wishlist", pieces: board.lead.candidates.map(BoxPiece.init(candidate:)),
+                     empty: "Nothing on the wishlist yet.", columns: columns, board: board)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func chipGrid(_ title: String, pieces: [BoxPiece], empty: String, columns: Int, scene: Scene) -> some View {
+    private func chipGrid(_ title: String, pieces: [BoxPiece], empty: String, columns: Int, board: Board) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             Eyebrow("\(title) \(pieces.count)")
                 .accessibilityAddTraits(.isHeader)
@@ -1419,7 +1652,7 @@ struct BoxesScreen: View {
                 LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10, alignment: .top), count: max(1, columns)),
                           spacing: 14) {
                     ForEach(pieces) { piece in
-                        chip(piece, side: nil, scene: scene)
+                        chip(piece, side: nil, board: board)
                     }
                 }
             }
@@ -1445,6 +1678,16 @@ struct BoxesScreen: View {
 
     // MARK: Share
 
+    /// The Share pill: the box's two pictures, or with every box shown the stacked ones ("both-boxes.png").
+    @ViewBuilder
+    private func shareMenu(_ board: Board) -> some View {
+        if board.both {
+            BoxShareMenu(store: store, title: title(board), card: stackCard(board), product: stackProductCard(board))
+        } else {
+            BoxShareMenu(store: store, title: board.lead.box.name, card: shareCard(board.lead), product: productCard(board.lead))
+        }
+    }
+
     private func shareCard(_ scene: Scene) -> BoxShareCard {
         let trial = pictureTrial(scene)
         return BoxShareCard(
@@ -1462,6 +1705,26 @@ struct BoxesScreen: View {
             slots: Dictionary(uniqueKeysWithValues: scene.items.map { ($0.slot, $0.content) }),
             emptyTile: scene.emptyTile, onTrial: trial.onTrial, steppingOut: trial.steppingOut, dark: colorScheme == .dark
         )
+    }
+
+    /// Every box shown, top down, in one card: each box's own card is its label row and picture.
+    private func stackCard(_ board: Board) -> BoxStackShareCard {
+        BoxStackShareCard(title: title(board), subtitle: stackSubtitle(board), boxes: board.scenes.map(shareCard),
+                          dark: colorScheme == .dark)
+    }
+
+    private func stackProductCard(_ board: Board) -> BoxStackProductShareCard {
+        BoxStackProductShareCard(title: title(board), subtitle: stackSubtitle(board), boxes: board.scenes.map(productCard),
+                                 dark: colorScheme == .dark)
+    }
+
+    /// What the stacked picture shows, added up over its boxes: "14 watches, 10 spaces open".
+    private func stackSubtitle(_ board: Board) -> String {
+        BoxShare.counts(of: board.scenes.map { scene in
+            let onTrial = scene.showingTrial ? scene.items.filter { $0.piece.wishlist }.count : 0
+            let owned = scene.showingTrial ? scene.items.count - onTrial : scene.box.slots.count
+            return (watches: owned, onTrial: onTrial, capacity: scene.box.capacity)
+        })
     }
 
     /// What a shared picture says about the trial in it: its subtitle counts what the picture shows (candidates on
@@ -1482,27 +1745,40 @@ struct BoxesScreen: View {
         var active: Bool
     }
 
-    private func artRequest(_ scene: Scene) -> BoxArtwork.Request {
+    /// Every box shown loads together, each with its own finish's tiles, so no box's tiles push out another's.
+    private func artRequest(_ board: Board) -> BoxArtwork.Request {
         var seen: Set<String> = []
         var pieces: [BoxPiece] = []
         func add(_ piece: BoxPiece) {
             if seen.insert(piece.directory).inserted { pieces.append(piece) }
         }
-        scene.occupants.keys.sorted().compactMap { scene.occupants[$0] }.forEach(add)
-        scene.trial.keys.sorted().compactMap { scene.trial[$0].flatMap { scene.wishlist[$0] } }.map(BoxPiece.init(candidate:)).forEach(add)
-        scene.loose.map(BoxPiece.init(watch:)).forEach(add)
-        scene.candidates.map(BoxPiece.init(candidate:)).forEach(add)
+        for scene in board.scenes {
+            scene.occupants.keys.sorted().compactMap { scene.occupants[$0] }.forEach(add)
+        }
+        for scene in board.scenes {
+            scene.trial.keys.sorted().compactMap { scene.trial[$0].flatMap { scene.wishlist[$0] } }.map(BoxPiece.init(candidate:)).forEach(add)
+        }
+        board.lead.loose.map(BoxPiece.init(watch:)).forEach(add)
+        board.lead.candidates.map(BoxPiece.init(candidate:)).forEach(add)
         var tiles: [PhotoAsset] = []
-        for piece in scene.occupants.keys.sorted().compactMap({ scene.occupants[$0] }) {
-            if let file = piece.boxTiles?[scene.finish.rawValue],
-               let asset = PhotoStore.asset(itemID: piece.itemID, filename: file, wishlist: piece.wishlist, baseURL: nil) {
-                tiles.append(asset)
+        var tileKeys: Set<String> = []
+        func addTile(_ asset: PhotoAsset) {
+            if tileKeys.insert(BoxArtwork.tileKey(asset)).inserted { tiles.append(asset) }
+        }
+        for scene in board.scenes {
+            for piece in scene.occupants.keys.sorted().compactMap({ scene.occupants[$0] }) {
+                if let file = piece.boxTiles?[scene.finish.rawValue],
+                   let asset = PhotoStore.asset(itemID: piece.itemID, filename: file, wishlist: piece.wishlist, baseURL: nil) {
+                    addTile(asset)
+                }
             }
         }
-        if let file = store.data?.emptyBoxTiles?[scene.finish.rawValue], let asset = PhotoStore.emptyTileAsset(filename: file, baseURL: nil) {
-            tiles.append(asset)
+        for scene in board.scenes {
+            if let file = store.data?.emptyBoxTiles?[scene.finish.rawValue], let asset = PhotoStore.emptyTileAsset(filename: file, baseURL: nil) {
+                addTile(asset)
+            }
         }
-        let compartment = BoxGeometry.compartment.height * scene.k
+        let compartment = BoxGeometry.compartment.height * board.k
         return BoxArtwork.Request(
             pieces: pieces, tiles: tiles,
             pixels: BoxTileStore.pixelSize(compartmentPoints: compartment, scale: displayScale),
@@ -1514,17 +1790,19 @@ struct BoxesScreen: View {
 
     private func consume(_ intent: BoxIntent) {
         guard let data = store.data else { return }
+        let both = both
         // From a watch page pushed on this tab: back to the box.
         path = NavigationPath()
         withAnimation(.easeInOut(duration: 0.25)) {
             switch intent {
             case .show(let id), .place(let id):
                 if let space = BoxModel.location(of: id, in: data) {
-                    if space.boxID != makeScene()?.box.id { carriedBoxID = space.boxID }
+                    // Every box shown stays so: only the remembered single box follows the watch.
+                    if !both, space.boxID != makeBoard()?.lead.box.id { carriedBoxID = space.boxID }
                     selectedBoxID = space.boxID
-                    selection = space.slot
+                    selection = space
                     armed = nil
-                    revealSoon(space.slot)
+                    revealSoon(space)
                 } else {
                     armed = BoxChip(itemID: id, wishlist: false)
                     trayShowsWishlist = false
@@ -1536,23 +1814,28 @@ struct BoxesScreen: View {
                 trayShowsWishlist = true
                 selection = nil
                 showsTrial = true
-                if let box = data.boxes?.first(where: { $0.id == selectedBoxID }) ?? data.boxes?.first {
+                // The first open space across the boxes shown, in box order.
+                emphasized = nil
+                for box in BoxShowing.boxes(data.boxes ?? [], selected: selectedBoxID, all: both) {
                     let trial = store.boxTrial.candidates(in: box.id)
-                    emphasized = (0..<box.capacity).first { box.watchID(at: $0) == nil && trial[$0] == nil }
-                    if let emphasized { revealSoon(emphasized) }
+                    if let slot = (0..<box.capacity).first(where: { box.watchID(at: $0) == nil && trial[$0] == nil }) {
+                        emphasized = BoxSpace(boxID: box.id, slot: slot)
+                        break
+                    }
                 }
+                if let emphasized { revealSoon(emphasized) }
             }
         }
     }
 
     /// Once the tab and the box are on screen, scrolls just far enough that a compartment shows between the bar and
     /// the tray.
-    private func revealSoon(_ slot: Int) {
+    private func revealSoon(_ space: BoxSpace) {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(400))
-            guard frames.stageScrolls, let scene = makeScene(), slot < scene.box.capacity,
-                  frames.stage.height > 0, frames.scroll.height > 0 else { return }
-            let rect = painter(scene).slotRect(slot).offsetBy(dx: frames.stage.minX, dy: frames.stage.minY)
+            guard let board = makeBoard(), let scene = board.scene(space.boxID), space.slot < scene.box.capacity,
+                  let stage = frames.stages[space.boxID], stage.scrolls, stage.rect.height > 0, frames.scroll.height > 0 else { return }
+            let rect = painter(scene).slotRect(space.slot).offsetBy(dx: stage.rect.minX, dy: stage.rect.minY)
             let delta = frames.revealDelta(for: rect)
             guard delta != 0 else { return }
             let next = min(frames.maxOffset, max(0, frames.offset + delta))
@@ -1569,8 +1852,10 @@ struct BoxesScreen: View {
     #if DEBUG
     /// Debug builds only, for pictures on a simulator that has no touch input:
     ///   -boxProbe "lid,select:3,arm:<watch-id>,try:<wishlist-id>,trial:<wishlist-id>@<slot>,notrial,wishlist,asis,
-    ///              editor:3,manage,brown,black,scroll:600,lift:2-5,liftchip:<watch-id>,show:<watch-id>,
+    ///              editor:3,manage,brown,black,both,single,scroll:600,lift:2-5,liftchip:<watch-id>,show:<watch-id>,
     ///              pickup:3,place:5,wait:1,card:<name>,product:<name>"
+    /// A slot is a space of the top box, or `<box-id>@<slot>` for any box shown: select:brown@3, lift:black@2-brown@5,
+    /// trial:<wishlist-id>@brown@3.
     private func runProbe() async {
         guard let probe = UserDefaults.standard.string(forKey: "boxProbe") else { return }
         try? await Task.sleep(for: .seconds(2.5))
@@ -1579,48 +1864,54 @@ struct BoxesScreen: View {
             guard !Task.isCancelled else { return }
             let parts = token.split(separator: ":", maxSplits: 1).map(String.init)
             let value = parts.count > 1 ? parts[1] : ""
+            let board = makeBoard()
             switch parts[0] {
             case "lid": lidClosed = true
-            case "select": selection = Int(value)
+            case "select": selection = board.flatMap { Self.probeSpace(value, $0) }
             case "arm": armed = BoxChip(itemID: value, wishlist: false)
             case "try": consume(.tryOn(value))
             case "notrial": for box in boxes { store.clearTrial(boxID: box.id) }
             case "trial":
-                // A candidate on trial in a space of the box on screen: trial:<wishlist-id>@<slot>.
-                let bits = value.split(separator: "@").map(String.init)
-                if bits.count == 2, let slot = Int(bits[1]), let scene = makeScene() {
-                    store.tryOn(wishlistID: bits[0], boxID: scene.box.id, slot: slot)
+                // A candidate on trial in a space shown: trial:<wishlist-id>@<slot> or trial:<wishlist-id>@<box-id>@<slot>.
+                let bits = value.split(separator: "@", maxSplits: 1).map(String.init)
+                if bits.count == 2, let board, let space = Self.probeSpace(bits[1], board) {
+                    store.tryOn(wishlistID: bits[0], boxID: space.boxID, slot: space.slot)
                     showsTrial = true
                 }
             case "wishlist": trayShowsWishlist = true
             case "asis": showsTrial = false
             case "manage": managing = true
             case "editor":
-                if let scene = makeScene(), let slot = Int(value), let piece = scene.occupants[slot] {
+                if let board, let space = Self.probeSpace(value, board), let scene = board.scene(space.boxID),
+                   let piece = scene.occupants[space.slot] {
                     editing = editTarget(piece, scene)
                 }
             case "wait": try? await Task.sleep(for: .seconds(Double(value) ?? 1))
             case "card", "product":
                 // The shared picture, written to the app's tmp/box-probe/<value>.png: card:<name>, product:<name>.
-                if let scene = makeScene(),
-                   let image = parts[0] == "card" ? BoxShare.image(shareCard(scene)) : BoxShare.image(productCard(scene)),
-                   let png = BoxShare.png(image) {
+                // With every box shown, the stacked one.
+                if let board, let png = probePicture(parts[0] == "card", board).flatMap(BoxShare.png) {
                     let folder = FileManager.default.temporaryDirectory.appendingPathComponent("box-probe", isDirectory: true)
                     try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                     try? png.write(to: folder.appendingPathComponent(value + ".png"), options: .atomic)
                 }
             case "scroll": fold.position.scrollTo(y: CGFloat(Double(value) ?? 0))
             case "brown", "black": selectedBoxID = parts[0]
+            case "both": showsBoth = true
+            case "single": showsBoth = false
             // The watch page's Box row: show:<watch-id>.
             case "show": store.openBoxes(.show(value))
             // VoiceOver's two steps: pickup:<slot> ("Move"), then place:<slot> ("Place here").
-            case "pickup": if let scene = makeScene(), let slot = Int(value), let piece = scene.occupants[slot] { pickUp(piece) }
-            case "place": if let scene = makeScene(), let armed, let slot = Int(value) { place(armed, at: slot, scene) }
+            case "pickup":
+                if let board, let space = Self.probeSpace(value, board), let piece = board.scene(space.boxID)?.occupants[space.slot] {
+                    pickUp(piece)
+                }
+            case "place": if let board, let armed, let space = Self.probeSpace(value, board) { place(armed, at: space) }
             case "liftchip":
                 // A tray chip held up, as a drag from the tray shows it: liftchip:<watch-id>.
-                if let scene = makeScene(), let watch = scene.watches[value] {
+                if let board, let watch = board.lead.watches[value] {
                     let point = CGPoint(x: frames.tray.midX, y: frames.tray.minY - 80)
-                    lift(BoxPiece(watch: watch), origin: nil, start: point, scene: scene)
+                    lift(BoxPiece(watch: watch), origin: nil, start: point, scene: board.lead)
                     drag.location = point
                 }
             #if os(macOS)
@@ -1647,16 +1938,45 @@ struct BoxesScreen: View {
             #endif
             case "lift":
                 // A watch held over another compartment, as a drag shows it: lift:<from>-<over>.
-                let ends = value.split(separator: "-").compactMap { Int($0) }
-                if ends.count == 2, let scene = makeScene(), let piece = scene.occupants[ends[0]] {
-                    let rect = painter(scene).slotRect(ends[1])
-                    let point = CGPoint(x: frames.stage.minX + rect.midX + 10, y: frames.stage.minY + rect.midY + 6)
-                    lift(piece, origin: ends[0], start: point, scene: scene)
+                if let board, let ends = Self.probeSpaces(value, board),
+                   let scene = board.scene(ends.from.boxID), let piece = scene.occupants[ends.from.slot],
+                   let over = board.scene(ends.over.boxID), let stage = frames.stages[ends.over.boxID],
+                   let home = frames.stages[ends.from.boxID] {
+                    // Touched down on the watch, then moved over the other compartment, as a finger does.
+                    let start = painter(scene).slotRect(ends.from.slot)
+                    let rect = painter(over).slotRect(ends.over.slot)
+                    let point = CGPoint(x: stage.rect.minX + rect.midX + 10, y: stage.rect.minY + rect.midY + 6)
+                    lift(piece, origin: ends.from, start: CGPoint(x: home.rect.minX + start.midX, y: home.rect.minY + start.midY), scene: scene)
                     drag.location = point
                 }
             default: break
             }
         }
+    }
+
+    /// The share picture a probe writes: the box's, or with every box shown the stacked one.
+    private func probePicture(_ card: Bool, _ board: Board) -> CGImage? {
+        if board.both {
+            return card ? BoxShare.image(stackCard(board)) : BoxShare.image(stackProductCard(board))
+        }
+        return card ? BoxShare.image(shareCard(board.lead)) : BoxShare.image(productCard(board.lead))
+    }
+
+    /// "3" is space 3 of the top box; "brown@3" space 3 of the brown box.
+    private static func probeSpace(_ text: String, _ board: Board) -> BoxSpace? {
+        let bits = text.split(separator: "@", maxSplits: 1).map(String.init)
+        if bits.count == 2, let slot = Int(bits[1]) { return BoxSpace(boxID: bits[0], slot: slot) }
+        guard let slot = Int(text) else { return nil }
+        return BoxSpace(boxID: board.lead.box.id, slot: slot)
+    }
+
+    /// "2-5", "black@2-brown@5": cut at the first "-" after a slot number (box ids can hold a "-").
+    private static func probeSpaces(_ text: String, _ board: Board) -> (from: BoxSpace, over: BoxSpace)? {
+        let characters = Array(text)
+        guard let cut = characters.indices.first(where: { $0 > 0 && characters[$0] == "-" && characters[$0 - 1].isNumber }),
+              let from = probeSpace(String(characters[..<cut]), board),
+              let over = probeSpace(String(characters[(cut + 1)...]), board) else { return nil }
+        return (from, over)
     }
 
     #if os(macOS)
@@ -1693,7 +2013,7 @@ struct BoxDragPreview: View {
 
     var body: some View {
         if let lift = drag.lift {
-            let slot = lift.origin ?? 0
+            let slot = lift.origin?.slot ?? 0
             let rect = lift.painter.slotRect(slot)
             BoxWatchCanvas(painter: lift.painter, slot: slot, content: lift.content, lift: 1, lifted: true)
                 .frame(width: rect.width, height: rect.height)
