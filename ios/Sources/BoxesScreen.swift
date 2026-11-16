@@ -717,6 +717,11 @@ struct BoxesScreen: View {
                 Button("Place here") { place(armed, at: slot, scene) }
             }
             if let piece {
+                // What a finger does by dragging, in two steps: pick the watch up here, then "Place here" on another
+                // space moves it there or swaps the two.
+                if armed?.itemID != piece.itemID {
+                    Button(piece.wishlist ? "Try another space" : "Move") { pickUp(piece) }
+                }
                 actions(piece, slot: slot, scene)
             }
         }
@@ -751,6 +756,17 @@ struct BoxesScreen: View {
                     Button("Move to \(other.name)") { move(piece.itemID, to: other, slot: open) }
                 }
             }
+        }
+    }
+
+    /// Arms a watch or candidate that is already in the box, as a chip from the tray is armed, so the next space chosen
+    /// takes it (a move, or a swap with what is there).
+    private func pickUp(_ piece: BoxPiece) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            armed = BoxChip(itemID: piece.itemID, wishlist: piece.wishlist)
+            selection = nil
+            emphasized = nil
+            if piece.wishlist { trayShowsWishlist = true }
         }
     }
 
@@ -1274,14 +1290,8 @@ struct BoxesScreen: View {
                     .foregroundStyle(WatchTheme.muted)
             }
             ChipFlowLayout(spacing: 8) {
-                Button("Try another space") {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        armed = BoxChip(itemID: piece.itemID, wishlist: true)
-                        selection = nil
-                        trayShowsWishlist = true
-                    }
-                }
-                .prominentButton()
+                Button("Try another space") { pickUp(piece) }
+                    .prominentButton()
                 Button("End trial") { endTrial(piece.itemID) }
                     .quietButton()
                 Button("Adjust cutout") { editing = editTarget(piece, scene) }
