@@ -1423,8 +1423,10 @@ struct BoxesScreen: View {
         VStack(spacing: 18) {
             EmptyCollectionView(title: "No boxes yet", detail: "Set up your watch boxes to see the collection in them.")
                 .frame(maxHeight: 280)
-            Button("Use the starting layout") { Task { await store.useStartingLayout() } }
-                .prominentButton()
+            if store.canOfferStartingLayout {
+                Button("Use the starting layout") { Task { await store.useStartingLayout() } }
+                    .prominentButton()
+            }
             Button("Add a box") { managing = true }
                 .quietButton()
         }

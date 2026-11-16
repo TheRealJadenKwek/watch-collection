@@ -96,6 +96,13 @@ struct SyncSnapshot: Decodable {
     var conflicts: [SyncConflict]
     /// When a device other than this Mac last completed a sync with the hub.
     var lastRemoteSync: String?
+    /// What the hub's sync understands. Absent on a hub running code from before boxes.
+    var features: [String]? = nil
+
+    /// The hub keeps `boxes`. One that does not drops the key from every document it returns, so its
+    /// answer must never replace the boxes on this device, and nothing may seed or offer the starting
+    /// layout on its word.
+    var supportsBoxes: Bool { features?.contains("boxes") == true }
 }
 
 struct SyncRequest: Encodable {

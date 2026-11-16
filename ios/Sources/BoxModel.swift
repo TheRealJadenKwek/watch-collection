@@ -132,6 +132,16 @@ enum BoxModel {
         return result
     }
 
+    /// The collection to install from a sync result. A hub whose snapshot does not list "boxes" in its
+    /// features runs code from before boxes and drops the key from every document it returns, so a
+    /// result without boxes from it leaves the boxes on this device as they are; only a hub that keeps
+    /// boxes can say there are none.
+    static func installing(_ result: CollectionData, hubSupportsBoxes: Bool, local: CollectionData?) -> CollectionData {
+        var installed = result
+        if !hubSupportsBoxes, installed.boxes == nil { installed.boxes = local?.boxes }
+        return sanitized(installed)
+    }
+
     /// Owned watches that are in no compartment, newest first (the Collection's Newest order).
     static func tray(_ data: CollectionData) -> [Watch] {
         let placed = Set(data.boxes?.flatMap { $0.slots.values } ?? [])

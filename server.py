@@ -52,6 +52,10 @@ BOX_TILE_DIRECTORY = "_box"
 BOX_TILE_LIMIT = 3 * 1024 * 1024
 BOX_TILE_NAME = re.compile(r"^box-(black|brown)-[0-9a-f]{8}\.jpg$")
 EMPTY_TILE_NAME = re.compile(r"^empty-(black|brown)-[0-9a-f]{8}\.jpg$")
+# What this hub's sync understands, sent with every sync snapshot. An app seeds boxes, offers the
+# starting layout and lets a sync result take its boxes away only for a hub that lists "boxes": a hub
+# running code from before boxes drops the key from every document it returns.
+SYNC_FEATURES = ("boxes",)
 USER_AGENT = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) WatchCollection/1.10"
 STATUSES = {
     "owned", "given_away", "sold", "traded", "broken", "donated", "ousted",
@@ -656,7 +660,8 @@ class WatchHandler(BaseHTTPRequestHandler):
 
     def sync_snapshot(self, data):
         return {"data": data, "revision": fingerprint(data), "photos": [p for p in self.sync_photo_paths(data)
-                if (PHOTOS_DIR / p).is_file()], "conflicts": [], "lastRemoteSync": self.read_last_remote_sync()}
+                if (PHOTOS_DIR / p).is_file()], "conflicts": [], "lastRemoteSync": self.read_last_remote_sync(),
+                "features": list(SYNC_FEATURES)}
 
     @staticmethod
     def read_last_remote_sync():

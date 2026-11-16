@@ -86,6 +86,19 @@ final class AppStore: ObservableObject {
     private var lastSyncAttempt = Date.distantPast
     /// The iPhone seeds the starting boxes after its first sync of a launch that finds none.
     private var seedAfterSync = false
+    /// The hub of this launch's last completed sync keeps boxes (its snapshot lists "boxes" in its features).
+    @Published private(set) var hubSupportsBoxes = false
+
+    /// The starting layout (the iPhone's seed and "Use the starting layout") waits for a completed sync
+    /// with a hub that keeps boxes, so it never lands on top of boxes set up elsewhere nor goes to a hub
+    /// that would drop it. With sync off it is there at once.
+    var canOfferStartingLayout: Bool {
+        Self.startingLayoutAllowed(syncOn: syncEnabled && !syncAddress.isEmpty, hubSupportsBoxes: hubSupportsBoxes)
+    }
+
+    nonisolated static func startingLayoutAllowed(syncOn: Bool, hubSupportsBoxes: Bool) -> Bool {
+        !syncOn || hubSupportsBoxes
+    }
 
     private var started = false
 
@@ -105,11 +118,11 @@ final class AppStore: ObservableObject {
 
         // Never replace a populated standalone phone with the old migration snapshot.
         startConnectionMonitor()
-        let synced = await syncNow()
+        await syncNow()
         if !Platform.isMac {
-            // Only after the hub has had its say: a phone that has not heard from it waits for the
-            // first sync that gets through, so the seed never lands on top of boxes set up elsewhere.
-            if synced || !syncEnabled || syncAddress.isEmpty {
+            // Only after the hub has had its say: a phone that has not completed a sync with a hub that
+            // keeps boxes waits for one, so the seed never lands on top of boxes set up elsewhere.
+            if canOfferStartingLayout {
                 await seedBoxesIfNeeded()
             } else {
                 seedAfterSync = true
@@ -136,6 +149,7 @@ final class AppStore: ObservableObject {
         if clean != syncAddress {
             syncBase = nil
             lastSync = nil
+            hubSupportsBoxes = false
             syncConflicts = []
             syncResolutions = [:]
         }
@@ -232,6 +246,7 @@ final class AppStore: ObservableObject {
                     lastSync = Date()
                     syncMessage = "Up to date"
                     if isOffline { isOffline = false }
+                    noteHub(remote)
                     seedIfWaiting()
                     return true
                 }
@@ -251,7 +266,7 @@ final class AppStore: ObservableObject {
                 try await client.downloadPhotos(result.data)
                 try Task.checkCancellation()
                 guard generation == editGeneration, syncAddress == address, syncEnabled else { continue }
-                var merged = BoxModel.sanitized(result.data)
+                var merged = BoxModel.installing(result.data, hubSupportsBoxes: result.supportsBoxes, local: local)
                 if let local {
                     merged.settings.autoBackup = local.settings.autoBackup
                     merged.settings.backupRemote = local.settings.backupRemote
@@ -270,6 +285,7 @@ final class AppStore: ObservableObject {
                 syncResolutions = [:]
                 syncMessage = "Up to date"
                 if isOffline { isOffline = false }
+                noteHub(result)
                 seedIfWaiting()
                 return true
             }
@@ -281,6 +297,11 @@ final class AppStore: ObservableObject {
             // Keep local editing enabled when the sync server is unreachable.
         }
         return false
+    }
+
+    /// Records what the hub of a completed sync keeps.
+    private func noteHub(_ snapshot: SyncSnapshot) {
+        if hubSupportsBoxes != snapshot.supportsBoxes { hubSupportsBoxes = snapshot.supportsBoxes }
     }
 
     func saveWatch(_ watch: Watch, isNew: Bool = false, initialPhotos: [LocalPhotoUpload] = [], baseline: Watch? = nil) async -> Watch? {
@@ -787,7 +808,7 @@ final class AppStore: ObservableObject {
     /// "Use the starting layout": the same seed the iPhone writes, for a collection with no boxes.
     func useStartingLayout() async {
         await mutate { data in
-            guard data.boxes?.isEmpty ?? true else { throw LocalStoreError.invalidOperation }
+            guard self.canOfferStartingLayout, data.boxes?.isEmpty ?? true else { throw LocalStoreError.invalidOperation }
             data.boxes = nil
             if let seeded = BoxModel.seeding(data) { data = seeded }
         }
@@ -854,14 +875,14 @@ final class AppStore: ObservableObject {
     /// never had boxes. The Mac never does by itself, so a first sync between the two cannot produce
     /// slot conflicts; it offers "Use the starting layout" instead.
     private func seedBoxesIfNeeded() async {
-        guard !Platform.isMac, let data, BoxModel.seeding(data) != nil else { return }
+        guard !Platform.isMac, canOfferStartingLayout, let data, BoxModel.seeding(data) != nil else { return }
         await mutate { data in
             if let seeded = BoxModel.seeding(data) { data = seeded }
         }
     }
 
     private func seedIfWaiting() {
-        guard seedAfterSync else { return }
+        guard seedAfterSync, canOfferStartingLayout else { return }
         seedAfterSync = false
         Task { await self.seedBoxesIfNeeded() }
     }

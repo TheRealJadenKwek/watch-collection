@@ -99,6 +99,52 @@ final class BoxCodableTests: XCTestCase {
         XCTAssertEqual(decoded.emptyBoxTiles, ["brown": "empty-brown-00000000.jpg"])
         XCTAssertEqual(BoxModel.sanitized(decoded).boxes?.first?.slots, [:])
     }
+
+    /// A sync answer from a hub on code from before boxes, in the shape main's server.py sends it
+    /// (`sync_snapshot`: no "features", and sync.py's TOP has dropped "boxes" from the document).
+    private let oldHubSnapshot = """
+    {"data":{"settings":{"autoBackup":true,"autoImage":true,"wrist":{"inches":6.5,"sweetSpotMin":36,"sweetSpotMax":41,"perfect":39,"lugMax":48}},
+     "watches":[{"id":"field","name":"Field","story":"","purchased":"2024-05","purchasedText":"","diameter":40,"price":100,
+     "original":true,"status":"owned","statusNote":"","photos":[]},
+     {"id":"diver","name":"Diver","story":"","purchasedText":"","price":100,"status":"owned","statusNote":"","photos":[]}],
+     "categories":[],"wishlist":[],"brandWatchlist":[],"dialColors":[],"materials":[]},
+     "revision":"0123","photos":[],"conflicts":[],"lastRemoteSync":null}
+    """
+
+    func testAnOldHubNeverTakesTheBoxesAwayOrStartsThem() throws {
+        let old = try JSONDecoder().decode(SyncSnapshot.self, from: Data(oldHubSnapshot.utf8))
+        XCTAssertNil(old.features)
+        XCTAssertFalse(old.supportsBoxes)
+        XCTAssertNil(old.data.boxes, "the old hub dropped them")
+        // The phone had seeded and arranged its boxes; the old hub's answer leaves them as they are.
+        var local = old.data
+        local.boxes = [BoxFixture.box("black", slots: ["3": "diver"]), BoxFixture.box("brown", slots: ["0": "field"])]
+        let installed = BoxModel.installing(old.data, hubSupportsBoxes: old.supportsBoxes, local: local)
+        XCTAssertEqual(installed.boxes, local.boxes)
+        XCTAssertEqual(installed.watches.map(\.id), ["field", "diver"])
+        // A phone that never had boxes keeps none: it does not seed on an old hub's word, and neither the
+        // phone nor the Mac offers the starting layout while sync is on.
+        XCTAssertNil(BoxModel.installing(old.data, hubSupportsBoxes: false, local: old.data).boxes)
+        XCTAssertFalse(AppStore.startingLayoutAllowed(syncOn: true, hubSupportsBoxes: old.supportsBoxes))
+        XCTAssertTrue(AppStore.startingLayoutAllowed(syncOn: false, hubSupportsBoxes: old.supportsBoxes), "sync off")
+
+        // The same answer from a hub that keeps boxes is the hub's word: it has none, and the starting layout is offered.
+        var current = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(oldHubSnapshot.utf8)) as? [String: Any])
+        current["features"] = ["boxes"]
+        let new = try JSONDecoder().decode(SyncSnapshot.self, from: JSONSerialization.data(withJSONObject: current))
+        XCTAssertTrue(new.supportsBoxes)
+        XCTAssertNil(BoxModel.installing(new.data, hubSupportsBoxes: new.supportsBoxes, local: local).boxes)
+        XCTAssertTrue(AppStore.startingLayoutAllowed(syncOn: true, hubSupportsBoxes: new.supportsBoxes))
+        // With boxes in its document they replace the device's.
+        var withBoxes = new.data
+        withBoxes.boxes = [BoxFixture.box("brown", slots: ["1": "diver"])]
+        XCTAssertEqual(BoxModel.installing(withBoxes, hubSupportsBoxes: true, local: local).boxes, withBoxes.boxes)
+        XCTAssertEqual(BoxModel.installing(withBoxes, hubSupportsBoxes: false, local: local).boxes, withBoxes.boxes,
+                       "only replacing them with nothing needs the hub's word")
+        // An unknown feature alone is not boxes.
+        current["features"] = ["photos-v2"]
+        XCTAssertFalse(try JSONDecoder().decode(SyncSnapshot.self, from: JSONSerialization.data(withJSONObject: current)).supportsBoxes)
+    }
 }
 
 final class BoxTrialTests: XCTestCase {

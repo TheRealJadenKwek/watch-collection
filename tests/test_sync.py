@@ -652,6 +652,24 @@ class BoxSyncAPITests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(server.read_data(), stored)
 
+    def test_sync_snapshots_say_the_hub_keeps_boxes(self):
+        base = self.seed_boxes()
+        status, snapshot = self.request("GET", "/api/sync")
+        self.assertEqual((status, snapshot["features"]), (200, ["boxes"]))
+        local = deepcopy(base)
+        local["watches"][0]["story"] = "Synced"
+        status, result = self.request("POST", "/api/sync", {"base": base, "local": local})
+        self.assertEqual((status, result["features"]), (200, ["boxes"]))
+        # A conflict answer is a snapshot too.
+        hub = deepcopy(server.read_data())
+        hub["watches"][0]["story"] = "Edited on the Mac"
+        server.atomic_write_data(hub)
+        local["watches"][0]["story"] = "Edited on the phone"
+        status, result = self.request("POST", "/api/sync", {"base": base, "local": local})
+        self.assertEqual(status, 200)
+        self.assertTrue(result["conflicts"])
+        self.assertEqual(result["features"], ["boxes"])
+
 
 if __name__ == "__main__":
     unittest.main()
