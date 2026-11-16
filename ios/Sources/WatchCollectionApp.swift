@@ -32,6 +32,7 @@ struct RootView: View {
     @ObservedObject var store: AppStore
     @AppStorage("selectedTabV4") private var selectedTab = AppTab.collection.rawValue
     @State private var showSettings = false
+    @State private var windowWidth: CGFloat = 0
 
     var body: some View {
         ZStack {
@@ -57,6 +58,16 @@ struct RootView: View {
                 }
             }
         }
+        // Every screen takes its side margin from the window width: narrower on small phones.
+        .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
+        .environment(\.pageMargin, WatchTheme.margin(forWidth: windowWidth))
+        #if DEBUG
+        .task {
+            guard AtelierProbe.opensSettings else { return }
+            try? await Task.sleep(for: .seconds(4))
+            showSettings = true
+        }
+        #endif
         .sheet(isPresented: $showSettings) {
             SettingsView(store: store)
         }

@@ -3,6 +3,11 @@ import SwiftUI
 /// Navigation value for opening a watch's dossier.
 struct WatchRoute: Hashable {
     let id: String
+    /// The zoom source the page grows from when it isn't the watch's own tile (the Collection feature),
+    /// so two sources never share an id.
+    var zoomID: String? = nil
+
+    var zoomSourceID: String { zoomID ?? id }
 }
 
 /// Photo shapes shared by the views and the framing editor so a framed cover
@@ -96,7 +101,7 @@ func acquisitionOrder(_ watches: [Watch]) -> [Watch] {
 }
 
 func catalogueLabel(_ number: Int?) -> String {
-    guard let number else { return "Nº —" }
+    guard let number else { return "Nº –" }
     return String(format: "Nº %02d", number)
 }
 
@@ -128,13 +133,15 @@ struct FramedPhoto: View {
     }
 }
 
-/// Small Liquid Glass label laid over photos.
+/// Small label laid over photos, set like a kicker.
 struct PhotoTag: View {
     let text: String
 
     var body: some View {
-        Text(text)
-            .font(.caption.weight(.semibold))
+        Text(text.uppercased())
+            .font(AtelierType.kicker)
+            .tracking(1.2)
+            .lineLimit(1)
             .padding(.horizontal, 10)
             .padding(.vertical, 5)
             .foregroundStyle(.white)
@@ -142,3 +149,75 @@ struct PhotoTag: View {
             .background(.black.opacity(0.45), in: Capsule())
     }
 }
+
+/// The top of a main screen on the phone: a kicker, the title in display type, one quiet line.
+/// The Mac keeps its title in `desktopHeader` and draws no masthead.
+struct Masthead: View {
+    let kicker: String
+    let title: String
+    var subtitle: String?
+
+    init(kicker: String, title: String, subtitle: String? = nil) {
+        self.kicker = kicker
+        self.title = title
+        self.subtitle = subtitle
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Eyebrow(kicker)
+            Text(title)
+                .font(AtelierType.display)
+                .tracking(-0.6)
+                .foregroundStyle(WatchTheme.ink)
+                .contentTransition(.opacity)
+            if let subtitle, !subtitle.isEmpty {
+                Text(subtitle)
+                    .font(AtelierType.detail)
+                    .foregroundStyle(WatchTheme.muted)
+                    .contentTransition(.numericText())
+            }
+        }
+        .multilineTextAlignment(.center)
+        .frame(maxWidth: .infinity)
+        .padding(.top, 28)
+        .padding(.bottom, 22)
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    /// How far a screen scrolls before the masthead's title has gone under the navigation bar.
+    static let titleScrollDistance: CGFloat = 92
+}
+
+extension View {
+    /// For the scroll view under a masthead. On the phone the bar title is inline and only appears once
+    /// the masthead's title has scrolled under the bar (or always, when there is no masthead).
+    @ViewBuilder
+    func mastheadTitle(_ title: String, showsMasthead: Bool = true) -> some View {
+        #if os(iOS)
+        modifier(MastheadTitle(title: title, showsMasthead: showsMasthead))
+        #else
+        self
+        #endif
+    }
+}
+
+#if os(iOS)
+private struct MastheadTitle: ViewModifier {
+    let title: String
+    let showsMasthead: Bool
+    @State private var scrolledPast = false
+
+    func body(content: Content) -> some View {
+        content
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y + geometry.contentInsets.top > Masthead.titleScrollDistance
+            } action: { _, past in
+                withAnimation(.easeInOut(duration: 0.2)) { scrolledPast = past }
+            }
+            .navigationTitle(scrolledPast || !showsMasthead ? title : "")
+            .navigationBarTitleDisplayMode(.inline)
+    }
+}
+#endif

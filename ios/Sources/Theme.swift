@@ -1,8 +1,13 @@
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
 
-/// System colours, so the app follows Light and Dark Mode the way Apple's own apps do.
-/// The tint is the asset catalog's AccentColor: monochrome (black in Light Mode, white in Dark),
-/// so the watch photos carry the colour. Switches use system green so they stay readable.
+/// The Atelier look: white space, big bold type, square photo tiles, pill buttons, hairlines,
+/// and one green used sparingly. Colours are defined here for Light and Dark Mode; the tint is the
+/// asset catalog's AccentColor, the same two greens. Switches use system green.
 enum Platform {
     #if os(macOS)
     static let isMac = true
@@ -187,61 +192,218 @@ extension View {
     }
 }
 
-enum WatchTheme {
-    /// Named directly: Color.accentColor resolves to system blue with the iOS 27 SDK on iOS 26.
-    static let accent = Color("AccentColor")
-    static let background = Color(.systemGroupedBackground)
-    static let card = Color(.secondarySystemGroupedBackground)
-    static let raised = Color(.tertiarySystemGroupedBackground)
-    static let fill = Color(.tertiarySystemFill)
-    static let separator = Color(.separator)
-    static let warning = Color.red
-    /// Corner radius shared by cards and photos, close to iOS 26's grouped sections.
-    static let corner: CGFloat = 24
-}
-
-extension Font {
-    /// SF Pro Rounded for figures, as Health and Fitness show their numbers.
-    static func figure(_ style: Font.TextStyle = .title, weight: Font.Weight = .bold) -> Font {
-        .system(style, design: .rounded, weight: weight)
-    }
-}
-
-extension View {
-    /// Filled button in the accent. The accent is black or white, so the label takes the
-    /// background colour instead of the default white, which vanished on a white fill.
-    @ViewBuilder
-    func prominentButton() -> some View {
-        #if os(macOS)
-        // macOS greys out prominent buttons in an inactive window, which left the label unreadable.
-        buttonStyle(DesktopProminentButtonStyle())
+extension Color {
+    /// A colour that follows Light and Dark Mode, from two sRGB hex values.
+    init(light: UInt32, dark: UInt32, lightOpacity: Double = 1, darkOpacity: Double = 1) {
+        #if os(iOS)
+        let lightColor = UIColor(hex: light, alpha: lightOpacity)
+        let darkColor = UIColor(hex: dark, alpha: darkOpacity)
+        self.init(uiColor: UIColor { traits in traits.userInterfaceStyle == .dark ? darkColor : lightColor })
         #else
-        buttonStyle(.borderedProminent)
-            .foregroundStyle(Color(.systemBackground))
+        let lightColor = NSColor(hex: light, alpha: lightOpacity)
+        let darkColor = NSColor(hex: dark, alpha: darkOpacity)
+        self.init(nsColor: NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua ? darkColor : lightColor
+        })
         #endif
     }
+
+    /// The same sRGB hex value in both modes.
+    init(hex: UInt32, opacity: Double = 1) {
+        self.init(light: hex, dark: hex, lightOpacity: opacity, darkOpacity: opacity)
+    }
 }
 
-#if os(macOS)
-struct DesktopProminentButtonStyle: ButtonStyle {
-    @Environment(\.isEnabled) private var isEnabled
-
-    func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(.body.weight(.medium))
-            .padding(.horizontal, 12)
-            .padding(.vertical, 4)
-            .foregroundStyle(Color(.systemBackground))
-            .background(Color.primary, in: Capsule())
-            .opacity(!isEnabled ? 0.4 : configuration.isPressed ? 0.7 : 1)
-            .contentShape(Capsule())
+#if os(iOS)
+private extension UIColor {
+    convenience init(hex: UInt32, alpha: Double) {
+        self.init(
+            red: CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255,
+            alpha: alpha
+        )
+    }
+}
+#else
+private extension NSColor {
+    convenience init(hex: UInt32, alpha: Double) {
+        self.init(
+            srgbRed: CGFloat((hex >> 16) & 0xFF) / 255,
+            green: CGFloat((hex >> 8) & 0xFF) / 255,
+            blue: CGFloat(hex & 0xFF) / 255,
+            alpha: alpha
+        )
     }
 }
 #endif
 
+enum WatchTheme {
+    /// Named directly: Color.accentColor resolves to system blue with the iOS 27 SDK on iOS 26.
+    /// The asset holds the two greens: #127749 in Light Mode, #249A64 in Dark.
+    static let accent = Color("AccentColor")
+    /// Pressed green.
+    static let accentDeep = Color(hex: 0x0B3E27)
+    static let background = Color(light: 0xFFFFFF, dark: 0x0E0E0E)
+    /// Panels: watch tiles, insight panels, feature blocks.
+    static let card = Color(light: 0xF8F8F8, dark: 0x1A1A1A)
+    /// Pressed states, inner wells, bar tracks.
+    static let raised = Color(light: 0xECECEC, dark: 0x242424)
+    /// Quiet pill buttons and chips.
+    static let fill = Color(light: 0xD4D4D4, dark: 0x767676, lightOpacity: 0.3, darkOpacity: 0.3)
+    /// Headings, figures and primary text.
+    static let ink = Color(light: 0x212121, dark: 0xF4F4F4)
+    /// Secondary text.
+    static let muted = Color(light: 0x767676, dark: 0xA0A0A0)
+    /// Hairlines.
+    static let separator = Color(light: 0xD4D4D4, dark: 0x333333)
+    /// Catalogue numbers only, plus the short rule under the hero figure on Insights.
+    static let gold = Color(light: 0xA37E2C, dark: 0xDFAB3A)
+    static let warning = Color.red
+
+    /// Tiles, photos and panels are square.
+    static let corner: CGFloat = 0
+    /// The few places a card floats over a photo.
+    static let cornerSoft: CGFloat = 10
+    /// A hairline: half a point.
+    static let hairline: CGFloat = 0.5
+
+    /// The prominent pill: 45 degrees, deep green to bright green, in both modes.
+    static let prominentGradient = LinearGradient(
+        colors: [Color(hex: 0x10633D), Color(hex: 0x1A915A)],
+        startPoint: .bottomLeading,
+        endPoint: .topTrailing
+    )
+
+    /// Side margin of a page; narrower on small screens (see `pageMargin`).
+    static let margin: CGFloat = 20
+    static let narrowMargin: CGFloat = 16
+    /// Gap between tiles in a grid and between panels that tile like one.
+    static let gridGap: CGFloat = 6
+    /// Gap between groups of sections.
+    static let sectionGap: CGFloat = 44
+    /// Inside a panel.
+    static let panelPadding: CGFloat = 20
+
+    /// The side margin for a screen this wide: 16 under 380 points, else 20.
+    static func margin(forWidth width: CGFloat) -> CGFloat {
+        width > 0 && width < 380 ? narrowMargin : margin
+    }
+}
+
+extension EnvironmentValues {
+    /// Side margin of the page, set once from the window width. The Mac keeps its 24 so content
+    /// lines up with the title drawn by `desktopHeader`.
+    @Entry var pageMargin: CGFloat = Platform.isMac ? 24 : WatchTheme.margin
+}
+
+/// The type scale, all built on text styles so Dynamic Type still works. SF Pro throughout.
+enum AtelierType {
+    /// Mastheads and the watch name on its page. Use with `.tracking(-0.6)`.
+    static let display = Font.system(.largeTitle, weight: .bold).leading(.tight)
+    /// The display size on large canvases (the Mac).
+    static let displayLarge = Font.system(size: 44, weight: .bold).leading(.tight)
+    /// Section titles on a watch page, statement text.
+    static let heading = Font.system(.title, weight: .bold)
+    /// Row titles in spec lists, panel titles.
+    static let title = Font.system(.title2, weight: .bold)
+    /// The watch name on a tile.
+    static let cardTitle = Font.system(.headline, weight: .bold)
+    /// Running text. Use with `.lineSpacing(5)`.
+    static let body = Font.system(.body, weight: .light)
+    /// Spec lines under a tile name, row values.
+    static let detail = Font.system(.subheadline, weight: .light)
+    /// Small print.
+    static let caption = Font.system(.footnote, weight: .regular)
+    /// The small wide capitals above a title. Always uppercased, tracking 1.4 (see `Eyebrow`).
+    static let kicker = Font.system(.caption2, weight: .regular).width(.expanded)
+    /// Label of a pill button.
+    static let button = Font.system(.body, weight: .bold)
+}
+
+extension Font {
+    /// Bold figures in the default design with even-width digits, so numbers line up as they change.
+    static func figure(_ style: Font.TextStyle = .title, weight: Font.Weight = .bold) -> Font {
+        .system(style, design: .default, weight: weight).monospacedDigit()
+    }
+}
+
 extension View {
-    /// A rounded card on the grouped background, like a Health summary tile.
-    func groupedCard(padding: CGFloat = 16, cornerRadius: CGFloat = WatchTheme.corner) -> some View {
+    /// The prominent pill: green gradient, white bold label. One style for the phone and the Mac.
+    func prominentButton() -> some View {
+        buttonStyle(AtelierPillButtonStyle(kind: .prominent))
+    }
+
+    /// The quiet pill for secondary actions: a soft grey fill with an ink label, or over a photo,
+    /// white at 30% with a white label.
+    func quietButton(overPhoto: Bool = false) -> some View {
+        buttonStyle(AtelierPillButtonStyle(kind: overPhoto ? .quietOverPhoto : .quiet))
+    }
+}
+
+enum AtelierPillKind {
+    case prominent, quiet, quietOverPhoto
+}
+
+/// The capsule every Atelier button uses. A small control size (as in a card's action row) keeps the
+/// shape but tightens the padding so a row of pills fits.
+struct AtelierPillButtonStyle: ButtonStyle {
+    let kind: AtelierPillKind
+    @Environment(\.isEnabled) private var isEnabled
+    @Environment(\.controlSize) private var controlSize
+
+    func makeBody(configuration: Configuration) -> some View {
+        AtelierPill(kind: kind, pressed: configuration.isPressed, compact: controlSize == .small || controlSize == .mini) {
+            configuration.label
+        }
+        .opacity(isEnabled ? 1 : 0.4)
+    }
+}
+
+/// The pill itself, also drawn on its own where the whole surrounding block is the tap target
+/// (the "View watch" pill on the Collection feature).
+struct AtelierPill<Label: View>: View {
+    let kind: AtelierPillKind
+    var pressed = false
+    var compact = false
+    @ViewBuilder let label: Label
+
+    private var minHeight: CGFloat {
+        if compact { return Platform.isMac ? 30 : 34 }
+        return Platform.isMac ? 40 : 44
+    }
+
+    var body: some View {
+        label
+            .font(AtelierType.button)
+            .lineLimit(1)
+            .foregroundStyle(kind == .quiet ? WatchTheme.ink : Color.white)
+            .padding(.horizontal, compact ? 16 : 30)
+            .frame(minHeight: minHeight)
+            .background { background }
+            .contentShape(Capsule())
+    }
+
+    @ViewBuilder
+    private var background: some View {
+        switch kind {
+        case .prominent:
+            if pressed {
+                Capsule().fill(WatchTheme.accentDeep.opacity(0.9))
+            } else {
+                Capsule().fill(WatchTheme.prominentGradient)
+            }
+        case .quiet:
+            Capsule().fill(pressed ? WatchTheme.raised : WatchTheme.fill)
+        case .quietOverPhoto:
+            Capsule().fill(Color.white.opacity(pressed ? 0.45 : 0.3))
+        }
+    }
+}
+
+extension View {
+    /// A square panel on the card colour.
+    func groupedCard(padding: CGFloat = WatchTheme.panelPadding, cornerRadius: CGFloat = WatchTheme.corner) -> some View {
         self
             .padding(padding)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -249,20 +411,31 @@ extension View {
     }
 }
 
-/// Small secondary label above a title or figure.
+/// The kicker: the small wide capitals above a title or figure.
 struct Eyebrow: View {
     let text: String
-    var color: Color = .secondary
+    var color: Color = WatchTheme.muted
 
-    init(_ text: String, color: Color = .secondary) {
+    init(_ text: String, color: Color = WatchTheme.muted) {
         self.text = text
         self.color = color
     }
 
     var body: some View {
-        Text(text)
-            .font(.footnote.weight(.semibold))
+        Text(text.uppercased())
+            .font(AtelierType.kicker)
+            .tracking(1.4)
             .foregroundStyle(color)
+    }
+}
+
+/// A full-width hairline.
+struct Hairline: View {
+    var body: some View {
+        Rectangle()
+            .fill(WatchTheme.separator)
+            .frame(height: WatchTheme.hairline)
+            .accessibilityHidden(true)
     }
 }
 
@@ -291,7 +464,7 @@ private let cadWholeFormatter: NumberFormatter = {
 
 /// Whole-dollar CAD for headline figures where cents are noise.
 func cadWhole(_ value: Double?) -> String {
-    guard let value else { return "—" }
+    guard let value else { return "–" }
     return cadWholeFormatter.string(from: NSNumber(value: value.rounded())) ?? "$\(Int(value.rounded()))"
 }
 

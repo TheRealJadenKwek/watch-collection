@@ -7,10 +7,10 @@ import ImageIO
 struct WatchPlaceholder: View {
     var body: some View {
         ZStack {
-            Color(.systemGray5)
+            WatchTheme.card
             Image(systemName: "watch.analog")
                 .font(.system(size: 30, weight: .light))
-                .foregroundStyle(.tertiary)
+                .foregroundStyle(WatchTheme.muted)
         }
     }
 }
@@ -237,8 +237,8 @@ struct CapsuleChip: View {
             .lineLimit(1)
             .padding(.horizontal, 8)
             .padding(.vertical, 4)
-            // The accent is white in Dark Mode, so a chip filled with it needs the background colour for its text.
-            .foregroundStyle(filled ? (color == WatchTheme.accent ? Color(.systemBackground) : .white) : color)
+            // Filled chips (the green ones included) carry a white label in both modes.
+            .foregroundStyle(filled ? .white : color)
             .background(filled ? color : color.opacity(0.15), in: Capsule())
     }
 }
@@ -278,37 +278,51 @@ struct FitChip: View {
     }
 }
 
-/// Insights card in the style of Health's summary tiles: a coloured symbol and title,
-/// optional detail on the right. Content colours its own marks; a .tint here would leak
-/// into the tab bar's selection colour.
+/// A square panel: a bold title, an optional quiet detail on the right, or a kicker above the title.
+/// `systemImage` and `color` are kept so call sites read as before, but the header draws no symbol and
+/// no colour. Content colours its own marks; a .tint here would leak into the tab bar's selection colour.
 struct SectionCard<Content: View>: View {
     let title: String
     let systemImage: String
     let color: Color
     let detail: String?
+    let kicker: String?
     @ViewBuilder let content: Content
 
-    init(_ title: String, systemImage: String, color: Color = WatchTheme.accent, detail: String? = nil, @ViewBuilder content: () -> Content) {
+    init(
+        _ title: String,
+        systemImage: String,
+        color: Color = WatchTheme.accent,
+        detail: String? = nil,
+        kicker: String? = nil,
+        @ViewBuilder content: () -> Content
+    ) {
         self.title = title
         self.systemImage = systemImage
         self.color = color
         self.detail = detail
+        self.kicker = kicker
         self.content = content()
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            HStack(alignment: .firstTextBaseline) {
-                Label(title, systemImage: systemImage)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(color)
-                Spacer(minLength: 8)
-                if let detail {
-                    Text(detail)
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                if let kicker { Eyebrow(kicker) }
+                HStack(alignment: .firstTextBaseline) {
+                    Text(title)
+                        .font(AtelierType.title)
+                        .foregroundStyle(WatchTheme.ink)
+                    Spacer(minLength: 8)
+                    if let detail {
+                        Text(detail)
+                            .font(AtelierType.caption)
+                            .foregroundStyle(WatchTheme.muted)
+                            .lineLimit(1)
+                    }
                 }
+                .accessibilityElement(children: .combine)
+                .accessibilityAddTraits(.isHeader)
             }
             content
         }
@@ -316,8 +330,8 @@ struct SectionCard<Content: View>: View {
     }
 }
 
-/// Inset-grouped section like Settings or the App Store's Information block:
-/// a bold header, rows on a rounded card, inset dividers between rows.
+/// A spec list: the section title, then rows on the page between full-width hairlines,
+/// one above the first row and one after each row. No card behind it.
 struct GroupedSection<Content: View, Accessory: View>: View {
     let title: String?
     @ViewBuilder let accessory: Accessory
@@ -330,27 +344,29 @@ struct GroupedSection<Content: View, Accessory: View>: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
+        VStack(alignment: .leading, spacing: 14) {
             if let title {
                 HStack(alignment: .firstTextBaseline) {
-                    Text(title).font(.title3.bold())
+                    Text(title)
+                        .font(AtelierType.title)
+                        .foregroundStyle(WatchTheme.ink)
+                        .accessibilityAddTraits(.isHeader)
                     Spacer()
-                    accessory.font(.body)
+                    accessory
+                        .font(.system(.body, weight: .bold))
+                        .tint(WatchTheme.accent)
                 }
-                .padding(.horizontal, 4)
             }
             VStack(alignment: .leading, spacing: 0) {
+                Hairline()
                 Group(subviews: content) { rows in
                     ForEach(rows) { row in
                         row
-                        if row.id != rows.last?.id {
-                            Divider().padding(.leading, 16)
-                        }
+                        Hairline()
                     }
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(WatchTheme.card, in: RoundedRectangle(cornerRadius: WatchTheme.corner, style: .continuous))
         }
     }
 }
@@ -372,22 +388,73 @@ struct GroupedRow<Value: View>: View {
     }
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
             Text(label)
+                .font(.system(.body, weight: .bold))
+                .foregroundStyle(WatchTheme.ink)
             Spacer(minLength: 12)
             value
-                .foregroundStyle(.secondary)
+                .font(AtelierType.detail)
+                .foregroundStyle(WatchTheme.muted)
                 .multilineTextAlignment(.trailing)
         }
-        .padding(.horizontal, 16)
-        .padding(.vertical, 11)
+        .padding(.vertical, 16)
         .frame(minHeight: 44)
+        .accessibilityElement(children: .combine)
     }
 }
 
 extension GroupedRow where Value == Text {
     init(_ label: String, value: String) {
         self.init(label) { Text(value) }
+    }
+}
+
+/// Page-level switch drawn as text tabs: equal widths, the selected one in green with a 2 pt green
+/// underline that slides between tabs, and a hairline under the whole row. Pickers inside forms and
+/// sheets stay system pickers.
+struct UnderlineTabs<Value: Hashable>: View {
+    @Binding var selection: Value
+    let options: [(value: Value, label: String)]
+    @Namespace private var underline
+
+    init(selection: Binding<Value>, options: [(value: Value, label: String)]) {
+        _selection = selection
+        self.options = options
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(Array(options.enumerated()), id: \.offset) { _, option in
+                let selected = option.value == selection
+                Button {
+                    guard !selected else { return }
+                    withAnimation(.easeInOut(duration: 0.25)) { selection = option.value }
+                } label: {
+                    Text(option.label)
+                        .font(.system(.subheadline, weight: .bold))
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.8)
+                        .foregroundStyle(selected ? WatchTheme.accent : WatchTheme.ink)
+                        .padding(.vertical, 13)
+                        .overlay(alignment: .bottom) {
+                            if selected {
+                                Rectangle()
+                                    .fill(WatchTheme.accent)
+                                    .frame(height: 2)
+                                    .matchedGeometryEffect(id: "underline", in: underline)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, minHeight: 44, alignment: .bottom)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityAddTraits(selected ? [.isSelected] : [])
+            }
+        }
+        // Its own timing, whatever animation the screen around it runs for the same change.
+        .animation(.easeInOut(duration: 0.25), value: selection)
+        .background(alignment: .bottom) { Hairline() }
     }
 }
 

@@ -21,6 +21,9 @@ targets:
         ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME: AccentColor
         TARGETED_DEVICE_FAMILY: "1"
         SWIFT_VERSION: "5.9"
+    scheme:
+      testTargets:
+        - WatchCollectionTests
     info:
       path: Info.plist
       properties:
@@ -58,6 +61,20 @@ targets:
           NSAllowsArbitraryLoads: true
         NSPhotoLibraryUsageDescription: Add photos to your watch collection.
         NSCameraUsageDescription: Take photos for your watch collection.
+  WatchCollectionTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [UnitTests]
+    dependencies:
+      - target: WatchCollection
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.jadenkwek.watchcollection.tests
+        DEVELOPMENT_TEAM: RLC58VS9R6
+        CODE_SIGN_STYLE: Automatic
+        GENERATE_INFOPLIST_FILE: YES
+        TARGETED_DEVICE_FAMILY: "1"
+        SWIFT_VERSION: "5.9"
   WatchCollectionMac:
     type: application
     platform: macOS
