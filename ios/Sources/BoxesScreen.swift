@@ -91,19 +91,24 @@ final class BoxFrames {
     var offset: CGFloat = 0
     var maxOffset: CGFloat = 0
     var topInset: CGFloat = 0
+    var bottomInset: CGFloat = 0
+    /// The box is in the scroll view (a phone or a column); false where it stands in a fixed pane.
+    var stageScrolls = true
 
-    /// True where the box is on screen: inside its frame, below the bar and above the tray.
+    /// True where the box is on screen: inside its frame and, when it scrolls, below the bar and above the tray.
     func showsBox(at point: CGPoint) -> Bool {
         guard stage.contains(point) else { return false }
+        guard stageScrolls else { return true }
         if tray.height > 0, point.y >= tray.minY { return false }
         if scroll.height > 0, point.y < scroll.minY + topInset { return false }
         return true
     }
 }
 
-/// The Boxes tab (brief section 8): the box on screen, its controls and info panel, and a tray of watches docked at
-/// the bottom so a drag can always reach it. One view tree; the phone layout is the only container so far, and the
-/// pieces (`header`, `stage`, `controls`, `infoPanel`, `tray`) are built to be rearranged for the other postures.
+/// The Boxes tab (brief sections 8 and 9): the box on screen, its controls and info panel, and the watches that can
+/// go in it, docked at the bottom on a phone so a drag can always reach them. One view tree in every posture: the
+/// pieces (`header`, `stage`, `controls`, `infoPanel`, `tray`, `chipGrids`) go into the two panes of `BoxPanes`, a
+/// fixed one and a scrolling one, and only where those panes stand changes with the posture.
 struct BoxesScreen: View {
     @ObservedObject var store: AppStore
     let showSettings: () -> Void
@@ -134,6 +139,11 @@ struct BoxesScreen: View {
     @State private var turnHeight: CGFloat?
     @State private var turning = false
     @State private var pageWidth: CGFloat = 0
+    /// The space the fixed pane gives the box (a book's left page, a table's top pane below its header, the Mac's
+    /// left side).
+    @State private var fixedSpace: CGSize = .zero
+    /// Where the panes stand in the window, for the crease; and their width, for the Mac's side column.
+    @State private var panesFrame: CGRect = .zero
     @State private var managing = false
     @State private var editing: BoxEditTarget?
     @State private var path = NavigationPath()
@@ -154,6 +164,7 @@ struct BoxesScreen: View {
 
     /// Everything the screen shows, worked out once per update.
     struct Scene {
+        var arrangement: BoxArrangement
         var box: WatchBox
         var geometry: BoxGeometry
         var finish: BoxFinish
@@ -180,14 +191,41 @@ struct BoxesScreen: View {
 
     private var boxes: [WatchBox] { store.data?.boxes ?? [] }
 
+    /// How the screen stands in this posture (brief section 9).
+    private var arrangement: BoxArrangement {
+        BoxArrangement.of(duo, mac: Platform.isMac, width: panesFrame.width)
+    }
+
+    /// The space the box is given: a column's width, or what a fixed pane leaves it.
+    private func stageSpace(_ arrangement: BoxArrangement, trial: Bool) -> CGSize {
+        let pad = BoxArrangement.wellPadding
+        switch arrangement {
+        case .phone:
+            return CGSize(width: max(200, pageWidth - 2 * WatchTheme.narrowMargin), height: 0)
+        case .column:
+            return CGSize(width: max(200, pageWidth - 2 * (Platform.isMac ? margin : 20)), height: 0)
+        case .book:
+            return CGSize(width: fixedSpace.width - 2 * pad, height: fixedSpace.height - 2 * pad)
+        case .table:
+            return CGSize(width: fixedSpace.width - 2 * max(margin, 20), height: fixedSpace.height - 2 * pad)
+        case .desk:
+            // Room under the box for the info panel, and for the trial switch while a trial is on.
+            let panel: CGFloat = 230 + (trial ? 100 : 0)
+            return CGSize(width: fixedSpace.width - 2 * margin, height: fixedSpace.height - 2 * 20 - 22 - panel)
+        }
+    }
+
     private func makeScene() -> Scene? {
         guard let data = store.data, let box = boxes.first(where: { $0.id == selectedBoxID }) ?? boxes.first else { return nil }
         let geometry = BoxGeometry(columns: box.columns, rows: box.rows)
         let finish = BoxFinish(name: box.finish)
-        let orientation: BoxOrientation = turned ? .front : .endOn
+        let arrangement = arrangement
+        let trial = store.boxTrial.candidates(in: box.id)
+        let fit = BoxArrangement.stage(geometry, arrangement, space: stageSpace(arrangement, trial: !trial.isEmpty),
+                                       turned: turned, mac: Platform.isMac)
+        let orientation = fit.orientation
         let watches = Dictionary(data.watches.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let wishlist = Dictionary(data.wishlist.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
-        let trial = store.boxTrial.candidates(in: box.id)
         let showingTrial = showsTrial && !trial.isEmpty
         var occupants: [Int: BoxPiece] = [:]
         for slot in 0..<box.capacity {
@@ -204,10 +242,10 @@ struct BoxesScreen: View {
             let drawn = content(piece, finish: finish, emptyBoxTiles: data.emptyBoxTiles)
             return BoxStageItem(piece: piece, slot: slot, content: drawn.content, look: drawn.look)
         }
-        let width = max(200, pageWidth - 2 * WatchTheme.narrowMargin)
-        let k = width / geometry.size(orientation).width
+        let k = fit.k
+        let width = geometry.size(orientation).width * k
         return Scene(
-            box: box, geometry: geometry, finish: finish, orientation: orientation, occupants: occupants, items: items,
+            arrangement: arrangement, box: box, geometry: geometry, finish: finish, orientation: orientation, occupants: occupants, items: items,
             emptyTile: emptyTile, trial: trial, showingTrial: showingTrial,
             steppingOut: showingTrial ? store.boxTrial.steppingOut(of: box.id, in: data).compactMap { watches[$0] } : [],
             loose: BoxModel.tray(data),
@@ -240,17 +278,27 @@ struct BoxesScreen: View {
     // MARK: Body
 
     var body: some View {
+        let scene = makeScene()
         SectionStack(path: $path) {
-            page
+            page(scene)
                 #if os(iOS)
                 .navigationDestination(for: WatchRoute.self) { route in
                     WatchDossierView(store: store, watchID: route.id)
                 }
                 .toolbar {
                     ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
+                    // Half open on a table the compact header stands in the bar, so the box above the crease keeps
+                    // the height.
+                    if let scene, scene.arrangement == .table {
+                        ToolbarItem(placement: .principal) { compactHeader(scene) }
+                    }
                 }
                 #else
-                .desktopHeader("Boxes", subtitle: makeScene().map { "\($0.box.name), \(subtitle($0))" })
+                .desktopHeader("Boxes", subtitle: scene.map { "\($0.box.name), \(subtitle($0))" }) {
+                    deskHeaderLeading(scene)
+                } trailing: {
+                    deskHeaderTrailing(scene)
+                }
                 #endif
         }
         .pageAppear()
@@ -282,19 +330,24 @@ struct BoxesScreen: View {
     }
 
     @ViewBuilder
-    private var page: some View {
+    private func page(_ scene: Scene?) -> some View {
         if store.data != nil, boxes.isEmpty {
             noBoxes
                 .screenBackground()
-        } else if let scene = makeScene() {
+        } else if let scene {
             ZStack(alignment: .topLeading) {
-                phonePage(scene)
+                BoxPanes(arrangement: scene.arrangement, crease: crease(scene.arrangement)) {
+                    fixedPane(scene)
+                    scrollPane(scene)
+                }
+                .onGeometryChange(for: CGRect.self) { $0.frame(in: .global) } action: { panesFrame = $0 }
                 BoxDragPreview(drag: drag)
                     .allowsHitTesting(false)
             }
             .coordinateSpace(.named(Self.space))
+            .screenBackground()
             .task(id: artRequest(scene)) {
-                guard sectionIsActive else { return }
+                guard sectionIsActive, scene.k > 0 else { return }
                 await art.load(artRequest(scene))
             }
             .onChange(of: scene.box.id) { _, _ in
@@ -304,46 +357,131 @@ struct BoxesScreen: View {
                     emphasized = nil
                 }
             }
+            .onChange(of: scene.arrangement, initial: true) { _, arrangement in
+                frames.stageScrolls = arrangement.stageScrolls
+                if !arrangement.docksTray { frames.tray = .zero }
+            }
         } else {
             Color.clear.screenBackground()
         }
     }
 
-    /// The phone (brief section 8): one scrolling column over a docked tray.
-    private func phonePage(_ scene: Scene) -> some View {
-        ScrollView {
-            VStack(spacing: 0) {
-                #if os(iOS)
-                header(scene)
-                    .padding(.horizontal, margin)
-                #endif
-                boxTabs(scene)
-                    .padding(.horizontal, margin)
-                    .padding(.bottom, 22)
+    /// The crease in the panes' own coordinates: an x on a book, a y on a table. nil anywhere else.
+    private func crease(_ arrangement: BoxArrangement) -> CGFloat? {
+        guard let crease = duo.crease else { return nil }
+        switch arrangement {
+        case .book: return crease - panesFrame.minX
+        case .table: return crease - panesFrame.minY
+        case .phone, .column, .desk: return nil
+        }
+    }
+
+    /// The pane that stays put: a book's left page (the box alone, end on, fitted to the page), a table's top pane
+    /// (the tabs and the box, under the compact header in the bar), the Mac's left side (the box with its panel under it). Empty in a
+    /// column, where the box scrolls with everything else.
+    private func fixedPane(_ scene: Scene) -> some View {
+        ZStack {
+            switch scene.arrangement {
+            case .book:
+                boxWell(scene)
+            case .table:
+                VStack(spacing: 0) {
+                    boxTabs(scene)
+                        .padding(.horizontal, margin)
+                    boxWell(scene)
+                }
+            case .desk:
+                Color.clear
+                    .onGeometryChange(for: CGSize.self) { $0.size } action: { fixedSpace = $0 }
+                    .overlay {
+                        deskPanel(scene)
+                    }
+            case .phone, .column:
+                EmptyView()
+            }
+        }
+    }
+
+    /// Whatever room is left, measured for the box and with the box centred in it.
+    private func boxWell(_ scene: Scene) -> some View {
+        Color.clear
+            .onGeometryChange(for: CGSize.self) { $0.size } action: { fixedSpace = $0 }
+            .overlay {
                 stage(scene)
-                    .padding(.bottom, 22)
-                controls(scene)
-                    .padding(.horizontal, margin)
+            }
+    }
+
+    /// The Mac's left side: the box front on, with the trial switch and the info panel under it, centred.
+    private func deskPanel(_ scene: Scene) -> some View {
+        VStack(spacing: 22) {
+            stage(scene)
+            VStack(spacing: 18) {
                 if !scene.trial.isEmpty {
                     trialSwitch(scene)
-                        .padding(.horizontal, margin)
-                        .padding(.top, 18)
                 }
                 infoPanel(scene)
-                    .padding(.horizontal, margin)
-                    .padding(.top, 22)
                 if !scene.steppingOut.isEmpty {
                     steppingOut(scene)
-                        .padding(.horizontal, margin)
-                        .padding(.top, 22)
                 }
             }
-            .frame(maxWidth: Platform.isMac ? 460 : .infinity)
+            .frame(maxWidth: min(max(scene.boxWidth, 420), 600))
+            .padding(.horizontal, margin)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// The pane that scrolls: on a phone the whole page over a docked tray; on a book's right page, below a table's
+    /// crease and in a column everything but what the fixed pane holds, with chip grids in place of the tray; the
+    /// Mac's side column holds only the chips. Always the same scroll view, so its offset survives a change of
+    /// posture.
+    private func scrollPane(_ scene: Scene) -> some View {
+        let arrangement = scene.arrangement
+        let mac = Platform.isMac
+        return ScrollView {
+            VStack(spacing: 0) {
+                if !mac, arrangement == .phone || arrangement == .column || arrangement == .book {
+                    header(scene)
+                        .padding(.horizontal, margin)
+                    boxTabs(scene)
+                        .padding(.horizontal, margin)
+                        .padding(.bottom, 22)
+                }
+                if arrangement.stageScrolls {
+                    stage(scene)
+                        .padding(.top, mac ? 20 : 0)
+                        .padding(.bottom, 22)
+                }
+                if arrangement != .desk {
+                    if !mac {
+                        controls(scene)
+                            .padding(.horizontal, margin)
+                            .padding(.top, arrangement == .table ? 18 : 0)
+                    }
+                    if !scene.trial.isEmpty {
+                        trialSwitch(scene)
+                            .padding(.horizontal, margin)
+                            .padding(.top, mac ? 0 : 18)
+                    }
+                    infoPanel(scene)
+                        .padding(.horizontal, margin)
+                        .padding(.top, mac && scene.trial.isEmpty ? 0 : 22)
+                    if !scene.steppingOut.isEmpty {
+                        steppingOut(scene)
+                            .padding(.horizontal, margin)
+                            .padding(.top, 22)
+                    }
+                }
+                if !arrangement.docksTray {
+                    chipGrids(scene, columns: arrangement.chipColumns)
+                        .padding(.horizontal, margin)
+                        .padding(.top, arrangement == .desk ? 20 : 34)
+                }
+            }
             .frame(maxWidth: .infinity)
             .padding(.bottom, 28)
         }
         .onGeometryChange(for: CGFloat.self) { proxy in
-            min(proxy.size.width, Platform.isMac ? 460 : .infinity)
+            proxy.size.width
         } action: { width in
             pageWidth = width
         }
@@ -352,27 +490,106 @@ struct BoxesScreen: View {
         .onScrollGeometryChange(for: [CGFloat].self) { geometry in
             [geometry.contentOffset.y + geometry.contentInsets.top,
              max(0, geometry.contentSize.height + geometry.contentInsets.top + geometry.contentInsets.bottom - geometry.containerSize.height),
-             geometry.contentInsets.top]
+             geometry.contentInsets.top,
+             geometry.contentInsets.bottom]
         } action: { _, values in
             frames.offset = values[0]
             frames.maxOffset = values[1]
             frames.topInset = values[2]
+            frames.bottomInset = values[3]
         }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frames.scroll = $0 }
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            tray(scene)
+            if arrangement.docksTray {
+                tray(scene)
+            }
         }
         #if os(iOS)
-        .mastheadTitle(scene.box.name)
+        // On the inner screen's panes the bar keeps no title: centred in the window it would sit on the crease, and a
+        // table's top pane already shows the name.
+        .mastheadTitle(arrangement == .book || arrangement == .table ? "" : scene.box.name)
         #endif
-        .screenBackground()
+        .overlay(alignment: .leading) {
+            if arrangement == .desk {
+                Rectangle()
+                    .fill(WatchTheme.separator)
+                    .frame(width: WatchTheme.hairline)
+                    .accessibilityHidden(true)
+            }
+        }
     }
 
     // MARK: Header
 
     private func header(_ scene: Scene) -> some View {
-        Masthead(kicker: "Watch Boxes", title: scene.box.name, subtitle: subtitle(scene))
+        Masthead(kicker: "Watch Boxes", title: scene.box.name, subtitle: countsInTabs ? nil : subtitle(scene))
     }
+
+    /// On the cover screen the count moves into the box tabs ("Black 11") and the masthead keeps no subtitle. With
+    /// one box there are no tabs, so the subtitle stays.
+    private var countsInTabs: Bool { duo.posture == .folded && boxes.count > 1 }
+
+    /// A box tab's label: the name, or on the cover the name without " Box" and its count of watches.
+    private func tabLabel(_ box: WatchBox) -> String {
+        guard countsInTabs else { return box.name }
+        let short = box.name.lowercased().hasSuffix(" box") ? String(box.name.dropLast(4)) : box.name
+        return "\(short) \(box.slots.count)"
+    }
+
+    /// Half open on a table: the kicker and the box's name on one centred line, in the bar above the tabs.
+    private func compactHeader(_ scene: Scene) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 12) {
+            Eyebrow("Watch Boxes")
+            Text(scene.box.name)
+                .font(AtelierType.title)
+                .foregroundStyle(WatchTheme.ink)
+                .contentTransition(.opacity)
+                .lineLimit(1)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityAddTraits(.isHeader)
+    }
+
+    #if os(macOS)
+    /// The Mac's header row: the boxes as a segmented control, then the lid.
+    @ViewBuilder
+    private func deskHeaderLeading(_ scene: Scene?) -> some View {
+        if let scene {
+            HStack(spacing: 12) {
+                if boxes.count > 1 {
+                    Picker("Box", selection: Binding(get: { scene.box.id }, set: { id in
+                        withAnimation(.easeInOut(duration: 0.25)) { selectedBoxID = id }
+                    })) {
+                        ForEach(boxes) { box in
+                            Text(box.name).tag(box.id)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                }
+                Button(lidClosed ? "Open lid" : "Close lid") {
+                    withAnimation(.easeInOut(duration: 0.35)) { lidClosed.toggle() }
+                }
+                .buttonStyle(.bordered)
+            }
+        }
+    }
+
+    /// Share and Edit, at the trailing end of the header row.
+    @ViewBuilder
+    private func deskHeaderTrailing(_ scene: Scene?) -> some View {
+        if let scene {
+            BoxShareMenu(store: store, card: shareCard(scene), product: productCard(scene))
+                .labelStyle(.iconOnly)
+                .fixedSize()
+                .help("Share")
+        }
+        Button { managing = true } label: { Image(systemName: "pencil") }
+            .help("Edit boxes")
+            .accessibilityLabel("Edit boxes")
+    }
+    #endif
 
     /// "11 watches, 1 space open", "12 spaces open", or "Full".
     private func subtitle(_ scene: Scene) -> String {
@@ -392,7 +609,7 @@ struct BoxesScreen: View {
                     selection: Binding(get: { scene.box.id }, set: { id in
                         withAnimation(.easeInOut(duration: 0.25)) { selectedBoxID = id }
                     }),
-                    options: boxes.map { (value: $0.id, label: $0.name) }
+                    options: boxes.map { (value: $0.id, label: tabLabel($0)) }
                 )
             } else {
                 Spacer()
@@ -637,7 +854,7 @@ struct BoxesScreen: View {
     /// Press and drag to move: a watch in a compartment (`origin`), a chip (`origin` nil), or on iPhone an empty
     /// compartment, where nothing lifts but a still hold selects it. `tap` is the button's own action, for a press the
     /// lift has taken from the button and let go without moving. Locations are in the screen's named space, which the
-    /// box, the tray and the preview share.
+    /// box, the tray, the chip grids and the preview share, so a drag crosses the crease freely.
     @ViewBuilder
     private func lifting(_ content: some View, piece: BoxPiece?, origin: Int?, scene: Scene,
                          tap: @escaping () -> Void) -> some View {
@@ -792,14 +1009,17 @@ struct BoxesScreen: View {
         lastDragEnd = Date()
     }
 
-    /// Near the top or bottom 60 pt of the scroll view, the page scrolls 8 pt a frame (the bottom edge is the tray).
+    /// Near the top or bottom 60 pt of the scroll view, the page scrolls 8 pt a frame (the bottom edge is the tray, or
+    /// the tab bar where there is no tray). Only where the box scrolls: in a fixed pane it is always in reach.
     private func startAutoScroll() {
         autoScroll?.cancel()
+        guard frames.stageScrolls else { return }
         autoScroll = Task { @MainActor in
             while !Task.isCancelled, drag.lift != nil {
                 try? await Task.sleep(for: .milliseconds(16))
                 let y = drag.location.y
-                let top = frames.scroll.minY + frames.topInset, bottom = frames.tray.minY > 0 ? frames.tray.minY : frames.scroll.maxY
+                let top = frames.scroll.minY + frames.topInset
+                let bottom = frames.tray.minY > 0 ? frames.tray.minY : frames.scroll.maxY - frames.bottomInset
                 var step: CGFloat = 0
                 if y < top + 60, y > top - 40 { step = -8 } else if y > bottom - 60, y < bottom { step = 8 }
                 guard step != 0 else { continue }
@@ -819,12 +1039,15 @@ struct BoxesScreen: View {
             Button(lidClosed ? "Open lid" : "Close lid") {
                 withAnimation(.easeInOut(duration: 0.35)) { lidClosed.toggle() }
             }
-            Button {
-                turnBox(scene)
-            } label: {
-                Label("Turn", systemImage: "rotate.right")
+            // Only where the box is end on in a phone-wide column; elsewhere it takes the view that suits the space.
+            if scene.arrangement.canTurn {
+                Button {
+                    turnBox(scene)
+                } label: {
+                    Label("Turn", systemImage: "rotate.right")
+                }
+                .disabled(turning)
             }
-            .disabled(turning)
             BoxShareMenu(store: store, card: shareCard(scene), product: productCard(scene))
         }
         .quietButton()
@@ -901,7 +1124,7 @@ struct BoxesScreen: View {
                         Text(scene.box.spaceName(slot).capitalizedFirst)
                             .font(AtelierType.detail)
                             .foregroundStyle(WatchTheme.muted)
-                        Text(Platform.isMac ? "Click a watch below to place it here." : "Tap a watch in the tray to place it here.")
+                        Text(placeHint(scene.arrangement))
                             .font(AtelierType.caption)
                             .foregroundStyle(WatchTheme.muted)
                     }
@@ -928,6 +1151,15 @@ struct BoxesScreen: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .groupedCard()
         .animation(.easeInOut(duration: 0.2), value: selection)
+    }
+
+    /// Where the watches to place are: the docked tray, the grids below, or the Mac's side column.
+    private func placeHint(_ arrangement: BoxArrangement) -> String {
+        switch arrangement {
+        case .phone: "Tap a watch in the tray to place it here."
+        case .desk: "Click a watch on the right to place it here."
+        case .column, .book, .table: Platform.isMac ? "Click a watch below to place it here." : "Tap a watch below to place it here."
+        }
     }
 
     private func detailLine(_ piece: BoxPiece, slot: Int, _ scene: Scene) -> String {
@@ -1078,6 +1310,9 @@ struct BoxesScreen: View {
                     // A horizontal scroll view takes every point of height it is offered; the tray is only its chips.
                     .fixedSize(horizontal: false, vertical: true)
                     .scrollClipDisabled()
+                    // Clipped at the sides only, so on the cover the chips stop at the status strip instead of
+                    // running on under the tab bar; an armed chip's outline still shows above and below.
+                    .mask { Rectangle().padding(.vertical, -12) }
                     .onChange(of: armed) { _, chip in
                         guard let chip else { return }
                         withAnimation { reader.scrollTo(chip.wishlist ? "trial:\(chip.itemID)" : chip.itemID, anchor: .center) }
@@ -1111,13 +1346,15 @@ struct BoxesScreen: View {
         .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
-    private func chip(_ piece: BoxPiece, side: CGFloat, scene: Scene) -> some View {
+    /// A watch or candidate to place: `side` points square in the tray, or as wide as its column in a grid (nil).
+    private func chip(_ piece: BoxPiece, side: CGFloat?, scene: Scene) -> some View {
         let chip = BoxChip(itemID: piece.itemID, wishlist: piece.wishlist)
         let isArmed = armed == chip
         let score = piece.wishlist ? store.scores[piece.itemID]?.total : nil
         let label = VStack(spacing: 3) {
             BoxChipArt(piece: piece, cutout: art.cutout(piece)?.result)
                 .frame(width: side, height: side)
+                .aspectRatio(1, contentMode: .fit)
                 .overlay(alignment: .topTrailing) {
                     if let score {
                         Text("\(score)")
@@ -1136,7 +1373,8 @@ struct BoxesScreen: View {
                 .font(AtelierType.caption)
                 .foregroundStyle(WatchTheme.ink)
                 .lineLimit(1)
-                .frame(width: side + 8)
+                .frame(width: side.map { $0 + 8 })
+                .frame(maxWidth: side == nil ? .infinity : nil)
         }
         .contentShape(Rectangle())
         let button = tapTarget(label) { tapChip(chip, scene) }
@@ -1144,6 +1382,39 @@ struct BoxesScreen: View {
         .accessibilityLabel("\(piece.name), \(piece.wishlist ? "on the wishlist" : "not in a box")")
         .accessibilityHint("Double tap, then choose a space.")
         .accessibilityAddTraits(isArmed ? .isSelected : [])
+    }
+
+    // MARK: Chip grids
+
+    /// In place of the docked tray where the page has room: "Not in a box" and "Wishlist" as grids, one above the
+    /// other. A drop anywhere here takes a watch out, as a drop on the tray does.
+    private func chipGrids(_ scene: Scene, columns: Int) -> some View {
+        VStack(alignment: .leading, spacing: 30) {
+            chipGrid("Not in a box", pieces: scene.loose.map(BoxPiece.init(watch:)),
+                     empty: "Every watch you own is in a box.", columns: columns, scene: scene)
+            chipGrid("Wishlist", pieces: scene.candidates.map(BoxPiece.init(candidate:)),
+                     empty: "Nothing on the wishlist yet.", columns: columns, scene: scene)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    private func chipGrid(_ title: String, pieces: [BoxPiece], empty: String, columns: Int, scene: Scene) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Eyebrow("\(title) \(pieces.count)")
+                .accessibilityAddTraits(.isHeader)
+            if pieces.isEmpty {
+                Text(empty)
+                    .font(AtelierType.detail)
+                    .foregroundStyle(WatchTheme.muted)
+            } else {
+                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: 10, alignment: .top), count: max(1, columns)),
+                          spacing: 14) {
+                    ForEach(pieces) { piece in
+                        chip(piece, side: nil, scene: scene)
+                    }
+                }
+            }
+        }
     }
 
     // MARK: No boxes
@@ -1250,7 +1521,7 @@ struct BoxesScreen: View {
     private func revealSoon(_ slot: Int) {
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(400))
-            guard let scene = makeScene(), slot < scene.box.capacity,
+            guard frames.stageScrolls, let scene = makeScene(), slot < scene.box.capacity,
                   frames.stage.height > 0, frames.scroll.height > 0 else { return }
             let rect = painter(scene).slotRect(slot).offsetBy(dx: frames.stage.minX, dy: frames.stage.minY)
             let top = frames.scroll.minY + frames.topInset + 12
