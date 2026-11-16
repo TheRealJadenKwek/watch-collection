@@ -402,6 +402,31 @@ class BoxMergeTests(unittest.TestCase):
         self.assertEqual([b["id"] for b in data["boxes"][:3]], ["black", "brown", "box-00000000"])
         self.assertEqual(data["boxes"][0]["name"], "Black Box")
 
+    def test_without_a_base_the_hubs_boxes_win_whole(self):
+        hub = boxed()
+        slots(hub, "black")["3"] = "diver"
+        phone = boxed()
+        slots(phone, "black").pop("0")
+        slots(phone, "brown").update({"0": "field", "5": "dress"})
+        phone["boxes"].append({"id": "box-0000cafe", "name": "Phone only", "finish": "black", "columns": 3, "rows": 2, "slots": {}})
+        no_boxes_base = deepcopy(hub)
+        no_boxes_base.pop("boxes")
+        # A first join or a changed sync address (no base), and a device whose base predates boxes:
+        # the phone's arrangement is dropped whole instead of being mixed into the hub's.
+        for base in (None, no_boxes_base):
+            merged, conflicts = merge(base, phone, hub)
+            self.assertFalse(conflicts)
+            self.assertEqual(merged["boxes"], hub["boxes"])
+        # With a base that has boxes it is the three-way merge: the phone's moves stand.
+        merged, conflicts = merge(boxed(), phone, boxed())
+        self.assertFalse(conflicts)
+        self.assertEqual(slots(merged, "brown"), {"0": "field", "5": "dress"})
+        # A hub with no boxes, or with every box deleted, has nothing to win with.
+        for empty in (collection(), dict(collection(), boxes=[])):
+            merged, conflicts = merge(None, phone, empty)
+            self.assertFalse(conflicts)
+            self.assertEqual([b["id"] for b in merged["boxes"]], ["black", "brown", "box-0000cafe"])
+
     def test_clean_boxes_is_idempotent(self):
         data = boxed()
         slots(data, "black").update({"1": "sold-one", "3": "diver", "40": "dress"})
@@ -669,6 +694,20 @@ class BoxSyncAPITests(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertTrue(result["conflicts"])
         self.assertEqual(result["features"], ["boxes"])
+
+    def test_first_join_keeps_the_hubs_arrangement(self):
+        hub = self.seed_boxes()
+        # On the hub field was moved to the brown box; a phone joining without a base still has it in black.
+        slots(hub, "black").pop("0")
+        slots(hub, "brown")["0"] = "field"
+        server.atomic_write_data(hub)
+        phone = boxed()
+        slots(phone, "black")["7"] = "dress"
+        status, result = self.request("POST", "/api/sync", {"base": None, "local": phone})
+        self.assertEqual(status, 200)
+        self.assertFalse(result["conflicts"])
+        self.assertEqual(server.read_data()["boxes"], hub["boxes"])
+        self.assertEqual(result["data"]["boxes"], hub["boxes"])
 
 
 if __name__ == "__main__":

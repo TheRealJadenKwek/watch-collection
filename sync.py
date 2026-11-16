@@ -98,6 +98,12 @@ def merge(base, local, remote, resolutions=None):
     """
     conflicts = []
     resolutions = resolutions or {}
+    if base is None or "boxes" not in base:
+        # No common past for the boxes (a first join, a changed sync address, a device that set its
+        # boxes up with sync off): a key-by-key merge would mix two arrangements and quietly undo
+        # moves, so boxes the hub already has win whole and the client's are dropped.
+        if isinstance(remote.get("boxes"), list) and remote["boxes"] and "boxes" in local:
+            local = {key: value for key, value in local.items() if key != "boxes"}
 
     def conflict(path, left, right):
         values = {"path": path, "local": None if left is MISSING else left,
