@@ -70,9 +70,11 @@ final class BoxArtwork {
     }
 
     private(set) var cutouts: [String: Cutout] = [:]
-    /// "<photo directory>/<file>", decoded at `pixels` on the long side.
+    /// "<photo directory>/<file>", decoded at `tileSizes` on the long side.
     private(set) var tiles: [String: CGImage] = [:]
-    @ObservationIgnored private var pixels = 0
+    /// The size each tile was decoded at. A tile stays on screen at its old size until the new size's decode arrives,
+    /// so turning the box or resizing the window never blanks the compartments.
+    @ObservationIgnored private var tileSizes: [String: Int] = [:]
 
     /// The cutout this piece shows now: the newest one made, even while a new setting is being worked out.
     func cutout(_ piece: BoxPiece) -> Cutout? { cutouts[piece.directory] }
@@ -92,20 +94,30 @@ final class BoxArtwork {
         await CutoutStore.shared.removeOldVersions()
         await CutoutStore.shared.seedIfAsked()
         // Tiles first: they are what a compartment shows when they exist, and they decode quickly.
-        if request.pixels != pixels {
-            pixels = request.pixels
-            tiles = [:]
-        }
-        let wanted = Set(request.tiles.map { "\($0.directory)/\($0.filename)" })
+        let wanted = Set(request.tiles.map(Self.tileKey))
         if tiles.keys.contains(where: { !wanted.contains($0) }) {
             tiles = tiles.filter { wanted.contains($0.key) }
         }
-        for asset in request.tiles {
-            let key = "\(asset.directory)/\(asset.filename)"
-            guard tiles[key] == nil else { continue }
+        tileSizes = tileSizes.filter { tiles[$0.key] != nil }
+        let decode = Set(Self.tilesToDecode(request.tiles.map(Self.tileKey), pixels: request.pixels, shown: tileSizes))
+        for asset in request.tiles where decode.contains(Self.tileKey(asset)) {
+            let key = Self.tileKey(asset)
             if Task.isCancelled { return }
-            if let image = await BoxTileStore.shared.tile(asset, maxPixel: request.pixels) {
-                withAnimation(.easeInOut(duration: 0.25)) { tiles[key] = image }
+            let image = await BoxTileStore.shared.tile(asset, maxPixel: request.pixels)
+            // A newer request owns the tiles now.
+            if Task.isCancelled { return }
+            if let image {
+                // A new tile fades in; a sharper or smaller copy of one on screen just takes its place.
+                if tiles[key] == nil {
+                    withAnimation(.easeInOut(duration: 0.25)) { tiles[key] = image }
+                } else {
+                    tiles[key] = image
+                }
+                tileSizes[key] = request.pixels
+            } else if tiles[key] != nil {
+                // Its file has gone from this device.
+                withAnimation(.easeInOut(duration: 0.25)) { tiles[key] = nil }
+                tileSizes[key] = nil
             }
         }
         // What is already on disk, at once; then whatever is missing or out of date, one Vision job at a time.
@@ -126,17 +138,27 @@ final class BoxArtwork {
     }
 
     private func set(_ result: CutoutResult?, for piece: BoxPiece) {
-        let previous = cutouts[piece.directory]
-        // Keep the last picture while a new one cannot be made (a photo still downloading).
-        guard result != nil || previous?.result == nil else {
-            cutouts[piece.directory]?.source = piece.source
-            return
-        }
-        let same = previous?.result.map { old in result.map { $0.image === old.image } ?? false } ?? (result == nil)
-        let revision = (previous?.revision ?? 0) + (same ? 0 : 1)
+        guard let next = Self.updated(cutouts[piece.directory], with: result, source: piece.source) else { return }
         withAnimation(.easeInOut(duration: 0.25)) {
-            cutouts[piece.directory] = Cutout(source: piece.source, result: result, revision: revision)
+            cutouts[piece.directory] = next
         }
+    }
+
+    /// What a piece's entry becomes when a load answers `result` for `source`; nil leaves it as it is. While a new
+    /// cutout cannot be made (a photo still downloading) the last picture stays, filed under the source it was made
+    /// for, so the next load asks again. A piece with no photos left goes back to the token.
+    nonisolated static func updated(_ previous: Cutout?, with result: CutoutResult?, source: CutoutSource) -> Cutout? {
+        if result == nil, previous?.result != nil, !source.photos.isEmpty { return nil }
+        let same = previous?.result.map { old in result.map { $0.image === old.image } ?? false } ?? (result == nil)
+        return Cutout(source: source, result: result, revision: (previous?.revision ?? 0) + (same ? 0 : 1))
+    }
+
+    nonisolated static func tileKey(_ asset: PhotoAsset) -> String { "\(asset.directory)/\(asset.filename)" }
+
+    /// The tiles of a request to decode: those not on screen and those on screen at another size, in the request's
+    /// order. Every other tile on screen stays as it is.
+    nonisolated static func tilesToDecode(_ keys: [String], pixels: Int, shown: [String: Int]) -> [String] {
+        keys.filter { shown[$0] != pixels }
     }
 }
 

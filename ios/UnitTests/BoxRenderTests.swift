@@ -321,6 +321,54 @@ final class CutoutCacheKeyTests: XCTestCase {
     }
 }
 
+final class BoxArtworkTests: XCTestCase {
+    private func cutout(_ photo: String) -> CutoutResult {
+        let image = CGContext(data: nil, width: 2, height: 2, bitsPerComponent: 8, bytesPerRow: 0, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                              bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!.makeImage()!
+        return CutoutResult(image: image, caseRadius: 117.6, strap: [0.1, 0.1, 0.1], strapAbove: 1, strapBelow: 1, method: .lift,
+                            confidence: 0.9, photo: photo, centerX: 0.5, centerY: 0.5, radius: 0.2, rotation: 0)
+    }
+
+    private func source(_ photos: [String]) -> CutoutSource {
+        CutoutSource(itemID: "zenith-220s", wishlist: false, photos: photos, setting: nil, focus: nil)
+    }
+
+    func testAPhotoNotHereYetKeepsThePictureAndAsksAgain() {
+        let old = BoxArtwork.Cutout(source: source(["a.jpg"]), result: cutout("a.jpg"), revision: 1)
+        // A new cover that has not downloaded: nothing to make yet.
+        XCTAssertNil(BoxArtwork.updated(old, with: nil, source: source(["b.jpg", "a.jpg"])),
+                     "the old picture stays, under its old source, so the next load is not skipped")
+        let arrived = cutout("b.jpg")
+        let next = BoxArtwork.updated(old, with: arrived, source: source(["b.jpg", "a.jpg"]))
+        XCTAssertTrue(next?.result?.image === arrived.image)
+        XCTAssertEqual(next?.revision, 2)
+        XCTAssertEqual(next?.source, source(["b.jpg", "a.jpg"]))
+    }
+
+    func testNoPhotosLeftShowsTheToken() {
+        let old = BoxArtwork.Cutout(source: source(["a.jpg"]), result: cutout("a.jpg"), revision: 3)
+        let next = BoxArtwork.updated(old, with: nil, source: source([]))
+        XCTAssertNotNil(next)
+        XCTAssertNil(next?.result)
+        XCTAssertEqual(next?.revision, 4)
+    }
+
+    func testTheSamePictureKeepsItsRevision() {
+        let made = cutout("a.jpg")
+        let old = BoxArtwork.Cutout(source: source(["a.jpg"]), result: made, revision: 5)
+        XCTAssertEqual(BoxArtwork.updated(old, with: made, source: source(["a.jpg"]))?.revision, 5)
+        XCTAssertEqual(BoxArtwork.updated(nil, with: nil, source: source(["a.jpg"]))?.revision, 0)
+    }
+
+    func testTilesAtAnotherSizeStayUntilTheirReplacementDecodes() {
+        // Turning the phone: every tile on screen is at the old size. Each is decoded again, and none is dropped first.
+        let shown = ["w1/box-black-1.jpg": 640, "w2/box-black-1.jpg": 896]
+        XCTAssertEqual(BoxArtwork.tilesToDecode(["w1/box-black-1.jpg", "w2/box-black-1.jpg", "w3/box-black-1.jpg"], pixels: 896, shown: shown),
+                       ["w1/box-black-1.jpg", "w3/box-black-1.jpg"])
+        XCTAssertEqual(BoxArtwork.tilesToDecode(["w2/box-black-1.jpg"], pixels: 896, shown: shown), [])
+    }
+}
+
 final class BoxSlotContentTests: XCTestCase {
     private func image(_ side: Int) -> CGImage {
         let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
