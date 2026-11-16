@@ -817,7 +817,7 @@ class WatchHandler(BaseHTTPRequestHandler):
         self._dispatch_errors(dispatch)
 
     def update_entity(self, kind: str, item_id: str, body: object) -> None:
-        if not is_safe_component(item_id):
+        if not valid_item_id(item_id):
             raise ApiError(HTTPStatus.BAD_REQUEST, "Unsafe id")
         baseline = body.get("base") if isinstance(body, dict) and "changes" in body else None
         changes = validate_changes(body.get("changes") if baseline is not None else body, kind)
@@ -890,7 +890,7 @@ class WatchHandler(BaseHTTPRequestHandler):
         self.send_json(HTTPStatus.CREATED, response)
 
     def delete_entity(self, kind: str, item_id: str) -> None:
-        if not is_safe_component(item_id):
+        if not valid_item_id(item_id):
             raise ApiError(HTTPStatus.BAD_REQUEST, "Unsafe id")
         key = "watches" if kind == "watch" else "wishlist"
         directory = item_id if kind == "watch" else f"wl-{item_id}"
@@ -988,7 +988,7 @@ class WatchHandler(BaseHTTPRequestHandler):
         self.send_json(HTTPStatus.OK, {"ok": True, key: result})
 
     def upload_photo(self, kind: str, item_id: str) -> None:
-        if not is_safe_component(item_id):
+        if not valid_item_id(item_id):
             raise ApiError(HTTPStatus.BAD_REQUEST, "Unsafe id")
         extension, payload = self.read_photo_upload()
         with DATA_LOCK:
@@ -1016,7 +1016,7 @@ class WatchHandler(BaseHTTPRequestHandler):
         self.send_json(HTTPStatus.CREATED, {"ok": True, "photos": photos, "filename": filename})
 
     def delete_photo(self, kind: str, item_id: str, filename: str) -> None:
-        if not is_safe_component(item_id) or not is_safe_component(filename):
+        if not valid_item_id(item_id) or not is_safe_component(filename):
             raise ApiError(HTTPStatus.BAD_REQUEST, "Unsafe photo path")
         with DATA_LOCK:
             data = read_data()
@@ -1039,7 +1039,7 @@ class WatchHandler(BaseHTTPRequestHandler):
         self.send_json(HTTPStatus.OK, {"ok": True, "photos": photos})
 
     def set_cover(self, kind: str, item_id: str, filename: str) -> None:
-        if not is_safe_component(item_id) or not is_safe_component(filename):
+        if not valid_item_id(item_id) or not is_safe_component(filename):
             raise ApiError(HTTPStatus.BAD_REQUEST, "Unsafe photo path")
         with DATA_LOCK:
             data = read_data()
@@ -1182,7 +1182,7 @@ class WatchHandler(BaseHTTPRequestHandler):
         self.send_json(HTTPStatus.OK, {"ok": True, "brand": removed})
 
     def mark_bought(self, item_id: str, body: object) -> None:
-        if not is_safe_component(item_id) or not isinstance(body, dict):
+        if not valid_item_id(item_id) or not isinstance(body, dict):
             raise ApiError(HTTPStatus.BAD_REQUEST, "Invalid request")
         if set(body) != {"price", "purchased"}:
             raise ApiError(HTTPStatus.BAD_REQUEST, "price and purchased are required")

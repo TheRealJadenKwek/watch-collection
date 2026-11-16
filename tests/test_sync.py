@@ -821,3 +821,21 @@ class BoxSyncAPITests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ItemIdRouteTests(unittest.TestCase):
+    """Every route that takes a watch or candidate id refuses ids that cannot name their own photo folder."""
+
+    def test_routes_use_valid_item_id(self):
+        import inspect
+        import server
+        for name in ("update_entity", "delete_entity", "upload_photo", "delete_photo", "set_cover", "mark_bought"):
+            source = inspect.getsource(getattr(server.WatchHandler, name))
+            self.assertIn("valid_item_id(item_id)", source, name)
+            self.assertNotIn("is_safe_component(item_id)", source, name)
+
+    def test_dot_and_hub_folders_are_not_item_ids(self):
+        import server
+        for bad in (".", "..", "_box", "_anything", "a/b", ""):
+            self.assertFalse(server.valid_item_id(bad), bad)
+        self.assertTrue(server.valid_item_id("oris-aquis-date"))
