@@ -139,6 +139,13 @@ def is_safe_component(value: str) -> bool:
     return bool(value and ".." not in value and SAFE_COMPONENT.fullmatch(value))
 
 
+def valid_item_id(value: object) -> bool:
+    """A watch or candidate id that can name its own photo folder: never ".", "..", one starting with "_"
+    (the hub's own folders, such as _box for the empty tiles) or one with a "/"."""
+    return (isinstance(value, str) and is_safe_component(value) and value not in (".", "..")
+            and not value.startswith("_") and "/" not in value)
+
+
 def remove_from_boxes(data: dict, watch_id: str) -> None:
     """Takes a watch out of every box's compartments (it was deleted, or is no longer owned)."""
     for box in data.get("boxes") or []:
@@ -702,7 +709,7 @@ class WatchHandler(BaseHTTPRequestHandler):
                 assert isinstance(items, list) and len(items) <= 10000
                 assert len({v["id"] for v in items}) == len(items)
                 for item in items:
-                    assert is_safe_component(item["id"])
+                    assert valid_item_id(item["id"])
                     fields = WATCH_FIELDS if kind == "watch" else WISHLIST_FIELDS
                     validate_changes({k: v for k, v in item.items() if k in fields and not (k == "brand" and v is None)}, kind)
                     assert all(k in item for k in ("name", "status", "photos"))
@@ -846,6 +853,8 @@ class WatchHandler(BaseHTTPRequestHandler):
             data = read_data()
             validate_taxonomy_values(data, changes)
             item_id = unique_id(data.get(key, []), name)
+            if not valid_item_id(item_id):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "That name cannot make a valid id")
             if kind == "watch":
                 item = {
                     "id": item_id, "name": name, "story": "", "purchased": None,
@@ -1188,6 +1197,8 @@ class WatchHandler(BaseHTTPRequestHandler):
             if item.get("status") == "bought":
                 raise ApiError(HTTPStatus.CONFLICT, "Candidate is already marked bought")
             watch_id = unique_id(data.get("watches", []), str(item.get("name", "watch")))
+            if not valid_item_id(watch_id):
+                raise ApiError(HTTPStatus.BAD_REQUEST, "That name cannot make a valid id")
             watch = {
                 "id": watch_id, "name": item.get("name", ""), "brand": item.get("brand", ""),
                 "story": item.get("notes", ""), "purchased": body["purchased"],

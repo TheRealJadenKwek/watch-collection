@@ -759,6 +759,32 @@ class BoxSyncAPITests(unittest.TestCase):
         self.assertEqual(self.request("PUT", "/api/watches/dress", {"story": "Still here"})[0], 200)
         self.assertEqual(slots(server.read_data(), "brown"), {"4": "dress"})
 
+    def test_ids_that_cannot_name_their_own_folder_are_rejected(self):
+        for value, expected in ((".", False), ("..", False), ("_box", False), ("_x", False), ("a/b", False),
+                                ("", False), (None, False), ("box", True), ("wl-nomos", True), ("a.b", True)):
+            self.assertEqual(server.valid_item_id(value), expected, value)
+        base = self.seed_boxes()
+        for kind, bad in (("watches", "."), ("watches", ".."), ("watches", "_box"), ("watches", "_field"),
+                          ("wishlist", "_nomos")):
+            local = deepcopy(base)
+            item = watch(bad) if kind == "watches" else {"id": bad, "name": "Nomos", "status": "considering", "photos": []}
+            local[kind].append(item)
+            status, _ = self.request("POST", "/api/sync", {"base": base, "local": local})
+            self.assertEqual(status, 400, bad)
+        self.assertEqual(server.read_data(), base)
+        # The create routes make ids from names, which can never give one; and they refuse one if they did.
+        status, created = self.request("POST", "/api/watches", {"name": "_box"})
+        self.assertEqual((status, created["id"]), (201, "box"))
+        status, created = self.request("POST", "/api/watches", {"name": "."})
+        self.assertEqual((status, created["id"]), (201, "watch"))
+        stored = server.read_data()
+        stored["wishlist"] = [{"id": "nomos", "name": "Nomos", "status": "considering", "photos": []}]
+        server.atomic_write_data(stored)
+        with mock.patch.object(server, "unique_id", return_value="_box"):
+            self.assertEqual(self.request("POST", "/api/watches", {"name": "Anything"})[0], 400)
+            self.assertEqual(self.request("POST", "/api/wishlist/nomos/bought", {"price": 10, "purchased": "2026-11"})[0], 400)
+        self.assertEqual(server.read_data(), stored)
+
 
 if __name__ == "__main__":
     unittest.main()
