@@ -140,4 +140,90 @@ import XCTest
         XCTAssertEqual(tiny.fixed.width, 0)
         XCTAssertEqual(tiny.scrolling, CGRect(x: 0, y: 0, width: 200, height: 300))
     }
+
+    // MARK: Where a drag sees the box (the scroll view's frame, the bar and the tray)
+
+    /// An iPhone 17 Pro as measured: the screen's space starts below the bar (screen y 116), the scroll view's frame
+    /// runs from there to the docked tray, and its content inset for the bar (116) is not part of that frame.
+    private func phoneFrames(boxTop: CGFloat) -> BoxFrames {
+        let frames = BoxFrames()
+        frames.scroll = CGRect(x: 0, y: 0, width: 402, height: 545)
+        frames.tray = CGRect(x: 0, y: 545, width: 402, height: 130)
+        frames.stage = CGRect(x: 16, y: boxTop, width: 370, height: 586)
+        return frames
+    }
+
+    func testTheTopOfThePageBelowTheBarIsOnTheBox() {
+        // The review's drop: scrolled 250, a watch let go at y 34, inside back row space 1 (85 pt rows).
+        let frames = phoneFrames(boxTop: -116)
+        for y: CGFloat in [1, 34, 60, 115, 200, 469] {
+            XCTAssertTrue(frames.showsBox(at: CGPoint(x: 271, y: y)), "y \(y) is on screen, below the bar")
+        }
+        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 271, y: -1)), "under the bar")
+        let lower = phoneFrames(boxTop: 0)
+        XCTAssertTrue(lower.showsBox(at: CGPoint(x: 271, y: 544)))
+        XCTAssertFalse(lower.showsBox(at: CGPoint(x: 271, y: 545)), "under the tray")
+        // So the compartment under the finger there is found, not taken for "outside the box".
+        let k = 370 / box.size(.endOn).width
+        let local = CGPoint(x: (271 - frames.stage.minX) / k, y: (34 - frames.stage.minY) / k)
+        XCTAssertNotNil(box.slotIndex(at: local, .endOn))
+    }
+
+    func testAutoScrollRunsInTheBandsAtTheBarAndTheTray() {
+        let frames = phoneFrames(boxTop: 0)
+        // Up: the top 60 pt of the page, and up to 40 pt above it (over the bar).
+        for y: CGFloat in [-39, -1, 0, 30, 59] { XCTAssertEqual(frames.autoScrollStep(at: y), -8, "y \(y)") }
+        // Down: the 60 pt above the tray; over the tray itself it is a drop to take the watch out, so no scrolling.
+        for y: CGFloat in [486, 520, 544] { XCTAssertEqual(frames.autoScrollStep(at: y), 8, "y \(y)") }
+        for y: CGFloat in [-41, 61, 300, 484, 545, 600] { XCTAssertEqual(frames.autoScrollStep(at: y), 0, "y \(y)") }
+        // Where the review saw it run, 76 to 176 pt below the bar, the finger is over the page, not its edge.
+        XCTAssertEqual(frames.autoScrollStep(at: 100), 0)
+    }
+
+    func testWithoutATrayTheBottomEdgeIsTheScrollViewsEnd() {
+        // The inner screen with the crease across: one column, no tray; the scroll view's frame ends at the tab bar.
+        let frames = BoxFrames()
+        frames.scroll = CGRect(x: 0, y: 0, width: 669, height: 812)
+        frames.stage = CGRect(x: 20, y: 150, width: 629, height: 397)
+        XCTAssertEqual(frames.visibleBottom, 812)
+        XCTAssertEqual(frames.autoScrollStep(at: 790), 8)
+        XCTAssertEqual(frames.autoScrollStep(at: 700), 0)
+        frames.stage.origin.y = 500
+        XCTAssertTrue(frames.showsBox(at: CGPoint(x: 200, y: 800)))
+        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 200, y: 820)), "under the tab bar")
+    }
+
+    func testRevealScrollsJustEnoughToShowACompartment() {
+        let frames = phoneFrames(boxTop: 0)
+        // Already between the bar and the tray, with 12 pt to spare.
+        XCTAssertEqual(frames.revealDelta(for: CGRect(x: 20, y: 12, width: 148, height: 85)), 0)
+        XCTAssertEqual(frames.revealDelta(for: CGRect(x: 20, y: 448, width: 148, height: 85)), 0)
+        // Under the tray: scroll down until its bottom is 12 pt above the tray.
+        XCTAssertEqual(frames.revealDelta(for: CGRect(x: 20, y: 500, width: 148, height: 85)), 52)
+        // Under the bar: scroll up until its top is 12 pt below the bar, not 12 pt below the bar's height again.
+        XCTAssertEqual(frames.revealDelta(for: CGRect(x: 20, y: -50, width: 148, height: 85)), -62)
+        XCTAssertEqual(frames.revealDelta(for: CGRect(x: 20, y: 40, width: 148, height: 85)), 0)
+    }
+
+    // MARK: What a shared picture says
+
+    func testCountsAreWhatThePictureShows() {
+        XCTAssertEqual(BoxShare.counts(watches: 11, capacity: 12), "11 watches, 1 space open")
+        XCTAssertEqual(BoxShare.counts(watches: 0, capacity: 12), "12 spaces open")
+        XCTAssertEqual(BoxShare.counts(watches: 1, capacity: 12), "1 watch, 11 spaces open")
+        XCTAssertEqual(BoxShare.counts(watches: 12, capacity: 12), "Full")
+        // A candidate in the open space fills the picture; one over an owned watch takes that watch's place.
+        XCTAssertEqual(BoxShare.counts(watches: 11, onTrial: 1, capacity: 12), "11 watches, 1 on trial")
+        XCTAssertEqual(BoxShare.counts(watches: 10, onTrial: 1, capacity: 12), "10 watches, 1 on trial, 1 space open")
+        XCTAssertEqual(BoxShare.counts(watches: 0, onTrial: 2, capacity: 12), "2 on trial, 10 spaces open")
+        XCTAssertEqual(BoxShare.counts(watches: 1, onTrial: 1, capacity: 3), "1 watch, 1 on trial, 1 space open")
+    }
+
+    func testTheTrialLineNamesWhatSteppedOut() {
+        XCTAssertNil(BoxShare.trialLine(onTrial: [], steppingOut: ["G-Steel"]))
+        XCTAssertEqual(BoxShare.trialLine(onTrial: ["Commander 1959"], steppingOut: []), "On trial: Commander 1959.")
+        XCTAssertEqual(BoxShare.trialLine(onTrial: ["Commander 1959", "Ricochet"], steppingOut: ["G-Steel"]),
+                       "On trial: Commander 1959 and Ricochet. G-Steel steps out to make room.")
+        XCTAssertEqual(BoxShare.trialLine(onTrial: ["A"], steppingOut: ["B", "C"]), "On trial: A. B and C step out to make room.")
+    }
 }

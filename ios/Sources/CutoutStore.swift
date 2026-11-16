@@ -258,7 +258,8 @@ actor CutoutStore {
         guard let data = try? Data(contentsOf: json),
               let sidecar = try? JSONDecoder().decode(CutoutSidecar.self, from: data),
               let source = CGImageSourceCreateWithURL(png as CFURL, nil),
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+              // Decoded here, on the store's own executor, not inside the first canvas draw on the main thread.
+              let image = CGImageSourceCreateImageAtIndex(source, 0, [kCGImageSourceShouldCacheImmediately: true] as CFDictionary)
         else { return nil }
         let result = CutoutResult(
             image: image, caseRadius: CGFloat(sidecar.caseRadius),

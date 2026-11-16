@@ -131,10 +131,13 @@ struct BoxSceneView: View {
     }
 }
 
-/// The two shadows the whole scene casts on the page (brief 5.3 step 10).
+/// The two shadows the whole scene casts on the page (brief 5.3 step 10). Flattened first: the box on screen is a
+/// stack of layers (base, one canvas per watch, marks, glass, guides), and unflattened each layer would cast its own
+/// shadow across the compartments.
 struct BoxSceneShadow: ViewModifier {
     func body(content: Content) -> some View {
         content
+            .compositingGroup()
             .shadow(color: .black.opacity(0.30), radius: 16, x: 6, y: 14)
             .shadow(color: .black.opacity(0.18), radius: 3, x: 1, y: 2)
     }
@@ -272,8 +275,11 @@ struct BoxPainter {
     }
 
     /// Trial marks sit under the glass, like a tag laid in the compartment. Over the watches, so a tile cannot hide one.
-    func drawMarks(_ ctx: inout GraphicsContext) {
-        for index in slots.keys.sorted() where slots[index]?.isTrial == true { trialMark(&ctx, rect: slotRect(index)) }
+    /// `ringWidth` is 2.5 with Increase Contrast.
+    func drawMarks(_ ctx: inout GraphicsContext, ringWidth: CGFloat = Self.trialRingWidth) {
+        for index in slots.keys.sorted() where slots[index]?.isTrial == true {
+            trialMark(&ctx, rect: slotRect(index), lineWidth: ringWidth)
+        }
     }
 
     // MARK: Compartment
@@ -546,15 +552,78 @@ struct BoxPainter {
                                                                                startPoint: pane.origin, endPoint: CGPoint(x: pane.maxX, y: pane.maxY)), lineWidth: 1)
     }
 
+    // MARK: Trial mark
+
+    static let trialWord = "TRYING"
+    /// The tag's word where even the narrow setting of the full one does not fit.
+    static let trialWordShort = "TRY"
+    /// The trial ring's centre line, inside the compartment, and its width (2.5 with Increase Contrast).
+    static let trialRingInset: CGFloat = 1.4
+    static let trialRingWidth: CGFloat = 1.6
+    /// From the compartment's walls to the tag.
+    static let tagMargin: CGFloat = 5
+    /// Between the selection ring and the trial ring when one compartment has both.
+    static let selectionGap: CGFloat = 1
+
+    /// One way of setting the tag.
+    struct TrialTagStyle: Equatable {
+        var word: String
+        var expanded: Bool
+        var tracking: CGFloat
+        /// Across the capsule, both ends together.
+        var padding: CGFloat
+    }
+
+    /// The tag's settings, widest first: the word in expanded type, then in normal width with less padding, then the
+    /// short word. The first that fits between the walls is drawn.
+    static func trialTagStyles(_ word: String) -> [TrialTagStyle] {
+        let short = word == trialWord ? trialWordShort : String(word.prefix(3))
+        return [TrialTagStyle(word: word, expanded: true, tracking: 1.1, padding: 12),
+                TrialTagStyle(word: word, expanded: false, tracking: 0.6, padding: 8),
+                TrialTagStyle(word: short, expanded: true, tracking: 1.1, padding: 8)]
+    }
+
+    /// The tag for a compartment `rect`, given the text's size in each style: the first style whose capsule fits
+    /// between the walls with `tagMargin` to spare, else the last one. Its frame, at the compartment's upper left.
+    static func trialTag(in rect: CGRect, styles: [TrialTagStyle], measure: (TrialTagStyle) -> CGSize) -> (style: TrialTagStyle, frame: CGRect) {
+        let room = CGSize(width: rect.width - 2 * tagMargin, height: rect.height - 2 * tagMargin)
+        var chosen: (TrialTagStyle, CGRect)?
+        for style in styles {
+            let text = measure(style)
+            let frame = CGRect(x: rect.minX + tagMargin, y: rect.minY + tagMargin, width: text.width + style.padding, height: text.height + 5)
+            chosen = (style, frame)
+            if frame.width <= room.width, frame.height <= room.height { break }
+        }
+        return chosen ?? (TrialTagStyle(word: "", expanded: false, tracking: 0, padding: 0), .zero)
+    }
+
+    /// The selection ring's centre line, inset from a compartment's edge, for a ring `lineWidth` wide: just inside
+    /// the walls; on a candidate on trial, just outside them on the dividers, with `selectionGap` to the trial ring,
+    /// so neither hides the other.
+    static func selectionInset(lineWidth: CGFloat, overTrial: Bool, trialWidth: CGFloat = trialRingWidth) -> CGFloat {
+        guard overTrial else { return lineWidth / 2 + 0.5 }
+        return trialRingInset - trialWidth / 2 - selectionGap - lineWidth / 2
+    }
+
     /// A ring inside the compartment and a "TRYING" tag at its upper left: a trial never passes for an owned watch.
-    func trialMark(_ ctx: inout GraphicsContext, rect: CGRect, lineWidth: CGFloat = 1.6) {
-        let ring = Path(roundedRect: rect.insetBy(dx: 1.4, dy: 1.4), cornerRadius: 2)
+    /// The tag takes a narrower setting where the compartment is narrow, and never runs over a divider.
+    func trialMark(_ ctx: inout GraphicsContext, rect: CGRect, lineWidth: CGFloat = Self.trialRingWidth) {
+        let ring = Path(roundedRect: rect.insetBy(dx: Self.trialRingInset, dy: Self.trialRingInset), cornerRadius: 2)
         ctx.stroke(ring, with: .color(palette.trial), lineWidth: lineWidth)
-        let text = ctx.resolve(Text(trialTag).font(.system(size: max(7, 4.6 * k), weight: .bold).width(.expanded)).tracking(1.1).foregroundColor(.white))
-        let size = text.measure(in: CGSize(width: 400, height: 100))
-        let tag = CGRect(x: rect.minX + 5, y: rect.minY + 5, width: size.width + 12, height: size.height + 5)
-        ctx.fill(Path(roundedRect: tag, cornerRadius: tag.height / 2), with: .color(palette.trial))
-        ctx.draw(text, at: CGPoint(x: tag.midX, y: tag.midY), anchor: .center)
+        let size = max(7, 4.6 * k)
+        func text(_ style: TrialTagStyle, _ ctx: GraphicsContext) -> GraphicsContext.ResolvedText {
+            ctx.resolve(Text(style.word).font(.system(size: size, weight: .bold).width(style.expanded ? .expanded : .standard))
+                .tracking(style.tracking).foregroundColor(.white))
+        }
+        let measuring = ctx
+        let tag = Self.trialTag(in: rect, styles: Self.trialTagStyles(trialTag)) {
+            text($0, measuring).measure(in: CGSize(width: 400, height: 100))
+        }
+        ctx.drawLayer { layer in
+            layer.clip(to: Path(rect))
+            layer.fill(Path(roundedRect: tag.frame, cornerRadius: tag.frame.height / 2), with: .color(palette.trial))
+            layer.draw(text(tag.style, layer), at: CGPoint(x: tag.frame.midX, y: tag.frame.midY), anchor: .center)
+        }
     }
 
     /// Long, slightly wandering grain lines along the box's long side.

@@ -372,7 +372,9 @@ struct FoldScroll {
         /// What the scroll view showing now puts above the shared content.
         var lead: CGFloat = 0
         /// While a fold is laid out the scroll views report the new layout's offsets, not the reader's.
-        var folding = 0
+        var folding = false
+        /// Counts folds, so a restore pass from an earlier fold, or one the reader has scrolled past, stands down.
+        var generation = 0
     }
 }
 
@@ -395,17 +397,19 @@ private struct KeepsFoldScroll: ViewModifier {
         content.onChange(of: FoldShape(duo)) {
             let seen = fold.seen
             let y = seen.y
-            seen.folding += 1
-            let pass = seen.folding
+            seen.generation += 1
+            seen.folding = true
+            let pass = seen.generation
             Task { @MainActor in
-                // Once as the new layout comes in, and again once the fold's animation has settled.
+                // Once as the new layout comes in, and again once the fold's animation has settled; not once the
+                // reader has scrolled (`foldScroll` stands the passes down).
                 for wait in [30, 450] {
                     try? await Task.sleep(for: .milliseconds(wait))
-                    guard seen.folding == pass else { return }
+                    guard seen.generation == pass, seen.folding else { return }
                     fold.position.scrollTo(y: max(0, y + seen.lead))
                 }
                 try? await Task.sleep(for: .milliseconds(100))
-                if seen.folding == pass { seen.folding = 0 }
+                if seen.generation == pass { seen.folding = false }
             }
         }
     }
@@ -420,13 +424,21 @@ extension View {
             .scrollPosition(fold.position)
             .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y + $0.contentInsets.top } action: { _, y in
                 let seen = fold.wrappedValue.seen
-                if seen.folding == 0 { seen.y = y - lead }
+                if !seen.folding { seen.y = y - lead }
+            }
+            .onScrollPhaseChange { _, phase in
+                // The reader scrolled while a fold was being restored: their place wins, the pending passes stand down.
+                let seen = fold.wrappedValue.seen
+                if phase == .interacting, seen.folding {
+                    seen.folding = false
+                    seen.generation += 1
+                }
             }
             .onChange(of: lead, initial: true) { old, lead in
                 // Measured late (a lazy stack lays out what is above the shared content only as it comes into view):
                 // the reader has not moved, so the offset into the shared content moves the other way.
                 let seen = fold.wrappedValue.seen
-                if seen.folding == 0 { seen.y += old - lead }
+                if !seen.folding { seen.y += old - lead }
                 seen.lead = lead
             }
         #else

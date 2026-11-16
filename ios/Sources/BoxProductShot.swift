@@ -37,9 +37,30 @@ struct BoxProductPainter {
     static let frontTier: CGFloat = 88
     static let cardSquash: CGFloat = 0.9
 
-    static func aspect(_ g: BoxGeometry) -> CGFloat { g.outer.width / 262 }
+    /// Width over height: as wide as the box, and tall enough for its back rail, which rises with every row. Two rows
+    /// keep the prototype's 345 by 262 frame; one row is shorter, three and four taller.
+    static func aspect(_ g: BoxGeometry) -> CGFloat { g.outer.width / height(g) }
 
-    private var k: CGFloat { size.width * 0.985 / geometry.outer.width }
+    /// The picture's height in the units of its width (the box's millimetres): the back rail's top as the camera sees
+    /// it, and the room the two-row picture leaves above that.
+    static func height(_ g: BoxGeometry) -> CGFloat { rise(depth: g.outer.height) * widthUsed + headroom }
+
+    /// How far the top of the back rail stands above the front edge's foot in the picture, in millimetres at the
+    /// front's scale, for a box `depth` deep.
+    static func rise(depth: CGFloat) -> CGFloat {
+        let c = CGFloat(cos(pitch)), s = CGFloat(sin(pitch)), h = BoxGeometry.height
+        let up = depth * s + h * c, away = depth * c - h * s
+        return up * CGFloat(distance) / (CGFloat(distance) + away)
+    }
+
+    /// The share of the width the box's front takes.
+    private static let widthUsed: CGFloat = 0.985
+    private static let headroom = 262 - rise(depth: BoxGeometry(columns: 6, rows: 2).outer.height) * widthUsed
+
+    private var k: CGFloat { size.width * Self.widthUsed / geometry.outer.width }
+
+    /// The highest point drawn (the top of the back rail), in the picture's points from its top.
+    var top: CGFloat { P(0, geometry.outer.height, BoxGeometry.height).y }
 
     /// X across from the left, Y back from the front, Z up from the table. Returns the point and
     /// the scale there.
@@ -85,16 +106,29 @@ struct BoxProductPainter {
                     let box = geometry.slot(index)
                     let (centre, scale) = project(box.midX, D - box.midY, tier)
                     let unit = k * scale
+                    let rect = CGRect(x: -box.width / 2 * unit, y: -box.height / 2 * unit, width: box.width * unit, height: box.height * unit)
+                    let painter = BoxPainter(geometry: geometry, palette: palette, orientation: .front, lidClosed: true, slots: [:],
+                                             trialTag: BoxPainter.trialWord, k: unit, emptyTile: emptyTile)
                     t.drawLayer { card in
                         card.translateBy(x: centre.x, y: centre.y)
                         card.scaleBy(x: 1, y: Self.cardSquash)
-                        let rect = CGRect(x: -box.width / 2 * unit, y: -box.height / 2 * unit, width: box.width * unit, height: box.height * unit)
                         let cushion = CGRect(x: -BoxGeometry.cushion.width / 2 * unit, y: -BoxGeometry.cushion.height / 2 * unit,
                                              width: BoxGeometry.cushion.width * unit, height: BoxGeometry.cushion.height * unit)
-                        BoxPainter(geometry: geometry, palette: palette, orientation: .front, lidClosed: true, slots: [:], trialTag: "TRYING", k: unit, emptyTile: emptyTile)
-                            .cell(&card, rect: rect, cushion: cushion, content: slots[index])
-                        if slots[index]?.isTrial == true {
-                            card.stroke(Path(roundedRect: rect.insetBy(dx: 1.5, dy: 1.5), cornerRadius: 2), with: .color(palette.trial), lineWidth: 1.6)
+                        painter.cell(&card, rect: rect, cushion: cushion, content: slots[index])
+                    }
+                    if slots[index]?.isTrial == true {
+                        // The box's own mark (ring and TRYING tag) over the card, the type not squashed with it.
+                        t.drawLayer { mark in
+                            // The row in front stands over this one's feet, so the ring goes under it as the card does.
+                            if row + 1 < geometry.rows {
+                                let next = geometry.slot(index + geometry.columns)
+                                let (nextCentre, nextScale) = project(next.midX, D - next.midY, Self.frontTier)
+                                let cover = nextCentre.y - next.height / 2 * k * nextScale * Self.cardSquash
+                                mark.clip(to: Path(CGRect(x: 0, y: 0, width: size.width, height: max(0, cover))))
+                            }
+                            mark.translateBy(x: centre.x, y: centre.y)
+                            let card = CGRect(x: rect.minX, y: rect.minY * Self.cardSquash, width: rect.width, height: rect.height * Self.cardSquash)
+                            painter.trialMark(&mark, rect: card)
                         }
                     }
                 }

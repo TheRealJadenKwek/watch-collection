@@ -85,23 +85,49 @@ struct LiftPress: UIGestureRecognizerRepresentable {
 /// Frames a drag needs, kept out of view state so scrolling does not redraw the screen.
 final class BoxFrames {
     var stage: CGRect = .zero
+    /// The scroll view's own frame. It already starts below the bar and ends above the tray (or the tab bar where
+    /// there is no tray): its content insets for those bars are not added again.
     var scroll: CGRect = .zero
     var tray: CGRect = .zero
     /// The scroll view's offset from its top, and how far it can go.
     var offset: CGFloat = 0
     var maxOffset: CGFloat = 0
-    var topInset: CGFloat = 0
-    var bottomInset: CGFloat = 0
     /// The box is in the scroll view (a phone or a column); false where it stands in a fixed pane.
     var stageScrolls = true
+
+    /// The top of what the scroll view shows of its content.
+    var visibleTop: CGFloat { scroll.minY }
+    /// The bottom of what the scroll view shows: the docked tray, or the end of its frame.
+    var visibleBottom: CGFloat {
+        let end = scroll.height > 0 ? scroll.maxY : .infinity
+        return tray.height > 0 ? min(tray.minY, end) : end
+    }
 
     /// True where the box is on screen: inside its frame and, when it scrolls, below the bar and above the tray.
     func showsBox(at point: CGPoint) -> Bool {
         guard stage.contains(point) else { return false }
         guard stageScrolls else { return true }
-        if tray.height > 0, point.y >= tray.minY { return false }
-        if scroll.height > 0, point.y < scroll.minY + topInset { return false }
+        if point.y >= visibleBottom { return false }
+        if scroll.height > 0, point.y < visibleTop { return false }
         return true
+    }
+
+    /// While a watch is dragged: -8 (up) in the top 60 pt of what the scroll view shows or up to 40 pt above it, 8
+    /// (down) in the bottom 60 pt above the tray or the tab bar, otherwise 0.
+    func autoScrollStep(at y: CGFloat) -> CGFloat {
+        let top = visibleTop, bottom = visibleBottom
+        if y < top + 60, y > top - 40 { return -8 }
+        if y > bottom - 60, y < bottom { return 8 }
+        return 0
+    }
+
+    /// How far to scroll so `rect` (in the screen's space) shows with 12 pt to spare below the bar and above the tray;
+    /// 0 when it already does.
+    func revealDelta(for rect: CGRect) -> CGFloat {
+        let top = visibleTop + 12, bottom = visibleBottom - 12
+        if rect.maxY > bottom { return rect.maxY - bottom }
+        if rect.minY < top { return rect.minY - top }
+        return 0
     }
 }
 
@@ -117,6 +143,8 @@ struct BoxesScreen: View {
     @AppStorage("boxTurnedV1") private var turned = false
     @State private var lidClosed = false
     @State private var selection: Int?
+    /// A box an intent switched to together with its selection, so the switch does not clear what came with it.
+    @State private var carriedBoxID: String?
     @State private var armed: BoxChip?
     @State private var emphasized: Int?
     @State private var trayShowsWishlist = false
@@ -132,7 +160,10 @@ struct BoxesScreen: View {
     @State private var lastHold = (slot: -1, at: Date.distantPast)
     @State private var liftTick = 0
     @State private var dropTick = 0
-    @State private var scroll = ScrollPosition(edge: .top)
+    /// Where the page is scrolled, kept across a fold as the other tabs keep theirs.
+    @State private var fold = FoldScroll()
+    /// How far down the scrolling pane the parts every posture shares (the controls row onward) start.
+    @State private var sharedTop: CGFloat = 0
     @State private var autoScroll: Task<Void, Never>?
     @State private var turnAngle = 0.0
     @State private var turnScale: CGFloat = 1
@@ -159,6 +190,8 @@ struct BoxesScreen: View {
     @Environment(\.openPage) private var openPage
 
     static let space = "boxes"
+    /// The scrolling pane's content.
+    private static let page = "boxes-page"
 
     // MARK: What is on screen
 
@@ -281,6 +314,7 @@ struct BoxesScreen: View {
         let scene = makeScene()
         SectionStack(path: $path) {
             page(scene)
+                .keepsScrollAcrossFolds($fold)
                 #if os(iOS)
                 .navigationDestination(for: WatchRoute.self) { route in
                     WatchDossierView(store: store, watchID: route.id)
@@ -346,11 +380,20 @@ struct BoxesScreen: View {
             }
             .coordinateSpace(.named(Self.space))
             .screenBackground()
-            .task(id: artRequest(scene)) {
+            // Keyed by whether the section is showing too: on the Mac every section is built at launch, so the art
+            // loads when Boxes is chosen, and leaving it cancels the task and the cutout jobs it queued.
+            .task(id: ArtTask(request: artRequest(scene), active: sectionIsActive)) {
                 guard sectionIsActive, scene.k > 0 else { return }
                 await art.load(artRequest(scene))
             }
-            .onChange(of: scene.box.id) { _, _ in
+            .onChange(of: sectionIsActive) { _, active in
+                if !active { Task { await CutoutStore.shared.cancelPending() } }
+            }
+            .onChange(of: scene.box.id) { _, id in
+                // A box switched to with its own selection (the watch page's Box row) keeps it.
+                let carried = carriedBoxID == id
+                carriedBoxID = nil
+                guard !carried else { return }
                 withAnimation(.easeInOut(duration: 0.2)) {
                     selection = nil
                     armed = nil
@@ -432,8 +475,8 @@ struct BoxesScreen: View {
 
     /// The pane that scrolls: on a phone the whole page over a docked tray; on a book's right page, below a table's
     /// crease and in a column everything but what the fixed pane holds, with chip grids in place of the tray; the
-    /// Mac's side column holds only the chips. Always the same scroll view, so its offset survives a change of
-    /// posture.
+    /// Mac's side column holds only the chips. Always the same scroll view; what stands above the shared parts
+    /// changes with the posture, so `FoldScroll` puts the reader back on the same lines after a fold.
     private func scrollPane(_ scene: Scene) -> some View {
         let arrangement = scene.arrangement
         let mac = Platform.isMac
@@ -456,6 +499,7 @@ struct BoxesScreen: View {
                         controls(scene)
                             .padding(.horizontal, margin)
                             .padding(.top, arrangement == .table ? 18 : 0)
+                            .onGeometryChange(for: CGFloat.self) { $0.frame(in: .named(Self.page)).minY } action: { sharedTop = $0 }
                     }
                     if !scene.trial.isEmpty {
                         trialSwitch(scene)
@@ -479,24 +523,27 @@ struct BoxesScreen: View {
             }
             .frame(maxWidth: .infinity)
             .padding(.bottom, 28)
+            .coordinateSpace(.named(Self.page))
         }
         .onGeometryChange(for: CGFloat.self) { proxy in
             proxy.size.width
         } action: { width in
             pageWidth = width
         }
-        .scrollPosition($scroll)
+        // Across a fold the reader comes back to the same lines from the controls row on; what each posture puts above
+        // them (the box on a phone, only the masthead on a book's right page) differs.
+        #if os(iOS)
+        .foldScroll($fold, lead: sharedTop)
+        #else
+        .scrollPosition($fold.position)
+        #endif
         .scrollDisabled(dragging != nil)
         .onScrollGeometryChange(for: [CGFloat].self) { geometry in
             [geometry.contentOffset.y + geometry.contentInsets.top,
-             max(0, geometry.contentSize.height + geometry.contentInsets.top + geometry.contentInsets.bottom - geometry.containerSize.height),
-             geometry.contentInsets.top,
-             geometry.contentInsets.bottom]
+             max(0, geometry.contentSize.height + geometry.contentInsets.top + geometry.contentInsets.bottom - geometry.containerSize.height)]
         } action: { _, values in
             frames.offset = values[0]
             frames.maxOffset = values[1]
-            frames.topInset = values[2]
-            frames.bottomInset = values[3]
         }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frames.scroll = $0 }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -593,12 +640,7 @@ struct BoxesScreen: View {
 
     /// "11 watches, 1 space open", "12 spaces open", or "Full".
     private func subtitle(_ scene: Scene) -> String {
-        let placed = scene.box.slots.count
-        let open = max(0, scene.box.capacity - placed)
-        if open == 0 { return "Full" }
-        let spaces = open == 1 ? "1 space open" : "\(open) spaces open"
-        if placed == 0 { return spaces }
-        return (placed == 1 ? "1 watch, " : "\(placed) watches, ") + spaces
+        BoxShare.counts(watches: scene.box.slots.count, capacity: scene.box.capacity)
     }
 
     /// One tab per box when there are two or more, and Edit for the manage sheet.
@@ -684,6 +726,11 @@ struct BoxesScreen: View {
                 Button("Place here") { place(armed, at: slot, scene) }
             }
             if let piece {
+                // What a finger does by dragging, in two steps: pick the watch up here, then "Place here" on another
+                // space moves it there or swaps the two.
+                if armed?.itemID != piece.itemID {
+                    Button(piece.wishlist ? "Try another space" : "Move") { pickUp(piece) }
+                }
                 actions(piece, slot: slot, scene)
             }
         }
@@ -718,6 +765,17 @@ struct BoxesScreen: View {
                     Button("Move to \(other.name)") { move(piece.itemID, to: other, slot: open) }
                 }
             }
+        }
+    }
+
+    /// Arms a watch or candidate that is already in the box, as a chip from the tray is armed, so the next space chosen
+    /// takes it (a move, or a swap with what is there).
+    private func pickUp(_ piece: BoxPiece) {
+        withAnimation(.easeInOut(duration: 0.2)) {
+            armed = BoxChip(itemID: piece.itemID, wishlist: piece.wishlist)
+            selection = nil
+            emphasized = nil
+            if piece.wishlist { trayShowsWishlist = true }
         }
     }
 
@@ -927,9 +985,9 @@ struct BoxesScreen: View {
 
     private func follow(_ location: CGPoint, start: CGPoint, piece: BoxPiece, origin: Int?, scene: Scene) {
         if drag.lift == nil {
-            // A watch in the box lifts once the finger has moved 4 pt, however long it was held first: a press that
-            // never moves selects the compartment (`held`).
-            if origin != nil, Platform.isMac == false, hypot(location.x - start.x, location.y - start.y) < 4 { return }
+            // A watch in the box or a chip lifts once the finger has moved 4 pt, however long it was held first: a
+            // press that never moves selects the compartment (`held`) or, on a chip, is a tap that arms it.
+            if Platform.isMac == false, hypot(location.x - start.x, location.y - start.y) < 4 { return }
             lift(piece, origin: origin, start: start, scene: scene)
         }
         drag.location = location
@@ -1017,17 +1075,13 @@ struct BoxesScreen: View {
         autoScroll = Task { @MainActor in
             while !Task.isCancelled, drag.lift != nil {
                 try? await Task.sleep(for: .milliseconds(16))
-                let y = drag.location.y
-                let top = frames.scroll.minY + frames.topInset
-                let bottom = frames.tray.minY > 0 ? frames.tray.minY : frames.scroll.maxY - frames.bottomInset
-                var step: CGFloat = 0
-                if y < top + 60, y > top - 40 { step = -8 } else if y > bottom - 60, y < bottom { step = 8 }
+                let step = frames.autoScrollStep(at: drag.location.y)
                 guard step != 0 else { continue }
                 let next = min(frames.maxOffset, max(0, frames.offset + step))
                 guard next != frames.offset else { continue }
                 var transaction = Transaction()
                 transaction.disablesAnimations = true
-                withTransaction(transaction) { scroll.scrollTo(y: next) }
+                withTransaction(transaction) { fold.position.scrollTo(y: next) }
             }
         }
     }
@@ -1245,14 +1299,8 @@ struct BoxesScreen: View {
                     .foregroundStyle(WatchTheme.muted)
             }
             ChipFlowLayout(spacing: 8) {
-                Button("Try another space") {
-                    withAnimation(.easeInOut(duration: 0.2)) {
-                        armed = BoxChip(itemID: piece.itemID, wishlist: true)
-                        selection = nil
-                        trayShowsWishlist = true
-                    }
-                }
-                .prominentButton()
+                Button("Try another space") { pickUp(piece) }
+                    .prominentButton()
                 Button("End trial") { endTrial(piece.itemID) }
                     .quietButton()
                 Button("Adjust cutout") { editing = editTarget(piece, scene) }
@@ -1385,6 +1433,14 @@ struct BoxesScreen: View {
         .accessibilityLabel("\(piece.name), \(piece.wishlist ? "on the wishlist" : "not in a box")")
         .accessibilityHint("Double tap, then choose a space.")
         .accessibilityAddTraits(isArmed ? .isSelected : [])
+        .onDisappear {
+            // A grid dropped the chip being dragged (autoscroll took it far off screen) and its press with it: no
+            // drop will come, so the drag ends here and the chip goes back.
+            if let lift = drag.lift, lift.origin == nil, lift.piece.id == piece.id, !drag.dropping {
+                drag.pressing = false
+                endDrag()
+            }
+        }
     }
 
     // MARK: Chip grids
@@ -1440,24 +1496,41 @@ struct BoxesScreen: View {
     // MARK: Share
 
     private func shareCard(_ scene: Scene) -> BoxShareCard {
-        let onTrial = scene.showingTrial ? scene.items.filter { $0.piece.wishlist }.map(\.piece.name) : []
+        let trial = pictureTrial(scene)
         return BoxShareCard(
-            title: scene.box.name, subtitle: subtitle(scene), geometry: scene.geometry, finish: scene.finish,
+            title: scene.box.name, subtitle: trial.subtitle, geometry: scene.geometry, finish: scene.finish,
             orientation: scene.orientation, lidClosed: lidClosed,
             slots: Dictionary(uniqueKeysWithValues: scene.items.map { ($0.slot, $0.content) }),
-            emptyTile: scene.emptyTile, onTrial: onTrial, dark: colorScheme == .dark
+            emptyTile: scene.emptyTile, onTrial: trial.onTrial, steppingOut: trial.steppingOut, dark: colorScheme == .dark
         )
     }
 
     private func productCard(_ scene: Scene) -> BoxProductShareCard {
-        BoxProductShareCard(
-            title: scene.box.name, subtitle: subtitle(scene), geometry: scene.geometry, finish: scene.finish,
+        let trial = pictureTrial(scene)
+        return BoxProductShareCard(
+            title: scene.box.name, subtitle: trial.subtitle, geometry: scene.geometry, finish: scene.finish,
             slots: Dictionary(uniqueKeysWithValues: scene.items.map { ($0.slot, $0.content) }),
-            emptyTile: scene.emptyTile, dark: colorScheme == .dark
+            emptyTile: scene.emptyTile, onTrial: trial.onTrial, steppingOut: trial.steppingOut, dark: colorScheme == .dark
         )
     }
 
+    /// What a shared picture says about the trial in it: its subtitle counts what the picture shows (candidates on
+    /// trial included), and the line under it names the candidates and the watches that stepped out for them.
+    private func pictureTrial(_ scene: Scene) -> (subtitle: String, onTrial: [String], steppingOut: [String]) {
+        guard scene.showingTrial else { return (subtitle(scene), [], []) }
+        let onTrial = scene.items.filter { $0.piece.wishlist }.map(\.piece.name)
+        let owned = scene.items.count - onTrial.count
+        return (BoxShare.counts(watches: owned, onTrial: onTrial.count, capacity: scene.box.capacity), onTrial,
+                scene.steppingOut.map(\.name))
+    }
+
     // MARK: Pictures to load
+
+    /// What the art task runs for: the pictures wanted, and whether the section is the one showing.
+    private struct ArtTask: Hashable {
+        var request: BoxArtwork.Request
+        var active: Bool
+    }
 
     private func artRequest(_ scene: Scene) -> BoxArtwork.Request {
         var seen: Set<String> = []
@@ -1497,6 +1570,7 @@ struct BoxesScreen: View {
             switch intent {
             case .show(let id), .place(let id):
                 if let space = BoxModel.location(of: id, in: data) {
+                    if space.boxID != makeScene()?.box.id { carriedBoxID = space.boxID }
                     selectedBoxID = space.boxID
                     selection = space.slot
                     armed = nil
@@ -1529,15 +1603,13 @@ struct BoxesScreen: View {
             guard frames.stageScrolls, let scene = makeScene(), slot < scene.box.capacity,
                   frames.stage.height > 0, frames.scroll.height > 0 else { return }
             let rect = painter(scene).slotRect(slot).offsetBy(dx: frames.stage.minX, dy: frames.stage.minY)
-            let top = frames.scroll.minY + frames.topInset + 12
-            let bottom = (frames.tray.height > 0 ? frames.tray.minY : frames.scroll.maxY) - 12
-            let delta = rect.maxY > bottom ? rect.maxY - bottom : rect.minY < top ? rect.minY - top : 0
+            let delta = frames.revealDelta(for: rect)
             guard delta != 0 else { return }
             let next = min(frames.maxOffset, max(0, frames.offset + delta))
             if reduceMotion {
-                scroll.scrollTo(y: next)
+                fold.position.scrollTo(y: next)
             } else {
-                withAnimation(.easeInOut(duration: 0.35)) { scroll.scrollTo(y: next) }
+                withAnimation(.easeInOut(duration: 0.35)) { fold.position.scrollTo(y: next) }
             }
         }
     }
@@ -1547,8 +1619,8 @@ struct BoxesScreen: View {
     #if DEBUG
     /// Debug builds only, for pictures on a simulator that has no touch input:
     ///   -boxProbe "lid,select:3,arm:<watch-id>,try:<wishlist-id>,trial:<wishlist-id>@<slot>,notrial,wishlist,asis,
-    ///              editor:3,manage,turn,brown,black,scroll:600,lift:2-5,wait:1,
-    ///              card:<name>,product:<name>"
+    ///              editor:3,manage,turn,brown,black,scroll:600,lift:2-5,liftchip:<watch-id>,show:<watch-id>,
+    ///              pickup:3,place:5,wait:1,card:<name>,product:<name>"
     private func runProbe() async {
         guard let probe = UserDefaults.standard.string(forKey: "boxProbe") else { return }
         try? await Task.sleep(for: .seconds(2.5))
@@ -1588,8 +1660,20 @@ struct BoxesScreen: View {
                     try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
                     try? png.write(to: folder.appendingPathComponent(value + ".png"), options: .atomic)
                 }
-            case "scroll": scroll.scrollTo(y: CGFloat(Double(value) ?? 0))
+            case "scroll": fold.position.scrollTo(y: CGFloat(Double(value) ?? 0))
             case "brown", "black": selectedBoxID = parts[0]
+            // The watch page's Box row: show:<watch-id>.
+            case "show": store.openBoxes(.show(value))
+            // VoiceOver's two steps: pickup:<slot> ("Move"), then place:<slot> ("Place here").
+            case "pickup": if let scene = makeScene(), let slot = Int(value), let piece = scene.occupants[slot] { pickUp(piece) }
+            case "place": if let scene = makeScene(), let armed, let slot = Int(value) { place(armed, at: slot, scene) }
+            case "liftchip":
+                // A tray chip held up, as a drag from the tray shows it: liftchip:<watch-id>.
+                if let scene = makeScene(), let watch = scene.watches[value] {
+                    let point = CGPoint(x: frames.tray.midX, y: frames.tray.minY - 80)
+                    lift(BoxPiece(watch: watch), origin: nil, start: point, scene: scene)
+                    drag.location = point
+                }
             #if os(macOS)
             case "appearance": NSApp.appearance = NSAppearance(named: value == "dark" ? .darkAqua : .aqua)
             case "size":

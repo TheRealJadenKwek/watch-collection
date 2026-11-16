@@ -211,18 +211,20 @@ struct BoxStage<Hits: View>: View {
         let mm = geometry.size(orientation)
         GeometryReader { proxy in
             let painter = painter(k: proxy.size.width / mm.width)
+            // Increase Contrast: the selection and trial rings 2.5 pt (brief 11).
+            let trialRing = contrast == .increased ? 2.5 : BoxPainter.trialRingWidth
             ZStack(alignment: .topLeading) {
                 Canvas(opaque: false, rendersAsynchronously: false) { context, _ in
                     painter.drawBase(&context)
                 }
                 watches(painter)
                 Canvas(opaque: false, rendersAsynchronously: false) { context, _ in
-                    painter.drawMarks(&context)
+                    painter.drawMarks(&context, ringWidth: trialRing)
                 }
                 .allowsHitTesting(false)
                 BoxGlassLayer(painter: painter, progress: lidClosed ? 1 : 0, slides: !reduceMotion)
                     .allowsHitTesting(false)
-                BoxGuides(painter: painter, marks: marks, lineWidth: contrast == .increased ? 2.5 : 1.5)
+                BoxGuides(painter: painter, marks: marks, lineWidth: contrast == .increased ? 2.5 : 1.5, trialWidth: trialRing)
                     .allowsHitTesting(false)
                 if let hover {
                     BoxHoverRing(painter: painter, slot: hover, lineWidth: contrast == .increased ? 3 : 2)
@@ -363,11 +365,14 @@ struct BoxGlassLayer: View, Animatable {
     }
 }
 
-/// Selection, armed targets and the drop target, as outlines inside the compartments.
+/// Selection, armed targets and the drop target, as outlines inside the compartments. A selected candidate on trial
+/// keeps its trial ring: the selection goes round the outside of the compartment instead.
 struct BoxGuides: View {
     var painter: BoxPainter
     var marks: BoxGuideMarks
     var lineWidth: CGFloat
+    /// The trial ring's width, to keep clear of it.
+    var trialWidth: CGFloat = BoxPainter.trialRingWidth
 
     var body: some View {
         Canvas(opaque: false, rendersAsynchronously: false) { context, _ in
@@ -379,7 +384,11 @@ struct BoxGuides: View {
                 ring(slot, WatchTheme.accent.opacity(0.55), 1, inset: 3)
             }
             if let slot = marks.emphasized { ring(slot, WatchTheme.accent, lineWidth, inset: 3) }
-            if let slot = marks.selected { ring(slot, WatchTheme.accent, lineWidth, inset: lineWidth / 2 + 0.5) }
+            if let slot = marks.selected {
+                let overTrial = painter.slots[slot]?.isTrial == true
+                ring(slot, WatchTheme.accent, lineWidth,
+                     inset: BoxPainter.selectionInset(lineWidth: lineWidth, overTrial: overTrial, trialWidth: trialWidth))
+            }
         }
     }
 }

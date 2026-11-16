@@ -1,4 +1,5 @@
 import CoreGraphics
+import SwiftUI
 import XCTest
 @testable import WatchCollection
 
@@ -443,16 +444,17 @@ final class BoxSlotContentTests: XCTestCase {
 /// Where a drag counts as over the box, and the shared picture's names.
 final class BoxScreenPureTests: XCTestCase {
     func testDropsUnderTheTrayOrTheBarAreOffTheBox() {
+        // As measured on an iPhone 17 Pro: the scroll view's frame starts below the bar (screen y 116 is y 0 here)
+        // and ends at the tray.
         let frames = BoxFrames()
         frames.stage = CGRect(x: 16, y: 300, width: 370, height: 900)
-        frames.scroll = CGRect(x: 0, y: 0, width: 402, height: 874)
-        frames.topInset = 100
-        frames.tray = CGRect(x: 0, y: 690, width: 402, height: 120)
+        frames.scroll = CGRect(x: 0, y: 0, width: 402, height: 545)
+        frames.tray = CGRect(x: 0, y: 545, width: 402, height: 130)
         XCTAssertTrue(frames.showsBox(at: CGPoint(x: 200, y: 400)))
-        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 200, y: 700)), "the box runs on under the tray")
+        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 200, y: 560)), "the box runs on under the tray")
         XCTAssertFalse(frames.showsBox(at: CGPoint(x: 10, y: 400)), "beside the box")
         frames.stage.origin.y = -200
-        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 200, y: 50)), "scrolled under the bar")
+        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 200, y: -10)), "scrolled under the bar")
         XCTAssertTrue(frames.showsBox(at: CGPoint(x: 200, y: 150)))
         // Before the tray and the scroll view have reported a frame, only the stage counts.
         let early = BoxFrames()
@@ -467,5 +469,198 @@ final class BoxScreenPureTests: XCTestCase {
         XCTAssertEqual(BoxShareCard.list(["A"]), "A")
         XCTAssertEqual(BoxShareCard.list(["A", "B"]), "A and B")
         XCTAssertEqual(BoxShareCard.list(["A", "B", "C"]), "A, B and C")
+    }
+}
+
+/// The trial mark, the selection ring beside it, and the product view's frame (review of 2026-11-16, drawing 2 and
+/// 4 to 7).
+@MainActor final class BoxMarkTests: XCTestCase {
+    private let box = BoxGeometry(columns: 6, rows: 2)
+
+    /// Every width the box is drawn at: the phone end on and turned, the cover, a book's page, the inner screen's
+    /// column, the share card, the Mac.
+    private let views: [(name: String, orientation: BoxOrientation, width: CGFloat)] = [
+        ("phone", .endOn, 370), ("phone turned", .front, 370), ("cover", .endOn, 350), ("cover turned", .front, 350),
+        ("book", .endOn, 408), ("column", .front, 629), ("share", .front, 728), ("mac", .front, 900),
+    ]
+
+    private func painter(_ orientation: BoxOrientation, width: CGFloat, trials: [Int]) -> BoxPainter {
+        var slots: [Int: BoxSlotContent] = [:]
+        for slot in trials {
+            var content = BoxSlotContent()
+            content.isTrial = true
+            slots[slot] = content
+        }
+        return BoxPainter(geometry: box, palette: .of(.black), orientation: orientation, lidClosed: false, slots: slots,
+                          trialTag: BoxPainter.trialWord, k: width / box.size(orientation).width)
+    }
+
+    /// The marks alone, on a clear canvas, at 2x.
+    private func marks(_ painter: BoxPainter, ringWidth: CGFloat = BoxPainter.trialRingWidth) -> CGImage? {
+        let size = box.size(painter.orientation)
+        let view = Canvas { context, _ in painter.drawMarks(&context, ringWidth: ringWidth) }
+            .frame(width: size.width * painter.k, height: size.height * painter.k)
+        let renderer = ImageRenderer(content: view)
+        renderer.scale = 2
+        return renderer.cgImage
+    }
+
+    /// Points (at 1x) of every pixel drawn, in RGBA.
+    private func drawn(_ image: CGImage) -> [(point: CGPoint, rgba: [UInt8])] {
+        let w = image.width, h = image.height
+        var pixels = [UInt8](repeating: 0, count: w * h * 4)
+        let context = CGContext(data: &pixels, width: w, height: h, bitsPerComponent: 8, bytesPerRow: w * 4,
+                                space: CGColorSpace(name: CGColorSpace.sRGB)!, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+        context.draw(image, in: CGRect(x: 0, y: 0, width: w, height: h))
+        var out: [(CGPoint, [UInt8])] = []
+        for y in 0..<h {
+            for x in 0..<w where pixels[(y * w + x) * 4 + 3] > 8 {
+                let i = (y * w + x) * 4
+                out.append((CGPoint(x: (CGFloat(x) + 0.5) / 2, y: (CGFloat(y) + 0.5) / 2), Array(pixels[i..<(i + 4)])))
+            }
+        }
+        return out
+    }
+
+    func testTheTrialMarkStaysInsideItsSpaceInEveryView() throws {
+        for view in views {
+            // A space at each corner of the box, so the tag meets a divider and the frame in every direction.
+            let trials = [0, 5, 6, 11]
+            let painter = painter(view.orientation, width: view.width, trials: trials)
+            let image = try XCTUnwrap(marks(painter), view.name)
+            let rects = trials.map { painter.slotRect($0).insetBy(dx: -0.5, dy: -0.5) }
+            let stray = drawn(image).filter { pixel in !rects.contains { $0.contains(pixel.point) } }
+            XCTAssertTrue(stray.isEmpty, "\(view.name): \(stray.count) pixels of a trial mark outside its space, first at \(stray.first?.point ?? .zero)")
+        }
+    }
+
+    func testTheTagIsNeverCutByItsSpace() throws {
+        // The setting chosen fits between the walls in every view (it is clipped only as a last resort).
+        for view in views {
+            let painter = painter(view.orientation, width: view.width, trials: [0])
+            let rect = painter.slotRect(0)
+            var chosen: (style: BoxPainter.TrialTagStyle, frame: CGRect)?
+            let size = max(7, 4.6 * painter.k)
+            let probe = Canvas { context, _ in
+                chosen = BoxPainter.trialTag(in: rect, styles: BoxPainter.trialTagStyles(BoxPainter.trialWord)) { style in
+                    context.resolve(Text(style.word).font(.system(size: size, weight: .bold).width(style.expanded ? .expanded : .standard))
+                        .tracking(style.tracking)).measure(in: CGSize(width: 400, height: 100))
+                }
+            }
+            .frame(width: 10, height: 10)
+            _ = ImageRenderer(content: probe).cgImage
+            let tag = try XCTUnwrap(chosen, view.name)
+            XCTAssertLessThanOrEqual(tag.frame.maxX, rect.maxX - BoxPainter.tagMargin + 0.01, view.name)
+            XCTAssertLessThanOrEqual(tag.frame.maxY, rect.maxY - BoxPainter.tagMargin + 0.01, view.name)
+            // The full word wherever there is room for it: end on everywhere, and the front view off the phone.
+            if view.orientation == .endOn || view.width >= 600 {
+                XCTAssertEqual(tag.style, BoxPainter.trialTagStyles(BoxPainter.trialWord)[0], view.name)
+            }
+        }
+    }
+
+    func testTheTagTakesTheFirstSettingThatFits() {
+        let styles = BoxPainter.trialTagStyles("TRYING")
+        XCTAssertEqual(styles.map(\.word), ["TRYING", "TRYING", "TRY"])
+        let rect = CGRect(x: 100, y: 0, width: 50, height: 85)
+        // 40 pt between the walls: 30 + 12 does not fit, 30 + 8 does.
+        let widths: [CGFloat] = [30, 30, 14]
+        let second = BoxPainter.trialTag(in: rect, styles: styles) { style in
+            CGSize(width: widths[styles.firstIndex(of: style) ?? 0], height: 9)
+        }
+        XCTAssertEqual(second.style, styles[1])
+        XCTAssertEqual(second.frame, CGRect(x: 105, y: 5, width: 38, height: 14))
+        // Nothing fits: the last, smallest one.
+        let last = BoxPainter.trialTag(in: rect, styles: styles) { _ in CGSize(width: 60, height: 9) }
+        XCTAssertEqual(last.style.word, "TRY")
+    }
+
+    func testIncreaseContrastThickensTheTrialRing() throws {
+        let painter = painter(.endOn, width: 370, trials: [3])
+        // The ring along the compartment's left wall, below the tag: how many pixels across it covers.
+        let rect = painter.slotRect(3)
+        func across(_ width: CGFloat) throws -> Int {
+            let image = try XCTUnwrap(marks(painter, ringWidth: width))
+            let row = rect.midY + 20
+            return drawn(image).filter { abs($0.point.y - row) < 0.3 && $0.point.x < rect.minX + 6 }.count
+        }
+        XCTAssertGreaterThan(try across(2.5), try across(BoxPainter.trialRingWidth))
+    }
+
+    func testSelectionAndTrialRingsKeepApart() {
+        for (selection, trial) in [(CGFloat(1.5), BoxPainter.trialRingWidth), (2.5, 2.5)] {
+            let inset = BoxPainter.selectionInset(lineWidth: selection, overTrial: true, trialWidth: trial)
+            let selectionBand = (inset - selection / 2)...(inset + selection / 2)
+            let trialBand = (BoxPainter.trialRingInset - trial / 2)...(BoxPainter.trialRingInset + trial / 2)
+            XCTAssertGreaterThanOrEqual(trialBand.lowerBound - selectionBand.upperBound, BoxPainter.selectionGap - 0.001)
+            // Outside the compartment, on its half of the divider at the scales the phone draws end on.
+            XCTAssertLessThanOrEqual(selectionBand.upperBound, 0)
+        }
+        // Without a trial the selection ring stays where it was, just inside the walls.
+        XCTAssertEqual(BoxPainter.selectionInset(lineWidth: 1.5, overTrial: false), 1.25)
+    }
+
+    // MARK: The product view
+
+    func testTheProductViewFitsEveryRowCount() {
+        // Two rows keep the prototype's frame.
+        XCTAssertEqual(BoxProductPainter.aspect(box), 345 / 262, accuracy: 0.0005)
+        for rows in 1...4 {
+            for columns in 1...8 {
+                let geometry = BoxGeometry(columns: columns, rows: rows)
+                for width: CGFloat in [370, 402, 728] {
+                    let size = CGSize(width: width, height: width / BoxProductPainter.aspect(geometry))
+                    let painter = BoxProductPainter(geometry: geometry, palette: .of(.black), slots: [:], size: size)
+                    XCTAssertGreaterThanOrEqual(painter.top, 4, "\(columns) x \(rows) at \(width): the back rail is cut off")
+                }
+            }
+        }
+        // More rows, a taller picture.
+        let heights = (1...4).map { BoxProductPainter.height(BoxGeometry(columns: 6, rows: $0)) }
+        XCTAssertEqual(heights, heights.sorted())
+    }
+
+    func testTheProductViewMarksATrialWithItsTag() throws {
+        /// Pixels of the trial green (#2FB877) well inside the box the green spans: none for the ring alone (it is
+        /// that box's edge), the capsule of the TRYING tag when there is one.
+        func greenInsideTheRing(trial: Bool) throws -> Int {
+            var content = BoxSlotContent()
+            content.isTrial = trial
+            let view = BoxProductView(geometry: box, finish: .black, slots: [6: content]).frame(width: 370)
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 1
+            let image = try XCTUnwrap(renderer.cgImage)
+            let green = drawn(image).filter { pixel in
+                let c = pixel.rgba
+                return abs(Int(c[0]) - 0x2F) < 30 && abs(Int(c[1]) - 0xB8) < 30 && abs(Int(c[2]) - 0x77) < 30
+            }.map(\.point)
+            guard let first = green.first else { return 0 }
+            let span = green.reduce(CGRect(origin: first, size: .zero)) { $0.union(CGRect(origin: $1, size: .zero)) }
+            return green.filter { span.insetBy(dx: 3, dy: 3).contains($0) }.count
+        }
+        XCTAssertEqual(try greenInsideTheRing(trial: false), 0)
+        XCTAssertGreaterThan(try greenInsideTheRing(trial: true), 100)
+    }
+
+    func testABackRowTrialGoesUnderTheFrontRow() throws {
+        /// The rows of the trial green in the picture with a candidate in one space.
+        func greenRows(_ slot: Int) throws -> ClosedRange<CGFloat> {
+            var content = BoxSlotContent()
+            content.isTrial = true
+            let view = BoxProductView(geometry: box, finish: .black, slots: [slot: content]).frame(width: 370)
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 3
+            let image = try XCTUnwrap(renderer.cgImage)
+            let ys = drawn(image).filter { pixel in
+                let c = pixel.rgba
+                return abs(Int(c[0]) - 0x2F) < 30 && abs(Int(c[1]) - 0xB8) < 30 && abs(Int(c[2]) - 0x77) < 30
+            }.map(\.point.y)
+            let top = try XCTUnwrap(ys.min()), bottom = try XCTUnwrap(ys.max())
+            return top...bottom
+        }
+        // Space 0 is at the back on the left, space 6 in front of it.
+        let back = try greenRows(0), front = try greenRows(6)
+        XCTAssertLessThan(back.lowerBound, front.lowerBound)
+        XCTAssertLessThanOrEqual(back.upperBound, front.lowerBound + 1.5, "the back ring runs over the front row")
     }
 }
