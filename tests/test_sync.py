@@ -743,6 +743,22 @@ class BoxSyncAPITests(unittest.TestCase):
         self.assertEqual(upload("field", "0123abcd.jpg", "a photo"), (200, {"ok": True}))
         self.assertTrue((server.PHOTOS_DIR / "field" / "0123abcd.jpg").is_file())
 
+    def test_a_watch_no_longer_owned_leaves_its_compartment(self):
+        base = self.seed_boxes()
+        base["boxes"][1]["slots"] = {"3": "diver", "4": "dress"}
+        server.atomic_write_data(base)
+        status, result = self.request("PUT", "/api/watches/diver", {"status": "sold"})
+        self.assertEqual((status, result["status"]), (200, "sold"))
+        self.assertEqual(slots(server.read_data(), "brown"), {"4": "dress"})
+        # The web page's edit form sends a baseline with its changes.
+        old = next(w for w in server.read_data()["watches"] if w["id"] == "field")
+        status, _ = self.request("PUT", "/api/watches/field", {"base": old, "changes": {"status": "given_away"}})
+        self.assertEqual(status, 200)
+        self.assertEqual(slots(server.read_data(), "black"), {})
+        # Other edits leave the boxes alone.
+        self.assertEqual(self.request("PUT", "/api/watches/dress", {"story": "Still here"})[0], 200)
+        self.assertEqual(slots(server.read_data(), "brown"), {"4": "dress"})
+
 
 if __name__ == "__main__":
     unittest.main()

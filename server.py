@@ -139,6 +139,13 @@ def is_safe_component(value: str) -> bool:
     return bool(value and ".." not in value and SAFE_COMPONENT.fullmatch(value))
 
 
+def remove_from_boxes(data: dict, watch_id: str) -> None:
+    """Takes a watch out of every box's compartments (it was deleted, or is no longer owned)."""
+    for box in data.get("boxes") or []:
+        if isinstance(box, dict) and isinstance(box.get("slots"), dict):
+            box["slots"] = {slot: watch for slot, watch in box["slots"].items() if watch != watch_id}
+
+
 def slugify(name: str) -> str:
     normalized = unicodedata.normalize("NFKD", name).encode("ascii", "ignore").decode("ascii")
     return re.sub(r"[^a-z0-9]+", "-", normalized.lower()).strip("-") or "watch"
@@ -822,6 +829,9 @@ class WatchHandler(BaseHTTPRequestHandler):
                 if conflicts:
                     raise ApiError(HTTPStatus.CONFLICT, "Changed on another device: " + ", ".join(conflicts) + ". Reopen this watch to review its latest values.")
             item.update(changes)
+            if kind == "watch" and "status" in changes and item.get("status") != "owned":
+                # A watch that is no longer owned leaves its compartment, as when it is deleted.
+                remove_from_boxes(data, item_id)
             atomic_write_data(data)
             result = dict(item)
         self.send_json(HTTPStatus.OK, result)
@@ -883,9 +893,7 @@ class WatchHandler(BaseHTTPRequestHandler):
             removed = data[key].pop(position)
             if kind == "watch":
                 # The web page can delete a watch; it must not stay in a box.
-                for box in data.get("boxes") or []:
-                    if isinstance(box, dict) and isinstance(box.get("slots"), dict):
-                        box["slots"] = {slot: watch for slot, watch in box["slots"].items() if watch != item_id}
+                remove_from_boxes(data, item_id)
             atomic_write_data(data)
             shutil.rmtree(PHOTOS_DIR / directory, ignore_errors=True)
         self.send_json(HTTPStatus.OK, {"ok": True, kind: removed})
