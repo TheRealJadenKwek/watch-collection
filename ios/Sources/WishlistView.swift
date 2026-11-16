@@ -81,6 +81,7 @@ struct WishlistScreen: View {
                                                 pass: { Task { await store.passWishlist(id: item.id) } },
                                                 bought: { boughtItem = item },
                                                 findImage: { findImage(item.id) },
+                                                delete: { Task { await store.deleteWishlist(id: item.id) } },
                                                 showsLenses: lenses(item.id)
                                             )
                                             .id("wishlist-\(item.id)")
@@ -191,6 +192,7 @@ struct WishlistScreen: View {
                         pass: { Task { await store.passWishlist(id: item.id) } },
                         bought: { boughtItem = item },
                         findImage: { findImage(item.id) },
+                        delete: { Task { await store.deleteWishlist(id: item.id) } },
                         showsLenses: lenses(item.id)
                     )
                     .id("wishlist-\(item.id)")
@@ -417,7 +419,9 @@ struct WishlistCard: View {
     let pass: () -> Void
     let bought: () -> Void
     let findImage: () -> Void
+    let delete: () -> Void
     @Binding var showsLenses: Bool
+    @State private var confirmDelete = false
 
     /// Width / height of the wishlist thumbnail. The framing editor uses the same ratio.
     static let photoAspect: CGFloat = 96.0 / 120.0
@@ -519,6 +523,23 @@ struct WishlistCard: View {
         }
         .background(WatchTheme.card)
         .opacity(item.status == "passed" ? 0.55 : 1)
+        // Right-click on the Mac, a long press on the phone: the card's actions, Delete among them.
+        .contextMenu {
+            Button { store.openBoxes(.tryOn(item.id)) } label: { Label("Try in my box", systemImage: "square.grid.3x2") }
+            Button(action: edit) { Label("Edit", systemImage: "pencil") }
+            Divider()
+            deleteButton
+        }
+        .confirmationDialog("Delete \(item.name)?", isPresented: $confirmDelete, titleVisibility: .visible) {
+            Button("Delete", role: .destructive, action: delete)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The wishlist record and its photos will be removed permanently.")
+        }
+    }
+
+    private var deleteButton: some View {
+        Button(role: .destructive) { confirmDelete = true } label: { Label("Delete from Wishlist", systemImage: "trash") }
     }
 
     private func actionRow(tryPill: Bool) -> some View {
@@ -563,6 +584,8 @@ struct WishlistCard: View {
             }
             Button(action: findImage) { Label("Find Image Online", systemImage: "photo.badge.magnifyingglass") }
                 .disabled(store.isOffline)
+            Divider()
+            deleteButton
         } label: {
             Image(systemName: "ellipsis")
                 .font(.body.weight(.bold))
