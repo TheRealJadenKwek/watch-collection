@@ -8,14 +8,13 @@ import AppKit
 // The two shared pictures (brief 8, Share): the box as it is on screen, top down, and the product view (5.8).
 // Each is one view drawn whole by ImageRenderer, on the page background of the current colour scheme.
 
-/// The top-down card: kicker, title, subtitle, the box in the orientation and lid state on screen, and a line
+/// The top-down card: kicker, title, subtitle, the box front on with the lid as it is on screen, and a line
 /// naming what is on trial and what stepped out for it.
 struct BoxShareCard: View {
     var title: String
     var subtitle: String
     var geometry: BoxGeometry
     var finish: BoxFinish
-    var orientation: BoxOrientation
     var lidClosed: Bool
     var slots: [Int: BoxSlotContent]
     var emptyTile: CGImage?
@@ -25,7 +24,6 @@ struct BoxShareCard: View {
 
     private var ink: Color { Color(hex: dark ? 0xF4F4F4 : 0x212121) }
     private var muted: Color { Color(hex: dark ? 0xA0A0A0 : 0x767676) }
-    var width: CGFloat { orientation == .front ? 760 : 402 }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -34,7 +32,7 @@ struct BoxShareCard: View {
                 .tracking(1.4)
                 .foregroundStyle(muted)
             Text(title)
-                .font(.system(size: orientation == .front ? 44 : 34, weight: .bold))
+                .font(.system(size: 44, weight: .bold))
                 .tracking(-0.6)
                 .foregroundStyle(ink)
                 .padding(.top, 6)
@@ -42,7 +40,7 @@ struct BoxShareCard: View {
                 .font(.system(size: 15, weight: .light))
                 .foregroundStyle(muted)
                 .padding(.top, 6)
-            BoxSceneView(geometry: geometry, finish: finish, orientation: orientation, lidClosed: lidClosed, slots: slots,
+            BoxSceneView(geometry: geometry, finish: finish, lidClosed: lidClosed, slots: slots,
                          emptyTile: emptyTile, outlined: dark)
                 .padding(.top, 22)
             if let line = BoxShare.trialLine(onTrial: onTrial, steppingOut: steppingOut) {
@@ -53,7 +51,7 @@ struct BoxShareCard: View {
         .padding(.horizontal, 16)
         .padding(.top, 28)
         .padding(.bottom, 34)
-        .frame(width: width)
+        .frame(width: 760)
         .background(Color(hex: dark ? 0x0E0E0E : 0xFFFFFF))
         .environment(\.colorScheme, dark ? .dark : .light)
     }

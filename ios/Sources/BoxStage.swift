@@ -73,7 +73,7 @@ final class BoxArtwork {
     /// "<photo directory>/<file>", decoded at `tileSizes` on the long side.
     private(set) var tiles: [String: CGImage] = [:]
     /// The size each tile was decoded at. A tile stays on screen at its old size until the new size's decode arrives,
-    /// so turning the box or resizing the window never blanks the compartments.
+    /// so folding the phone or resizing the window never blanks the compartments.
     @ObservationIgnored private var tileSizes: [String: Int] = [:]
 
     /// The cutout this piece shows now: the newest one made, even while a new setting is being worked out.
@@ -188,7 +188,6 @@ struct BoxGuideMarks: Equatable {
 struct BoxStage<Hits: View>: View {
     var geometry: BoxGeometry
     var finish: BoxFinish
-    var orientation: BoxOrientation
     var lidClosed: Bool
     var items: [BoxStageItem]
     var emptyTile: CGImage?
@@ -208,7 +207,7 @@ struct BoxStage<Hits: View>: View {
     @Environment(\.colorSchemeContrast) private var contrast
 
     var body: some View {
-        let mm = geometry.size(orientation)
+        let mm = geometry.canvas
         GeometryReader { proxy in
             let painter = painter(k: proxy.size.width / mm.width)
             // Increase Contrast: the selection and trial rings 2.5 pt (brief 11).
@@ -257,7 +256,7 @@ struct BoxStage<Hits: View>: View {
     private func painter(k: CGFloat) -> BoxPainter {
         var marked: [Int: BoxSlotContent] = [:]
         for item in items where item.content.isTrial && item.id != hidden { marked[item.slot] = item.content }
-        return BoxPainter(geometry: geometry, palette: .of(finish), orientation: orientation, lidClosed: lidClosed,
+        return BoxPainter(geometry: geometry, palette: .of(finish), lidClosed: lidClosed,
                           slots: marked, trialTag: "TRYING", k: k, emptyTile: emptyTile)
     }
 

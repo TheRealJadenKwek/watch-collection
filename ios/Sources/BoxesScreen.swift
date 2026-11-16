@@ -140,7 +140,6 @@ struct BoxesScreen: View {
     let showSettings: () -> Void
 
     @AppStorage("boxSelectedV1") private var selectedBoxID = "black"
-    @AppStorage("boxTurnedV1") private var turned = false
     @State private var lidClosed = false
     @State private var selection: Int?
     /// A box an intent switched to together with its selection, so the switch does not clear what came with it.
@@ -165,10 +164,6 @@ struct BoxesScreen: View {
     /// How far down the scrolling pane the parts every posture shares (the controls row onward) start.
     @State private var sharedTop: CGFloat = 0
     @State private var autoScroll: Task<Void, Never>?
-    @State private var turnAngle = 0.0
-    @State private var turnScale: CGFloat = 1
-    @State private var turnHeight: CGFloat?
-    @State private var turning = false
     @State private var pageWidth: CGFloat = 0
     /// The space the fixed pane gives the box (a book's left page, a table's top pane below its header, the Mac's
     /// left side).
@@ -201,7 +196,6 @@ struct BoxesScreen: View {
         var box: WatchBox
         var geometry: BoxGeometry
         var finish: BoxFinish
-        var orientation: BoxOrientation
         /// What each compartment shows: the owned watch, or a candidate on trial while "Trying" is on.
         var occupants: [Int: BoxPiece]
         var items: [BoxStageItem]
@@ -216,7 +210,7 @@ struct BoxesScreen: View {
         var boxWidth: CGFloat
         var k: CGFloat
 
-        var stageHeight: CGFloat { geometry.size(orientation).height * k }
+        var stageHeight: CGFloat { geometry.canvas.height * k }
         func piece(_ chip: BoxChip) -> BoxPiece? {
             chip.wishlist ? wishlist[chip.itemID].map(BoxPiece.init(candidate:)) : watches[chip.itemID].map(BoxPiece.init(watch:))
         }
@@ -254,9 +248,8 @@ struct BoxesScreen: View {
         let finish = BoxFinish(name: box.finish)
         let arrangement = arrangement
         let trial = store.boxTrial.candidates(in: box.id)
-        let fit = BoxArrangement.stage(geometry, arrangement, space: stageSpace(arrangement, trial: !trial.isEmpty),
-                                       turned: turned, mac: Platform.isMac)
-        let orientation = fit.orientation
+        let k = BoxArrangement.stage(geometry, arrangement, space: stageSpace(arrangement, trial: !trial.isEmpty),
+                                     mac: Platform.isMac)
         let watches = Dictionary(data.watches.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let wishlist = Dictionary(data.wishlist.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let showingTrial = showsTrial && !trial.isEmpty
@@ -275,10 +268,9 @@ struct BoxesScreen: View {
             let drawn = content(piece, finish: finish, emptyBoxTiles: data.emptyBoxTiles)
             return BoxStageItem(piece: piece, slot: slot, content: drawn.content, look: drawn.look)
         }
-        let k = fit.k
-        let width = geometry.size(orientation).width * k
+        let width = geometry.canvas.width * k
         return Scene(
-            arrangement: arrangement, box: box, geometry: geometry, finish: finish, orientation: orientation, occupants: occupants, items: items,
+            arrangement: arrangement, box: box, geometry: geometry, finish: finish, occupants: occupants, items: items,
             emptyTile: emptyTile, trial: trial, showingTrial: showingTrial,
             steppingOut: showingTrial ? store.boxTrial.steppingOut(of: box.id, in: data).compactMap { watches[$0] } : [],
             loose: BoxModel.tray(data),
@@ -304,7 +296,7 @@ struct BoxesScreen: View {
     }
 
     private func painter(_ scene: Scene) -> BoxPainter {
-        BoxPainter(geometry: scene.geometry, palette: .of(scene.finish), orientation: scene.orientation, lidClosed: false,
+        BoxPainter(geometry: scene.geometry, palette: .of(scene.finish), lidClosed: false,
                    slots: [:], trialTag: "TRYING", k: scene.k, emptyTile: scene.emptyTile)
     }
 
@@ -419,7 +411,7 @@ struct BoxesScreen: View {
         }
     }
 
-    /// The pane that stays put: a book's left page (the box alone, end on, fitted to the page), a table's top pane
+    /// The pane that stays put: a book's left page (the box alone, front on, fitted to the page), a table's top pane
     /// (the tabs and the box, under the compact header in the bar), the Mac's left side (the box with its panel under it). Empty in a
     /// column, where the box scrolls with everything else.
     private func fixedPane(_ scene: Scene) -> some View {
@@ -672,7 +664,7 @@ struct BoxesScreen: View {
         let marks = BoxGuideMarks(selected: selection, targets: targets(scene), emphasized: emphasized)
         let drag = drag, frames = frames
         return BoxStage(
-            geometry: scene.geometry, finish: scene.finish, orientation: scene.orientation, lidClosed: lidClosed,
+            geometry: scene.geometry, finish: scene.finish, lidClosed: lidClosed,
             items: scene.items, emptyTile: scene.emptyTile, hidden: dragging, arriving: arriving, settles: settles,
             marks: marks,
             hover: { drag.lift == nil ? nil : Self.slot(at: drag.location, frames: frames, scene) },
@@ -682,11 +674,7 @@ struct BoxesScreen: View {
         }
         .frame(width: width, height: height)
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frames.stage = $0 }
-        .rotationEffect(.degrees(turnAngle))
-        .scaleEffect(turnScale)
-        .allowsHitTesting(!turning)
-        .frame(width: width, height: turnHeight ?? height)
-        .id(reduceMotion ? "\(scene.box.id)-\(scene.orientation.rawValue)" : scene.box.id)
+        .id(scene.box.id)
         .transition(.opacity)
         .animation(.easeInOut(duration: 0.25), value: scene.box.id)
         .frame(maxWidth: .infinity)
@@ -706,7 +694,7 @@ struct BoxesScreen: View {
     static func slot(at point: CGPoint, frames: BoxFrames, _ scene: Scene) -> Int? {
         guard frames.showsBox(at: point), scene.k > 0 else { return nil }
         let local = CGPoint(x: (point.x - frames.stage.minX) / scene.k, y: (point.y - frames.stage.minY) / scene.k)
-        return scene.geometry.slotIndex(at: local, scene.orientation)
+        return scene.geometry.slotIndex(at: local)
     }
 
     /// One compartment's touch target: tap to select or place, press and drag to move, and everything VoiceOver needs.
@@ -1093,49 +1081,11 @@ struct BoxesScreen: View {
             Button(lidClosed ? "Open lid" : "Close lid") {
                 withAnimation(.easeInOut(duration: 0.35)) { lidClosed.toggle() }
             }
-            // Only where the box is end on in a phone-wide column; elsewhere it takes the view that suits the space.
-            if scene.arrangement.canTurn {
-                Button {
-                    turnBox(scene)
-                } label: {
-                    Label("Turn", systemImage: "rotate.right")
-                }
-                .disabled(turning)
-            }
             BoxShareMenu(store: store, card: shareCard(scene), product: productCard(scene))
         }
         .quietButton()
         .controlSize(.small)
         .frame(maxWidth: .infinity)
-    }
-
-    /// 0.4 s: the whole box turns a quarter and scales to the new width, then redraws in the new orientation.
-    /// With Reduce Motion it cross-fades.
-    private func turnBox(_ scene: Scene) {
-        guard !turning else { return }
-        if reduceMotion {
-            withAnimation(.easeInOut(duration: 0.25)) { turned.toggle() }
-            return
-        }
-        let next: BoxOrientation = scene.orientation == .endOn ? .front : .endOn
-        let nextSize = scene.geometry.size(next)
-        let nextHeight = scene.boxWidth * nextSize.height / nextSize.width
-        turning = true
-        withAnimation(.easeInOut(duration: 0.4)) {
-            turnAngle = scene.orientation == .endOn ? -90 : 90
-            turnScale = scene.boxWidth / scene.stageHeight
-            turnHeight = nextHeight
-        } completion: {
-            var transaction = Transaction()
-            transaction.disablesAnimations = true
-            withTransaction(transaction) {
-                turned.toggle()
-                turnAngle = 0
-                turnScale = 1
-                turnHeight = nil
-                turning = false
-            }
-        }
     }
 
     /// "Trying" / "As it is" flips the same box in place; "Clear trial" ends every trial in this box.
@@ -1499,7 +1449,7 @@ struct BoxesScreen: View {
         let trial = pictureTrial(scene)
         return BoxShareCard(
             title: scene.box.name, subtitle: trial.subtitle, geometry: scene.geometry, finish: scene.finish,
-            orientation: scene.orientation, lidClosed: lidClosed,
+            lidClosed: lidClosed,
             slots: Dictionary(uniqueKeysWithValues: scene.items.map { ($0.slot, $0.content) }),
             emptyTile: scene.emptyTile, onTrial: trial.onTrial, steppingOut: trial.steppingOut, dark: colorScheme == .dark
         )
@@ -1619,7 +1569,7 @@ struct BoxesScreen: View {
     #if DEBUG
     /// Debug builds only, for pictures on a simulator that has no touch input:
     ///   -boxProbe "lid,select:3,arm:<watch-id>,try:<wishlist-id>,trial:<wishlist-id>@<slot>,notrial,wishlist,asis,
-    ///              editor:3,manage,turn,brown,black,scroll:600,lift:2-5,liftchip:<watch-id>,show:<watch-id>,
+    ///              editor:3,manage,brown,black,scroll:600,lift:2-5,liftchip:<watch-id>,show:<watch-id>,
     ///              pickup:3,place:5,wait:1,card:<name>,product:<name>"
     private func runProbe() async {
         guard let probe = UserDefaults.standard.string(forKey: "boxProbe") else { return }
@@ -1645,7 +1595,6 @@ struct BoxesScreen: View {
             case "wishlist": trayShowsWishlist = true
             case "asis": showsTrial = false
             case "manage": managing = true
-            case "turn": if let scene = makeScene() { turnBox(scene) }
             case "editor":
                 if let scene = makeScene(), let slot = Int(value), let piece = scene.occupants[slot] {
                     editing = editTarget(piece, scene)

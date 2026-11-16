@@ -107,7 +107,7 @@ struct BoxProductPainter {
                     let (centre, scale) = project(box.midX, D - box.midY, tier)
                     let unit = k * scale
                     let rect = CGRect(x: -box.width / 2 * unit, y: -box.height / 2 * unit, width: box.width * unit, height: box.height * unit)
-                    let painter = BoxPainter(geometry: geometry, palette: palette, orientation: .front, lidClosed: true, slots: [:],
+                    let painter = BoxPainter(geometry: geometry, palette: palette, lidClosed: true, slots: [:],
                                              trialTag: BoxPainter.trialWord, k: unit, emptyTile: emptyTile)
                     t.drawLayer { card in
                         card.translateBy(x: centre.x, y: centre.y)
@@ -174,7 +174,7 @@ struct BoxProductPainter {
             f.clip(to: shape)
             f.fill(Path(box), with: .linearGradient(Gradient(colors: [palette.frameLight, palette.frameDark]), startPoint: box.origin, endPoint: CGPoint(x: box.maxX, y: box.maxY)))
             if palette.wood {
-                BoxPainter(geometry: geometry, palette: palette, orientation: .front, lidClosed: true, slots: [:], trialTag: "", k: k).woodGrain(&f, in: box)
+                BoxPainter(geometry: geometry, palette: palette, lidClosed: true, slots: [:], trialTag: "", k: k).woodGrain(&f, in: box)
             }
             f.blendMode = .softLight; f.opacity = 0.3
             f.fill(Path(box), with: .tiledImage(Image(decorative: BoxGrain.tile, scale: 3)))

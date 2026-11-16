@@ -2,8 +2,8 @@ import SwiftUI
 import XCTest
 @testable import WatchCollection
 
-/// Where the Boxes tab puts the box in each posture (brief section 9): which arrangement a window gets, the box's view
-/// and scale in the space it is given, and the two panes either side of the crease or the Mac's side column.
+/// Where the Boxes tab puts the box in each posture (brief section 9): which arrangement a window gets, the box's scale
+/// in the space it is given (always front on), and the two panes either side of the crease or the Mac's side column.
 @MainActor final class BoxLayoutTests: XCTestCase {
     private let box = BoxGeometry(columns: 6, rows: 2)
     // Measured on the simulator, as in DuoTests.
@@ -40,10 +40,9 @@ import XCTest
         XCTAssertEqual(BoxArrangement.of(.phone, mac: true, width: 0), .column)
     }
 
-    func testOnlyThePhoneDocksTheTrayAndTurnsTheBox() {
+    func testOnlyThePhoneDocksTheTray() {
         let all: [BoxArrangement] = [.phone, .column, .book, .table, .desk]
         XCTAssertEqual(all.filter(\.docksTray), [.phone])
-        XCTAssertEqual(all.filter(\.canTurn), [.phone])
         // Only where the box scrolls with the page does a drag near the edge scroll it.
         XCTAssertEqual(all.filter(\.stageScrolls), [.phone, .column])
         XCTAssertEqual(all.map(\.chipColumns), [1, 6, 4, 6, 2])
@@ -51,56 +50,90 @@ import XCTest
 
     // MARK: The box in its space
 
-    func testThePhoneShowsTheBoxEndOnAcrossTheWidthUnlessTurned() {
-        let space = CGSize(width: 370, height: 0)
-        let endOn = BoxArrangement.stage(box, .phone, space: space, turned: false, mac: false)
-        XCTAssertEqual(endOn.orientation, .endOn)
-        XCTAssertEqual(endOn.k * box.size(.endOn).width, 370, accuracy: 0.001)
-        let turned = BoxArrangement.stage(box, .phone, space: space, turned: true, mac: false)
-        XCTAssertEqual(turned.orientation, .front)
-        XCTAssertEqual(turned.k * box.size(.front).width, 370, accuracy: 0.001)
+    func testThePhoneAndTheCoverShowTheBoxFrontOnAcrossTheWidth() {
+        // The phone's 370 pt column and the cover's 350: the box as wide as the column, about 234 pt tall at 370.
+        for width: CGFloat in [370, 350] {
+            let k = BoxArrangement.stage(box, .phone, space: CGSize(width: width, height: 0), mac: false)
+            XCTAssertEqual(k, width / box.canvas.width, accuracy: 0.0001, "\(width)")
+            XCTAssertEqual(k * box.canvas.width, width, accuracy: 0.001, "\(width)")
+        }
+        let phone = BoxArrangement.stage(box, .phone, space: CGSize(width: 370, height: 0), mac: false)
+        XCTAssertEqual(phone * box.canvas.height, 234, accuracy: 1)
+        // A compartment is still a finger's width: about 53 by 93 pt.
+        XCTAssertEqual(phone * box.slot(0).width, 53.6, accuracy: 0.5)
+        XCTAssertEqual(phone * box.slot(0).height, 93.3, accuracy: 0.5)
     }
 
     func testAColumnShowsTheBoxFrontOnAndTheMacCapsIt() {
         // The inner screen with the crease across: 669 less 20 a side.
-        let inner = BoxArrangement.stage(box, .column, space: CGSize(width: 629, height: 0), turned: true, mac: false)
-        XCTAssertEqual(inner.orientation, .front)
-        XCTAssertEqual(inner.k, 629 / 345, accuracy: 0.0001)
-        XCTAssertEqual(inner.k * box.size(.front).height, 397, accuracy: 1)
+        let inner = BoxArrangement.stage(box, .column, space: CGSize(width: 629, height: 0), mac: false)
+        XCTAssertEqual(inner, 629 / 345, accuracy: 0.0001)
+        XCTAssertEqual(inner * box.canvas.height, 397, accuracy: 1)
         // A narrow Mac window: as wide as the column, never wider than `widestBox`.
-        let narrow = BoxArrangement.stage(box, .column, space: CGSize(width: 700, height: 0), turned: false, mac: true)
-        XCTAssertEqual(narrow.k * box.size(.front).width, 700, accuracy: 0.001)
-        let wide = BoxArrangement.stage(box, .column, space: CGSize(width: 1400, height: 0), turned: false, mac: true)
-        XCTAssertEqual(wide.k * box.size(.front).width, BoxArrangement.widestBox, accuracy: 0.001)
+        let narrow = BoxArrangement.stage(box, .column, space: CGSize(width: 700, height: 0), mac: true)
+        XCTAssertEqual(narrow * box.canvas.width, 700, accuracy: 0.001)
+        let wide = BoxArrangement.stage(box, .column, space: CGSize(width: 1400, height: 0), mac: true)
+        XCTAssertEqual(wide * box.canvas.width, BoxArrangement.widestBox, accuracy: 0.001)
     }
 
-    func testAFixedPaneTakesTheViewWithTheBiggerWatchesAndFitsIt() {
-        // The left page of the book: taller than wide, so end on, fitted to the height.
+    func testAFixedPaneFitsTheBoxFrontOn() {
+        // The left page of the book: taller than wide, so the box fills the page's width.
         let page = CGSize(width: 437.5, height: 535)
-        let left = BoxArrangement.stage(box, .book, space: page, turned: true, mac: false)
-        XCTAssertEqual(left.orientation, .endOn)
+        let left = BoxArrangement.stage(box, .book, space: page, mac: false)
         assertFits(left, in: page)
-        XCTAssertEqual(left.k * box.size(.endOn).height, 535, accuracy: 0.001)
-        // Above the crease on the table top: wide and short, so front on.
+        XCTAssertEqual(left * box.canvas.width, 437.5, accuracy: 0.001)
+        // A page shorter than the box at that width: fitted to the height instead.
+        let short = CGSize(width: 437.5, height: 200)
+        let squat = BoxArrangement.stage(box, .book, space: short, mac: false)
+        assertFits(squat, in: short)
+        XCTAssertEqual(squat * box.canvas.height, 200, accuracy: 0.001)
+        // Above the crease on the table top: wide and short, fitted to the height.
         let top = CGSize(width: 629, height: 330)
-        let table = BoxArrangement.stage(box, .table, space: top, turned: false, mac: false)
-        XCTAssertEqual(table.orientation, .front)
+        let table = BoxArrangement.stage(box, .table, space: top, mac: false)
         assertFits(table, in: top)
-        // The Mac's desk: front on, and never wider than `widestBox` however big the window.
-        let desk = BoxArrangement.stage(box, .desk, space: CGSize(width: 2000, height: 1500), turned: false, mac: true)
-        XCTAssertEqual(desk.orientation, .front)
-        XCTAssertEqual(desk.k * box.size(.front).width, BoxArrangement.widestBox, accuracy: 0.001)
+        XCTAssertEqual(table * box.canvas.height, 330, accuracy: 0.001)
+        // The Mac's desk: never wider than `widestBox` however big the window.
+        let desk = BoxArrangement.stage(box, .desk, space: CGSize(width: 2000, height: 1500), mac: true)
+        XCTAssertEqual(desk * box.canvas.width, BoxArrangement.widestBox, accuracy: 0.001)
         // Before the pane is measured there is no box to draw.
         for empty in [CGSize.zero, CGSize(width: 400, height: 0), CGSize(width: 0, height: 400)] {
-            XCTAssertEqual(BoxArrangement.stage(box, .book, space: empty, turned: false, mac: false).k, 0)
+            XCTAssertEqual(BoxArrangement.stage(box, .book, space: empty, mac: false), 0)
         }
     }
 
-    private func assertFits(_ stage: (orientation: BoxOrientation, k: CGFloat), in space: CGSize,
-                            file: StaticString = #filePath, line: UInt = #line) {
-        let drawn = box.size(stage.orientation)
-        XCTAssertLessThanOrEqual(drawn.width * stage.k, space.width + 0.001, file: file, line: line)
-        XCTAssertLessThanOrEqual(drawn.height * stage.k, space.height + 0.001, file: file, line: line)
+    func testEveryArrangementDrawsTheBoxFrontOnInEverySpace() {
+        // There is no other view of the box: whatever the arrangement and the space, the drawing is the front
+        // canvas (wider than tall, dials upright) at the scale the arrangement gives, and it fits the space it was
+        // fitted to.
+        XCTAssertGreaterThan(box.canvas.width, box.canvas.height)
+        let spaces = [CGSize(width: 350, height: 0), CGSize(width: 370, height: 0), CGSize(width: 370, height: 640),
+                      CGSize(width: 437.5, height: 535), CGSize(width: 629, height: 330), CGSize(width: 629, height: 900),
+                      CGSize(width: 900, height: 600), CGSize(width: 2000, height: 1500)]
+        for arrangement in [BoxArrangement.phone, .column, .book, .table, .desk] {
+            for space in spaces {
+                for mac in [false, true] {
+                    let k = BoxArrangement.stage(box, arrangement, space: space, mac: mac)
+                    let name = "\(arrangement) \(space) mac \(mac)"
+                    switch arrangement {
+                    case .phone:
+                        XCTAssertEqual(k, space.width / box.canvas.width, accuracy: 0.0001, name)
+                    case .column:
+                        XCTAssertEqual(k, (mac ? min(space.width, BoxArrangement.widestBox) : space.width) / box.canvas.width,
+                                       accuracy: 0.0001, name)
+                    case .book, .table, .desk:
+                        // A fixed pane is given a height; a column's (0) is no pane to fit.
+                        guard space.height > 0 else { XCTAssertEqual(k, 0, name); continue }
+                        XCTAssertGreaterThan(k, 0, name)
+                        assertFits(k, in: space)
+                    }
+                }
+            }
+        }
+    }
+
+    private func assertFits(_ k: CGFloat, in space: CGSize, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertLessThanOrEqual(box.canvas.width * k, space.width + 0.001, file: file, line: line)
+        XCTAssertLessThanOrEqual(box.canvas.height * k, space.height + 0.001, file: file, line: line)
     }
 
     // MARK: Panes
@@ -144,29 +177,57 @@ import XCTest
     // MARK: Where a drag sees the box (the scroll view's frame, the bar and the tray)
 
     /// An iPhone 17 Pro as measured: the screen's space starts below the bar (screen y 116), the scroll view's frame
-    /// runs from there to the docked tray, and its content inset for the bar (116) is not part of that frame.
+    /// runs from there to the docked tray, and its content inset for the bar (116) is not part of that frame. The box
+    /// is front on across the 370 pt column: 234 pt tall.
+    private let phoneK: CGFloat = 370 / 345
     private func phoneFrames(boxTop: CGFloat) -> BoxFrames {
         let frames = BoxFrames()
         frames.scroll = CGRect(x: 0, y: 0, width: 402, height: 545)
         frames.tray = CGRect(x: 0, y: 545, width: 402, height: 130)
-        frames.stage = CGRect(x: 16, y: boxTop, width: 370, height: 586)
+        frames.stage = CGRect(x: 16, y: boxTop, width: 370, height: box.canvas.height * phoneK)
         return frames
     }
 
+    /// The compartment under a point in the screen's space, as `BoxesScreen.slot(at:)` finds it.
+    private func slot(at point: CGPoint, _ frames: BoxFrames) -> Int? {
+        guard frames.showsBox(at: point) else { return nil }
+        return box.slotIndex(at: CGPoint(x: (point.x - frames.stage.minX) / phoneK, y: (point.y - frames.stage.minY) / phoneK))
+    }
+
     func testTheTopOfThePageBelowTheBarIsOnTheBox() {
-        // The review's drop: scrolled 250, a watch let go at y 34, inside back row space 1 (85 pt rows).
+        // Scrolled so the top 116 pt of the box is under the bar: a watch let go at y 34 is in the front row.
         let frames = phoneFrames(boxTop: -116)
-        for y: CGFloat in [1, 34, 60, 115, 200, 469] {
+        for y: CGFloat in [1, 34, 60, 115] {
             XCTAssertTrue(frames.showsBox(at: CGPoint(x: 271, y: y)), "y \(y) is on screen, below the bar")
         }
         XCTAssertFalse(frames.showsBox(at: CGPoint(x: 271, y: -1)), "under the bar")
-        let lower = phoneFrames(boxTop: 0)
+        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 271, y: 200)), "below the box")
+        let lower = phoneFrames(boxTop: 400)
         XCTAssertTrue(lower.showsBox(at: CGPoint(x: 271, y: 544)))
         XCTAssertFalse(lower.showsBox(at: CGPoint(x: 271, y: 545)), "under the tray")
         // So the compartment under the finger there is found, not taken for "outside the box".
-        let k = 370 / box.size(.endOn).width
-        let local = CGPoint(x: (271 - frames.stage.minX) / k, y: (34 - frames.stage.minY) / k)
-        XCTAssertNotNil(box.slotIndex(at: local, .endOn))
+        XCTAssertEqual(slot(at: CGPoint(x: 271, y: 34), frames), 10, "front row, space 5")
+        XCTAssertNil(slot(at: CGPoint(x: 271, y: -1), frames), "the back row is under the bar")
+        XCTAssertEqual(slot(at: CGPoint(x: 271, y: 530), lower), 10)
+        XCTAssertNil(slot(at: CGPoint(x: 271, y: 560), lower), "the front row is under the tray")
+    }
+
+    func testADropLandsInTheCompartmentUnderTheFinger() {
+        // The box front on at the top of the page: six across, two deep, slot 0 back left, slot 11 front right.
+        let frames = phoneFrames(boxTop: 0)
+        for index in 0..<box.slotCount {
+            let rect = box.slot(index)
+            let point = CGPoint(x: frames.stage.minX + rect.midX * phoneK, y: frames.stage.minY + rect.midY * phoneK)
+            XCTAssertEqual(slot(at: point, frames), index, "the middle of space \(index)")
+        }
+        // Left to right along the back row, then the front row.
+        let back = (0..<6).map { box.slot($0).midX }, front = (6..<12).map { box.slot($0).midX }
+        XCTAssertEqual(back, back.sorted())
+        XCTAssertEqual(back, front)
+        XCTAssertLessThan(box.slot(0).midY, box.slot(6).midY)
+        // The frame round the compartments, and the drawer pull below them, are no compartment.
+        XCTAssertNil(slot(at: CGPoint(x: 16 + 5, y: 120), frames), "the left rail")
+        XCTAssertNil(slot(at: CGPoint(x: 201, y: 228), frames), "the drawer pull")
     }
 
     func testAutoScrollRunsInTheBandsAtTheBarAndTheTray() {

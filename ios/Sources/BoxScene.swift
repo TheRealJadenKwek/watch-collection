@@ -99,7 +99,6 @@ struct BoxSlotContent {
 struct BoxSceneView: View {
     var geometry: BoxGeometry
     var finish: BoxFinish
-    var orientation: BoxOrientation
     var lidClosed: Bool
     var slots: [Int: BoxSlotContent]
     var trialTag = "TRYING"
@@ -108,9 +107,9 @@ struct BoxSceneView: View {
     var outlined = false
 
     var body: some View {
-        let mm = geometry.size(orientation)
+        let mm = geometry.canvas
         Canvas(opaque: false, rendersAsynchronously: false) { context, size in
-            BoxPainter(geometry: geometry, palette: .of(finish), orientation: orientation, lidClosed: lidClosed,
+            BoxPainter(geometry: geometry, palette: .of(finish), lidClosed: lidClosed,
                        slots: slots, trialTag: trialTag, k: size.width / mm.width, emptyTile: emptyTile).draw(&context, size: size)
         }
         .aspectRatio(mm.width / mm.height, contentMode: .fit)
@@ -118,7 +117,7 @@ struct BoxSceneView: View {
             if outlined {
                 GeometryReader { proxy in
                     let k = proxy.size.width / mm.width
-                    let outer = geometry.place(CGRect(origin: .zero, size: geometry.outer), orientation)
+                    let outer = CGRect(origin: .zero, size: geometry.outer)
                     RoundedRectangle(cornerRadius: BoxGeometry.frameCorner * k, style: .continuous)
                         .stroke(WatchTheme.separator, lineWidth: WatchTheme.hairline)
                         .frame(width: outer.width * k, height: outer.height * k)
@@ -146,7 +145,6 @@ struct BoxSceneShadow: ViewModifier {
 struct BoxPainter {
     var geometry: BoxGeometry
     var palette: BoxPalette
-    var orientation: BoxOrientation
     var lidClosed: Bool
     var slots: [Int: BoxSlotContent]
     var trialTag: String
@@ -156,12 +154,9 @@ struct BoxPainter {
     /// Millimetres a tile covers. The compartment is the middle 50 of its 58.
     static let tileField = CGSize(width: 58, height: 87)
 
-    private var strapAlongY: Bool { orientation == .front }
-
     /// Box space (millimetres) to drawing space (points).
     func R(_ rect: CGRect) -> CGRect {
-        let r = geometry.place(rect, orientation)
-        return CGRect(x: r.minX * k, y: r.minY * k, width: r.width * k, height: r.height * k)
+        CGRect(x: rect.minX * k, y: rect.minY * k, width: rect.width * k, height: rect.height * k)
     }
 
     /// A compartment in drawing space (points).
@@ -307,14 +302,13 @@ struct BoxPainter {
             s.addFilter(.shadow(color: .black.opacity(palette.cushionShadow), radius: 2.6 * k, x: 1.2 * k, y: 1.9 * k))
             s.fill(path, with: .color(palette.cushionEdge))
         }
-        let a = strapAlongY ? CGPoint(x: cushion.midX, y: cushion.minY) : CGPoint(x: cushion.minX, y: cushion.midY)
-        let b = strapAlongY ? CGPoint(x: cushion.midX, y: cushion.maxY) : CGPoint(x: cushion.maxX, y: cushion.midY)
+        // The strap runs up and down over the roll.
+        let a = CGPoint(x: cushion.midX, y: cushion.minY), b = CGPoint(x: cushion.midX, y: cushion.maxY)
         layer.fill(path, with: .linearGradient(Gradient(stops: [
             .init(color: palette.cushionEdge, location: 0), .init(color: palette.cushionMid, location: 0.2),
             .init(color: palette.cushionSheen, location: 0.43), .init(color: palette.cushionMid, location: 0.62),
             .init(color: palette.cushionMid.opacity(0.92), location: 0.82), .init(color: palette.cushionEdge, location: 1)]), startPoint: a, endPoint: b))
-        let a2 = strapAlongY ? CGPoint(x: cushion.minX, y: cushion.midY) : CGPoint(x: cushion.midX, y: cushion.minY)
-        let b2 = strapAlongY ? CGPoint(x: cushion.maxX, y: cushion.midY) : CGPoint(x: cushion.midX, y: cushion.maxY)
+        let a2 = CGPoint(x: cushion.minX, y: cushion.midY), b2 = CGPoint(x: cushion.maxX, y: cushion.midY)
         layer.fill(path, with: .linearGradient(Gradient(stops: [
             .init(color: .black.opacity(0.30), location: 0), .init(color: .clear, location: 0.16),
             .init(color: .clear, location: 0.84), .init(color: .black.opacity(0.34), location: 1)]), startPoint: a2, endPoint: b2))
@@ -326,16 +320,10 @@ struct BoxPainter {
                                                  startPoint: cushion.origin, endPoint: CGPoint(x: cushion.maxX, y: cushion.maxY)), lineWidth: 0.8)
     }
 
-    /// A tile covers the compartment's depth and is clipped to its width; end on it turns a quarter with the box.
+    /// A tile covers the compartment's depth and is clipped to its width.
     private func drawTile(_ layer: inout GraphicsContext, _ tile: CGImage, rect: CGRect) {
-        layer.drawLayer { t in
-            let quarter = orientation == .endOn
-            t.translateBy(x: rect.midX, y: rect.midY)
-            if quarter { t.rotate(by: .degrees(90)) }
-            let h = quarter ? rect.width : rect.height
-            let w = h * Self.tileField.width / Self.tileField.height
-            t.draw(Image(decorative: tile, scale: 1), in: CGRect(x: -w / 2, y: -h / 2, width: w, height: h))
-        }
+        let h = rect.height, w = h * Self.tileField.width / Self.tileField.height
+        layer.draw(Image(decorative: tile, scale: 1), in: CGRect(x: rect.midX - w / 2, y: rect.midY - h / 2, width: w, height: h))
     }
 
     /// Shadow the walls throw into the compartment (light from the upper left), then a thin dark line where every
@@ -359,10 +347,8 @@ struct BoxPainter {
     // MARK: Watch
 
     private func watch(_ ctx: inout GraphicsContext, _ content: BoxSlotContent, cushion: CGRect, slot: CGRect, lift: CGFloat = 0) {
-        // The nudge is in the watch's own space (x across, y along the strap); turn it with the box.
-        let nudge = orientation == .front ? CGPoint(x: content.nudge.width, y: content.nudge.height)
-                                          : CGPoint(x: -content.nudge.height, y: content.nudge.width)
-        let center = CGPoint(x: cushion.midX + nudge.x * k, y: cushion.midY + nudge.y * k)
+        // The nudge is in the watch's own space: x across, y along the strap.
+        let center = CGPoint(x: cushion.midX + content.nudge.width * k, y: cushion.midY + content.nudge.height * k)
         let caseR = content.diameter / 2 * k * content.zoom
         let half = (BoxGeometry.cushion.height / 2 + 1.5) * k          // strap visible to the cushion's end
         let across = (BoxGeometry.compartment.width / 2 - 0.4) * k     // the case may overhang the cushion, not the walls
@@ -378,7 +364,6 @@ struct BoxPainter {
 
         ctx.drawLayer { w in
             w.translateBy(x: cushion.midX, y: cushion.midY)
-            w.rotate(by: .degrees(orientation == .endOn ? 90 : 0))
             // Local space from here: strap runs up and down, 12 o'clock is up.
             w.clip(to: Path(roundedRect: CGRect(x: -across, y: -half, width: across * 2, height: half * 2), cornerRadius: 3 * k))
             w.translateBy(x: (content.nudge.width) * k, y: (content.nudge.height) * k)
@@ -493,10 +478,9 @@ struct BoxPainter {
     private func hardware(_ ctx: inout GraphicsContext) {
         let o = geometry.outer
         let wall = R(CGRect(x: BoxGeometry.sideRail, y: o.height - BoxGeometry.frontRail, width: geometry.inner.width, height: BoxGeometry.frontRail))
-        let vertical = wall.height > wall.width
         ctx.fill(Path(wall), with: .color(palette.dividerTop))
         ctx.fill(Path(wall), with: .linearGradient(Gradient(colors: [.white.opacity(0.10), .clear, .black.opacity(0.35)]),
-                                                    startPoint: wall.origin, endPoint: vertical ? CGPoint(x: wall.maxX, y: wall.minY) : CGPoint(x: wall.minX, y: wall.maxY)))
+                                                    startPoint: wall.origin, endPoint: CGPoint(x: wall.minX, y: wall.maxY)))
     }
 
     /// Brass drawer pull, blank plate, sticking out under the front edge.
@@ -543,7 +527,7 @@ struct BoxPainter {
             g.fill(Path(slope), with: .color(.white.opacity(0.05)))
             g.drawLayer { f in
                 f.addFilter(.blur(radius: 0.7 * k))
-                f.fill(Path(fold.insetBy(dx: 0, dy: fold.height > fold.width ? 0 : -0.6 * k).insetBy(dx: fold.height > fold.width ? -0.6 * k : 0, dy: 0)), with: .color(.white.opacity(0.04)))
+                f.fill(Path(fold.insetBy(dx: 0, dy: -0.6 * k)), with: .color(.white.opacity(0.04)))
             }
             g.fill(Path(fold), with: .color(.white.opacity(0.13)))
         }

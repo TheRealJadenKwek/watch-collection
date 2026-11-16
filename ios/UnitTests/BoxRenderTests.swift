@@ -22,53 +22,49 @@ final class BoxGeometryTests: XCTestCase {
         }
     }
 
-    func testPlaceInBothOrientations() {
-        XCTAssertEqual(box.size(.front), CGSize(width: 345, height: 218))
-        XCTAssertEqual(box.size(.endOn), CGSize(width: 218, height: 345))
-        XCTAssertEqual(box.place(box.slot(0), .front), box.slot(0))
-        // End on: slot 0 (back left) lands top right, slot 6 (front left) top left.
-        let first = box.place(box.slot(0), .endOn), sixth = box.place(box.slot(6), .endOn)
-        XCTAssertGreaterThan(first.midX, 218 / 2)
-        XCTAssertLessThan(first.midY, 345 / 4)
-        XCTAssertLessThan(sixth.midX, 218 / 2)
-        XCTAssertLessThan(sixth.midY, 345 / 4)
-        XCTAssertEqual(first.width, 87, accuracy: 0.001)
-        XCTAssertEqual(first.height, 50, accuracy: 0.001)
+    func testTheBoxIsDrawnFrontOnSixAcrossTwoDeep() {
+        // Wider than tall, the drawer pull below the front wall.
+        XCTAssertEqual(box.canvas, CGSize(width: 345, height: 218))
+        // Slot 0 is back left, slot 5 back right, slot 6 front left (below slot 0), slot 11 front right.
+        XCTAssertLessThan(box.slot(0).midX, box.slot(5).midX)
+        XCTAssertEqual(box.slot(0).midX, box.slot(6).midX, accuracy: 0.001)
+        XCTAssertLessThan(box.slot(0).midY, box.slot(6).midY)
+        XCTAssertEqual(box.slot(6).midY, box.slot(11).midY, accuracy: 0.001)
+        // Compartments stand upright: deeper than wide, so a dial sits at 12 up with the strap running up and down.
+        XCTAssertGreaterThan(box.slot(0).height, box.slot(0).width)
+        XCTAssertLessThanOrEqual(box.slot(11).maxY, box.outer.height)
     }
 
     func testSlotIndexRoundTripsEveryCentre() {
-        for orientation in [BoxOrientation.front, .endOn] {
-            for index in 0..<box.slotCount {
-                let rect = box.place(box.slot(index), orientation)
-                XCTAssertEqual(box.slotIndex(at: CGPoint(x: rect.midX, y: rect.midY), orientation), index, "\(orientation) \(index)")
-            }
+        for index in 0..<box.slotCount {
+            let rect = box.slot(index)
+            XCTAssertEqual(box.slotIndex(at: CGPoint(x: rect.midX, y: rect.midY)), index, "\(index)")
         }
     }
 
     func testSlotIndexIsNilOnTheFrameAndADividerResolvesToANeighbour() {
-        XCTAssertNil(box.slotIndex(at: CGPoint(x: 5, y: 5), .front))
-        XCTAssertNil(box.slotIndex(at: CGPoint(x: 172, y: 12), .front), "the back rail")
-        XCTAssertNil(box.slotIndex(at: CGPoint(x: 5, y: 5), .endOn))
+        XCTAssertNil(box.slotIndex(at: CGPoint(x: 5, y: 5)))
+        XCTAssertNil(box.slotIndex(at: CGPoint(x: 172, y: 12)), "the back rail")
+        XCTAssertNil(box.slotIndex(at: CGPoint(x: 172, y: 214)), "the drawer pull")
         // The divider between columns 0 and 1 runs from x 65 to 68.
-        let onDivider = box.slotIndex(at: CGPoint(x: 66.5, y: 60), .front)
+        let onDivider = box.slotIndex(at: CGPoint(x: 66.5, y: 60))
         XCTAssertNotNil(onDivider)
         XCTAssertTrue([0, 1].contains(onDivider ?? -1))
         // The divider between the rows runs from y 111 to 114.
-        let betweenRows = box.slotIndex(at: CGPoint(x: 40, y: 112.5), .front)
+        let betweenRows = box.slotIndex(at: CGPoint(x: 40, y: 112.5))
         XCTAssertTrue([0, 6].contains(betweenRows ?? -1))
     }
 
-    func testOrientationForTheSpaceOnOffer() {
-        XCTAssertEqual(BoxGeometry.orientation(for: CGSize(width: 370, height: 640), columns: 6, rows: 2), .endOn)
-        XCTAssertEqual(BoxGeometry.orientation(for: CGSize(width: 629, height: 450), columns: 6, rows: 2), .front)
-        XCTAssertEqual(BoxGeometry.orientation(for: CGSize(width: 900, height: 600), columns: 6, rows: 2), .front)
+    func testScaleFitsTheFrontView() {
+        XCTAssertEqual(box.scale(fitting: CGSize(width: 370, height: 640)), 370 / 345, accuracy: 0.0001)
+        XCTAssertEqual(box.scale(fitting: CGSize(width: 900, height: 109)), 0.5, accuracy: 0.0001)
     }
 
     func testPhoneScaleMatchesTheBrief() {
-        // 370 pt wide end on: k is 1.70 and the box 586 pt tall.
-        let k = 370 / box.size(.endOn).width
-        XCTAssertEqual(k, 1.70, accuracy: 0.01)
-        XCTAssertEqual(box.size(.endOn).height * k, 586, accuracy: 1)
+        // 370 pt wide front on: k is 1.07 and the box 234 pt tall.
+        let k = 370 / box.canvas.width
+        XCTAssertEqual(k, 1.07, accuracy: 0.01)
+        XCTAssertEqual(box.canvas.height * k, 234, accuracy: 1)
     }
 }
 
@@ -477,27 +473,26 @@ final class BoxScreenPureTests: XCTestCase {
 @MainActor final class BoxMarkTests: XCTestCase {
     private let box = BoxGeometry(columns: 6, rows: 2)
 
-    /// Every width the box is drawn at: the phone end on and turned, the cover, a book's page, the inner screen's
+    /// Every width the box is drawn at, always front on: the phone, the cover, a book's page, the inner screen's
     /// column, the share card, the Mac.
-    private let views: [(name: String, orientation: BoxOrientation, width: CGFloat)] = [
-        ("phone", .endOn, 370), ("phone turned", .front, 370), ("cover", .endOn, 350), ("cover turned", .front, 350),
-        ("book", .endOn, 408), ("column", .front, 629), ("share", .front, 728), ("mac", .front, 900),
+    private let views: [(name: String, width: CGFloat)] = [
+        ("phone", 370), ("cover", 350), ("book", 437), ("column", 629), ("share", 728), ("mac", 900),
     ]
 
-    private func painter(_ orientation: BoxOrientation, width: CGFloat, trials: [Int]) -> BoxPainter {
+    private func painter(width: CGFloat, trials: [Int]) -> BoxPainter {
         var slots: [Int: BoxSlotContent] = [:]
         for slot in trials {
             var content = BoxSlotContent()
             content.isTrial = true
             slots[slot] = content
         }
-        return BoxPainter(geometry: box, palette: .of(.black), orientation: orientation, lidClosed: false, slots: slots,
-                          trialTag: BoxPainter.trialWord, k: width / box.size(orientation).width)
+        return BoxPainter(geometry: box, palette: .of(.black), lidClosed: false, slots: slots,
+                          trialTag: BoxPainter.trialWord, k: width / box.canvas.width)
     }
 
     /// The marks alone, on a clear canvas, at 2x.
     private func marks(_ painter: BoxPainter, ringWidth: CGFloat = BoxPainter.trialRingWidth) -> CGImage? {
-        let size = box.size(painter.orientation)
+        let size = box.canvas
         let view = Canvas { context, _ in painter.drawMarks(&context, ringWidth: ringWidth) }
             .frame(width: size.width * painter.k, height: size.height * painter.k)
         let renderer = ImageRenderer(content: view)
@@ -526,7 +521,7 @@ final class BoxScreenPureTests: XCTestCase {
         for view in views {
             // A space at each corner of the box, so the tag meets a divider and the frame in every direction.
             let trials = [0, 5, 6, 11]
-            let painter = painter(view.orientation, width: view.width, trials: trials)
+            let painter = painter(width: view.width, trials: trials)
             let image = try XCTUnwrap(marks(painter), view.name)
             let rects = trials.map { painter.slotRect($0).insetBy(dx: -0.5, dy: -0.5) }
             let stray = drawn(image).filter { pixel in !rects.contains { $0.contains(pixel.point) } }
@@ -537,7 +532,7 @@ final class BoxScreenPureTests: XCTestCase {
     func testTheTagIsNeverCutByItsSpace() throws {
         // The setting chosen fits between the walls in every view (it is clipped only as a last resort).
         for view in views {
-            let painter = painter(view.orientation, width: view.width, trials: [0])
+            let painter = painter(width: view.width, trials: [0])
             let rect = painter.slotRect(0)
             var chosen: (style: BoxPainter.TrialTagStyle, frame: CGRect)?
             let size = max(7, 4.6 * painter.k)
@@ -552,8 +547,8 @@ final class BoxScreenPureTests: XCTestCase {
             let tag = try XCTUnwrap(chosen, view.name)
             XCTAssertLessThanOrEqual(tag.frame.maxX, rect.maxX - BoxPainter.tagMargin + 0.01, view.name)
             XCTAssertLessThanOrEqual(tag.frame.maxY, rect.maxY - BoxPainter.tagMargin + 0.01, view.name)
-            // The full word wherever there is room for it: end on everywhere, and the front view off the phone.
-            if view.orientation == .endOn || view.width >= 600 {
+            // The full word wherever there is room for it: the front view off the phone.
+            if view.width >= 600 {
                 XCTAssertEqual(tag.style, BoxPainter.trialTagStyles(BoxPainter.trialWord)[0], view.name)
             }
         }
@@ -576,7 +571,7 @@ final class BoxScreenPureTests: XCTestCase {
     }
 
     func testIncreaseContrastThickensTheTrialRing() throws {
-        let painter = painter(.endOn, width: 370, trials: [3])
+        let painter = painter(width: 370, trials: [3])
         // The ring along the compartment's left wall, below the tag: how many pixels across it covers.
         let rect = painter.slotRect(3)
         func across(_ width: CGFloat) throws -> Int {
@@ -593,7 +588,7 @@ final class BoxScreenPureTests: XCTestCase {
             let selectionBand = (inset - selection / 2)...(inset + selection / 2)
             let trialBand = (BoxPainter.trialRingInset - trial / 2)...(BoxPainter.trialRingInset + trial / 2)
             XCTAssertGreaterThanOrEqual(trialBand.lowerBound - selectionBand.upperBound, BoxPainter.selectionGap - 0.001)
-            // Outside the compartment, on its half of the divider at the scales the phone draws end on.
+            // Outside the compartment, on its half of the divider.
             XCTAssertLessThanOrEqual(selectionBand.upperBound, 0)
         }
         // Without a trial the selection ring stays where it was, just inside the walls.

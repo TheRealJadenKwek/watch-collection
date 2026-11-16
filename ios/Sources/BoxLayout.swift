@@ -7,13 +7,14 @@ import SwiftUI
 
 /// Where the box and the rest of the screen go.
 enum BoxArrangement: Equatable {
-    /// An ordinary iPhone and the cover screen: one scrolling column, the box end on (Turn may override), the tray
+    /// An ordinary iPhone and the cover screen: one scrolling column, the box front on across the column, the tray
     /// docked at the bottom.
     case phone
     /// The inner screen with the crease across, and a Mac window too narrow for the side column: one scrolling
     /// column, the box front on across the page, chip grids in place of the tray.
     case column
-    /// The inner screen held like a book: the box alone on the left page, everything else scrolling on the right.
+    /// The inner screen held like a book: the box alone on the left page, front on and fitted to it, everything else
+    /// scrolling on the right.
     case book
     /// Half open on a table, the crease across: a compact header and the box above the crease, the rest scrolling
     /// below it.
@@ -42,8 +43,6 @@ enum BoxArrangement: Equatable {
     var stageScrolls: Bool { self == .phone || self == .column }
     /// The tray is docked under the page; elsewhere the chips stand in grids.
     var docksTray: Bool { self == .phone }
-    /// Turn is offered only where the box is end on in a column a phone wide.
-    var canTurn: Bool { self == .phone }
 
     /// Chips across in a grid.
     var chipColumns: Int {
@@ -55,24 +54,21 @@ enum BoxArrangement: Equatable {
         }
     }
 
-    /// The box's view and scale (points per millimetre) for the space it is given. In a column the box is as wide as
-    /// `space.width` (the phone end on unless turned, elsewhere front on, at most `widestBox` on a Mac); in a fixed
-    /// pane it takes the view that gives the bigger watches in `space` and fits inside it.
-    static func stage(_ geometry: BoxGeometry, _ arrangement: BoxArrangement, space: CGSize, turned: Bool,
-                      mac: Bool) -> (orientation: BoxOrientation, k: CGFloat) {
+    /// The box's scale (points per millimetre) for the space it is given. The box is always front on, dials upright.
+    /// In a column it is as wide as `space.width` (at most `widestBox` on a Mac); in a fixed pane it fits inside
+    /// `space`.
+    static func stage(_ geometry: BoxGeometry, _ arrangement: BoxArrangement, space: CGSize, mac: Bool) -> CGFloat {
         switch arrangement {
         case .phone:
-            let orientation: BoxOrientation = turned ? .front : .endOn
-            return (orientation, max(0, space.width) / geometry.size(orientation).width)
+            return max(0, space.width) / geometry.canvas.width
         case .column:
             let width = mac ? min(space.width, widestBox) : space.width
-            return (.front, max(0, width) / geometry.size(.front).width)
+            return max(0, width) / geometry.canvas.width
         case .book, .table, .desk:
-            guard space.width > 0, space.height > 0 else { return (.front, 0) }
-            let orientation = BoxGeometry.orientation(for: space, columns: geometry.columns, rows: geometry.rows)
-            var k = geometry.scale(fitting: space, orientation)
-            if mac { k = min(k, widestBox / geometry.size(orientation).width) }
-            return (orientation, k)
+            guard space.width > 0, space.height > 0 else { return 0 }
+            var k = geometry.scale(fitting: space)
+            if mac { k = min(k, widestBox / geometry.canvas.width) }
+            return k
         }
     }
 }

@@ -133,7 +133,7 @@ struct BoxCutoutEditor: View {
             picture: emptyTile == nil ? .pillow : .emptyTile(""), tileImage: nil, cutout: result,
             diameter: piece.diameter, dialName: piece.dial
         )
-        return BoxSceneView(geometry: BoxGeometry(columns: 1, rows: 1), finish: finish, orientation: .front, lidClosed: false,
+        return BoxSceneView(geometry: BoxGeometry(columns: 1, rows: 1), finish: finish, lidClosed: false,
                             slots: [0: content], emptyTile: emptyTile)
             .frame(height: 200)
             .frame(maxWidth: .infinity)

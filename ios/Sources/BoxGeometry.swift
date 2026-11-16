@@ -6,15 +6,8 @@ import Foundation
 //
 // Box space is the box seen from the front, lid hinge at the top, clasp at the bottom:
 // x runs left to right, y from the back wall to the front wall. Slot 0 is back left, slots run
-// along the back row first, then the front row.
-
-enum BoxOrientation: String, Sendable {
-    /// Clasp toward the viewer, dials upright. Wide: 6 across by 2 deep for a 12 watch box.
-    case front
-    /// The box turned a quarter clockwise, the way it is held lengthwise: the left end is at the
-    /// top, the clasp on the left, 12 o'clock points right. Tall: fits a phone.
-    case endOn
-}
+// along the back row first, then the front row. The box is always drawn this way up, dials
+// upright: 6 across by 2 deep for a 12 watch box, the drawer pull at the bottom.
 
 struct BoxGeometry: Equatable, Sendable {
     var columns: Int
@@ -43,14 +36,9 @@ struct BoxGeometry: Equatable, Sendable {
                height: CGFloat(rows) * Self.compartment.height + CGFloat(rows - 1) * Self.divider)
     }
     var outer: CGSize { CGSize(width: inner.width + 2 * Self.sideRail, height: inner.height + Self.backRail + Self.frontRail) }
-    /// The drawing in box space: the box plus the drawer pull in front of it.
+    /// The drawing in box space (millimetres): the box plus the drawer pull in front of it.
     var canvas: CGSize { CGSize(width: outer.width, height: outer.height + Self.handle.height) }
     var slotCount: Int { columns * rows }
-
-    /// Size of the drawing in millimetres for an orientation.
-    func size(_ orientation: BoxOrientation) -> CGSize {
-        orientation == .front ? canvas : CGSize(width: canvas.height, height: canvas.width)
-    }
 
     /// Compartment rectangle in box space.
     func slot(_ index: Int) -> CGRect {
@@ -62,38 +50,15 @@ struct BoxGeometry: Equatable, Sendable {
 
     var cavity: CGRect { CGRect(x: Self.sideRail, y: Self.backRail, width: inner.width, height: inner.height) }
 
-    /// Box space to drawing space (still millimetres).
-    func place(_ rect: CGRect, _ orientation: BoxOrientation) -> CGRect {
-        switch orientation {
-        case .front: rect
-        case .endOn: CGRect(x: canvas.height - rect.maxY, y: rect.minX, width: rect.height, height: rect.width)
-        }
-    }
-
-    func place(_ point: CGPoint, _ orientation: BoxOrientation) -> CGPoint {
-        switch orientation {
-        case .front: point
-        case .endOn: CGPoint(x: canvas.height - point.y, y: point.x)
-        }
-    }
-
-    /// Drawing space (millimetres) back to a slot, or nil outside every compartment.
+    /// Box space (millimetres) back to a slot, or nil outside every compartment.
     /// `slack` widens each compartment so a drop on a divider still lands.
-    func slotIndex(at point: CGPoint, _ orientation: BoxOrientation, slack: CGFloat = Self.divider / 2) -> Int? {
-        let p = orientation == .front ? point : CGPoint(x: point.y, y: canvas.height - point.x)
-        for index in 0..<slotCount where slot(index).insetBy(dx: -slack, dy: -slack).contains(p) { return index }
+    func slotIndex(at point: CGPoint, slack: CGFloat = Self.divider / 2) -> Int? {
+        for index in 0..<slotCount where slot(index).insetBy(dx: -slack, dy: -slack).contains(point) { return index }
         return nil
     }
 
     /// Points per millimetre that fits the drawing in `available`.
-    func scale(fitting available: CGSize, _ orientation: BoxOrientation) -> CGFloat {
-        let s = size(orientation)
-        return min(available.width / s.width, available.height / s.height)
-    }
-
-    /// Which way to show the box in a space: front when it gives the bigger watches.
-    static func orientation(for available: CGSize, columns: Int, rows: Int) -> BoxOrientation {
-        let g = BoxGeometry(columns: columns, rows: rows)
-        return g.scale(fitting: available, .front) >= g.scale(fitting: available, .endOn) ? .front : .endOn
+    func scale(fitting available: CGSize) -> CGFloat {
+        min(available.width / canvas.width, available.height / canvas.height)
     }
 }
