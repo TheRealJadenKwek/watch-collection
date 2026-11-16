@@ -289,6 +289,45 @@ enum WatchTheme {
     static func margin(forWidth width: CGFloat) -> CGFloat {
         width > 0 && width < 380 ? narrowMargin : margin
     }
+
+    /// The watch boxes' own colours. The box is an object, so these do not change with Light and Dark Mode.
+    /// The brown values were matched by eye to the maker's photos. BoxPalette reads them.
+    enum Box {
+        struct Finish {
+            /// The frame's diagonal gradient, upper left to lower right.
+            let frameLight: Color
+            let frameDark: Color
+            let lining: Color
+            let dividerTop: Color
+            let dividerEdge: Color
+            let cushionEdge: Color
+            let cushionMid: Color
+            let cushionSheen: Color
+            /// Black opacities.
+            let cushionShadow: Double
+            let contactShadow: Double
+            let wallShadow: Double
+            /// Black opacity at the pillow's end: the strap darkens as it curves away.
+            let strapFalloff: Double
+        }
+
+        static let black = Finish(
+            frameLight: Color(hex: 0x2E2E30), frameDark: Color(hex: 0x131314), lining: Color(hex: 0x060607),
+            dividerTop: Color(hex: 0x1B1B1D), dividerEdge: Color(hex: 0x4A4A4E),
+            cushionEdge: Color(hex: 0x0A0A0B), cushionMid: Color(hex: 0x232326), cushionSheen: Color(hex: 0x4A4A50),
+            cushionShadow: 0.8, contactShadow: 0.6, wallShadow: 0.6, strapFalloff: 0.78
+        )
+        static let brown = Finish(
+            frameLight: Color(hex: 0x7E4B2C), frameDark: Color(hex: 0x4A2816), lining: Color(hex: 0x21130D),
+            dividerTop: Color(hex: 0x3A231A), dividerEdge: Color(hex: 0x6E4A3A),
+            cushionEdge: Color(hex: 0x1E110C), cushionMid: Color(hex: 0x4A2D21), cushionSheen: Color(hex: 0x7A5140),
+            cushionShadow: 0.75, contactShadow: 0.55, wallShadow: 0.55, strapFalloff: 0.74
+        )
+        /// The trial ring and its tag. Chosen for contrast on both linings; do not swap it for the accent.
+        static let trial = Color(hex: 0x2FB877)
+        static let brassLight = Color(red: 0.86, green: 0.74, blue: 0.47)
+        static let brassDark = Color(red: 0.50, green: 0.38, blue: 0.17)
+    }
 }
 
 extension EnvironmentValues {
