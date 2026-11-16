@@ -1588,12 +1588,7 @@ struct YearPurchasesScreen: View {
         ].compactMap { $0 }.joined(separator: " · ")
         return NavigationLink(value: WatchRoute(id: watch.id)) {
             HStack(spacing: 14) {
-                RemoteWatchImage(
-                    asset: watch.photos.first.flatMap { store.photoAsset(itemID: watch.id, filename: $0, wishlist: false) },
-                    allowsRemoteFetch: !store.isOffline,
-                    focus: watch.focus(for: watch.photos.first),
-                    maxPixel: DisplayImageCache.icon
-                )
+                RemoteWatchImage(cover: watch.cover, allowsRemoteFetch: !store.isOffline, maxPixel: DisplayImageCache.icon)
                 .frame(width: 64, height: 64)
                 .clipped()
                 VStack(alignment: .leading, spacing: 3) {

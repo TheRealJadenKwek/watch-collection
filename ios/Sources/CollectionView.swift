@@ -96,9 +96,7 @@ struct CollectionScreen: View {
             #endif
             .task(id: contentKey) {
                 // Have the next cards ready before they scroll into view.
-                let assets = watches.prefix(32).compactMap { watch in
-                    watch.photos.first.flatMap { store.photoAsset(itemID: watch.id, filename: $0, wishlist: false) }
-                }
+                let assets = watches.prefix(32).compactMap { $0.cover?.asset }
                 DisplayImageCache.preheat(assets, maxPixel: layout == Layout.grid.rawValue ? DisplayImageCache.thumb : DisplayImageCache.tile)
             }
             .onAppear {
@@ -252,7 +250,7 @@ struct CollectionScreen: View {
               !shown.isEmpty
         else { return nil }
         return byPurchaseDate(all.filter { $0.status == "owned" })
-            .last { datedSource($0, in: all).purchased != nil && !$0.photos.isEmpty }
+            .last { datedSource($0, in: all).purchased != nil && $0.cover != nil }
     }
 
     /// The feature on the inner screen's fixed pane, in every scope and layout: the newest dated watch with a photo
@@ -265,7 +263,7 @@ struct CollectionScreen: View {
             case .allTime: true
             }
         }
-        return byPurchaseDate(inScope).last { datedSource($0, in: all).purchased != nil && !$0.photos.isEmpty }
+        return byPurchaseDate(inScope).last { datedSource($0, in: all).purchased != nil && $0.cover != nil }
     }
 
     /// The feature's shape on a scrolling page: the plate, but no taller than 420 points with the crease across. On
@@ -297,9 +295,7 @@ struct CollectionScreen: View {
                 if let aspect {
                     FramedPhoto(
                         store: store,
-                        itemID: watch.id,
-                        filename: watch.photos.first,
-                        focus: watch.focus(for: watch.photos.first),
+                        cover: watch.cover,
                         aspect: aspect,
                         // The size the watch's page decodes, so opening it reuses this image.
                         maxPixel: DisplayImageCache.page
@@ -307,12 +303,7 @@ struct CollectionScreen: View {
                 } else {
                     Color.clear
                         .overlay {
-                            RemoteWatchImage(
-                                asset: watch.photos.first.flatMap { store.photoAsset(itemID: watch.id, filename: $0, wishlist: false) },
-                                allowsRemoteFetch: !store.isOffline,
-                                focus: watch.focus(for: watch.photos.first),
-                                maxPixel: DisplayImageCache.page
-                            )
+                            RemoteWatchImage(cover: watch.cover, allowsRemoteFetch: !store.isOffline, maxPixel: DisplayImageCache.page)
                         }
                         .clipped()
                         .contentShape(Rectangle())
@@ -438,9 +429,7 @@ struct CollectionScreen: View {
                 NavigationLink(value: WatchRoute(id: watch.id)) {
                     FramedPhoto(
                         store: store,
-                        itemID: watch.id,
-                        filename: watch.photos.first,
-                        focus: watch.focus(for: watch.photos.first),
+                        cover: watch.cover,
                         aspect: PhotoShape.square,
                         maxPixel: DisplayImageCache.thumb
                     )
@@ -482,7 +471,7 @@ struct WatchTile: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            FramedPhoto(store: store, itemID: watch.id, filename: watch.photos.first, focus: watch.focus(for: watch.photos.first))
+            FramedPhoto(store: store, cover: watch.cover)
                 .overlay(alignment: .topLeading) {
                     if watch.original == false {
                         PhotoTag(text: "Replica").padding(8)

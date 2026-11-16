@@ -57,6 +57,10 @@ struct WishlistScreen: View {
                                     EmptyCollectionView(title: "Wishlist empty", detail: "Add a candidate to start comparing fit.")
                                         .frame(minHeight: 320)
                                 } else {
+                                    if total.count > 0 {
+                                        WishlistTotalPanel(total: total)
+                                            .padding(.bottom, WatchTheme.panelPadding - WatchTheme.gridGap)
+                                    }
                                     if let top = ranked.first, top.status == "considering" {
                                         TopPickView(
                                             store: store,
@@ -143,7 +147,7 @@ struct WishlistScreen: View {
         let rest = top == nil ? ranked : Array(ranked.dropFirst())
         // Roughly in cards: the top pick is about three tall, the masthead well under one. Whatever heads the left
         // column goes there first; the cards then fill whichever column is shorter.
-        let lead: CGFloat = (top == nil ? 0 : 3) + (duo.isBook ? 0.6 : 0)
+        let lead: CGFloat = (top == nil ? 0 : 3) + (duo.isBook ? 0.6 : 0) + (duo.isBook && total.count > 0 ? 0.5 : 0)
         let placed = DuoLayout.balance((lead > 0 ? [lead] : []) + rest.map { _ in 1 }, columns: count)
         let restColumns = lead > 0 ? Array(placed.dropFirst()) : placed
         let suggestionColumns = duo.isBook ? count : 1
@@ -159,6 +163,10 @@ struct WishlistScreen: View {
                 EmptyCollectionView(title: "Wishlist empty", detail: "Add a candidate to start comparing fit.")
                     .frame(minHeight: 320)
             }
+            if total.count > 0, !duo.isBook {
+                WishlistTotalPanel(total: total)
+                    .padding(.bottom, WatchTheme.panelPadding)
+            }
             CardColumns(columns: count, spacing: WatchTheme.gridGap, gap: gap) {
                 #if os(iOS)
                 if duo.isBook {
@@ -171,6 +179,11 @@ struct WishlistScreen: View {
                     EmptyCollectionView(title: "Wishlist empty", detail: "Add a candidate to start comparing fit.")
                         .frame(minHeight: 320)
                         .cardColumn(1, of: count)
+                }
+                if total.count > 0, duo.isBook {
+                    WishlistTotalPanel(total: total)
+                        .padding(.bottom, WatchTheme.panelPadding - WatchTheme.gridGap)
+                        .cardColumn(0, of: count)
                 }
                 if let top {
                     TopPickView(
@@ -225,6 +238,10 @@ struct WishlistScreen: View {
             .disabled(store.isOffline)
             .accessibilityLabel("Add candidate")
     }
+
+    /// What the candidates still being considered would cost. The page has no status filter; passed and bought
+    /// candidates are listed under the rest but are not part of the figure.
+    private var total: WishlistTotal { WishlistTotal(store.data?.wishlist ?? []) }
 
     private var subtitle: String {
         let count = ranked.filter { $0.status == "considering" }.count
@@ -427,9 +444,6 @@ struct WishlistCard: View {
     static let photoAspect: CGFloat = 96.0 / 120.0
 
     private let lensOrder = ["category", "brand", "price", "dial", "size", "material"]
-    private var imageAsset: PhotoAsset? {
-        item.photos.first.flatMap { store.photoAsset(itemID: item.id, filename: $0, wishlist: true) }
-    }
     /// Category and diameter, as "Dive, 40 mm".
     private var detailLine: String {
         [item.category, item.diameter.map { "\(compactNumber($0)) mm" }]
@@ -438,9 +452,12 @@ struct WishlistCard: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
+        let cover = item.cover
+        return VStack(alignment: .leading, spacing: 0) {
             HStack(alignment: .top, spacing: 14) {
-                RemoteWatchImage(asset: imageAsset, allowsRemoteFetch: !store.isOffline, focus: item.focus(for: item.photos.first), maxPixel: DisplayImageCache.icon)
+                // The render where there is one (a little larger than a photo thumbnail is decoded, so the dial stays
+                // sharp), else the photo.
+                RemoteWatchImage(cover: cover, allowsRemoteFetch: !store.isOffline, maxPixel: cover?.isRender == true ? DisplayImageCache.thumb : DisplayImageCache.icon)
                     .frame(width: 96, height: 120)
                     .clipped()
                 VStack(alignment: .leading, spacing: 5) {
@@ -454,10 +471,8 @@ struct WishlistCard: View {
                             .foregroundStyle(WatchTheme.muted)
                             .lineLimit(1)
                     }
-                    Text(item.priceNote.isEmpty ? cad(item.priceExpected) : item.priceNote)
-                        .font(.system(.subheadline, weight: .regular))
-                        .foregroundStyle(WatchTheme.ink)
-                        .lineLimit(2)
+                    WishlistPrice(item: item)
+                        .padding(.top, 3)
                     if let wrist = store.data?.settings.wrist,
                        let fit = fitInfo(for: item.diameter, lugToLug: item.lugToLug, wrist: wrist) {
                         FitIndicator(info: fit)
@@ -668,15 +683,7 @@ struct TopPickView: View {
 
     private var photo: some View {
             Button(action: edit) {
-                FramedPhoto(
-                    store: store,
-                    itemID: item.id,
-                    filename: item.photos.first,
-                    focus: item.focus(for: item.photos.first),
-                    wishlist: true,
-                    aspect: PhotoShape.plate,
-                    maxPixel: DisplayImageCache.page
-                )
+                FramedPhoto(store: store, cover: item.cover, aspect: PhotoShape.plate, maxPixel: DisplayImageCache.page)
                 .overlay(alignment: .topLeading) {
                     PhotoTag(text: "Top Pick").padding(14)
                 }
@@ -699,9 +706,8 @@ struct TopPickView: View {
                     .tracking(-0.4)
                     .foregroundStyle(WatchTheme.ink)
                     .fixedSize(horizontal: false, vertical: true)
-                Text(item.priceNote.isEmpty ? cad(item.priceExpected) : item.priceNote)
-                    .font(.system(.body, weight: .regular))
-                    .foregroundStyle(WatchTheme.ink)
+                WishlistPrice(item: item, style: .title, sourceLines: 3)
+                    .padding(.top, 2)
             }
             if !highlights.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
@@ -893,30 +899,42 @@ struct WishlistDetailScreen: View {
 
     private var photoSection: some View {
         Section("Gallery") {
-            if draft.photos.isEmpty {
+            // The render first, as the card shows the watch, then the photos. Set cover, Adjust and Delete act on a
+            // photo, so the render's page has none of them.
+            let pages = CoverPages(cover: isNew ? nil : draft.cover, photos: draft.photos)
+            if pages.isEmpty {
                 WatchPlaceholder().frame(height: 210)
             } else {
-                PhotoPager(selection: $selectedPhotoIndex, count: draft.photos.count) { index in
-                    RemoteWatchImage(
-                        asset: store.photoAsset(itemID: draft.id, filename: draft.photos[index], wishlist: true),
-                        allowsRemoteFetch: !store.isOffline,
-                        focus: draft.focus(for: draft.photos[index])
-                    )
+                PhotoPager(selection: $selectedPhotoIndex, count: pages.count) { index in
+                    Group {
+                        if pages.isRender(index) {
+                            RemoteWatchImage(cover: pages.render, allowsRemoteFetch: !store.isOffline)
+                        } else if let filename = pages.photo(index) {
+                            RemoteWatchImage(
+                                asset: store.photoAsset(itemID: draft.id, filename: filename, wishlist: true),
+                                allowsRemoteFetch: !store.isOffline,
+                                focus: draft.focus(for: filename)
+                            )
+                        }
+                    }
                     .frame(height: 230)
                     .clipped()
                 }
                 .frame(height: 240)
-                if draft.photos.indices.contains(selectedPhotoIndex) {
-                    let filename = draft.photos[selectedPhotoIndex]
+                if pages.isRender(selectedPhotoIndex) {
+                    Text(pages.photos.isEmpty ? "Rendered picture." : "Rendered picture. Your photos come next.")
+                        .font(AtelierType.caption)
+                        .foregroundStyle(WatchTheme.muted)
+                } else if let filename = pages.photo(selectedPhotoIndex) {
                     HStack {
                         Button("Set cover") {
-                            Task { await store.setCover(itemID: draft.id, filename: filename, wishlist: true); reloadDraft(); selectedPhotoIndex = 0 }
+                            Task { await store.setCover(itemID: draft.id, filename: filename, wishlist: true); reloadDraft(); selectedPhotoIndex = pages.firstPhotoPage }
                         }
                         Spacer()
                         Button("Adjust") { framingTarget = PhotoFramingTarget(filename: filename) }
                         Spacer()
                         Button("Delete photo", role: .destructive) {
-                            Task { await store.deletePhoto(itemID: draft.id, filename: filename, wishlist: true); reloadDraft(); selectedPhotoIndex = 0 }
+                            Task { await store.deletePhoto(itemID: draft.id, filename: filename, wishlist: true); reloadDraft(); selectedPhotoIndex = draft.photos.isEmpty ? 0 : pages.firstPhotoPage }
                         }
                     }
                     .buttonStyle(.borderless)

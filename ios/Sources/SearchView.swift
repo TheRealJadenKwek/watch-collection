@@ -91,12 +91,9 @@ struct SearchScreen: View {
                                     Button { editingItem = item } label: {
                                         SearchRow(
                                             store: store,
-                                            itemID: item.id,
-                                            filename: item.photos.first,
-                                            focus: item.focus(for: item.photos.first),
-                                            wishlist: true,
+                                            cover: item.cover,
                                             title: item.name,
-                                            subtitle: item.priceNote.isEmpty ? cad(item.priceExpected) : item.priceNote
+                                            subtitle: item.searchPriceLine
                                         )
                                     }
                                     .buttonStyle(.plain)
@@ -167,10 +164,7 @@ struct SearchScreen: View {
                     NavigationLink(value: WatchRoute(id: watch.id)) {
                         SearchRow(
                             store: store,
-                            itemID: watch.id,
-                            filename: watch.photos.first,
-                            focus: watch.focus(for: watch.photos.first),
-                            wishlist: false,
+                            cover: watch.cover,
                             title: watch.name,
                             subtitle: watch.status == "owned"
                                 ? [watch.brand, cadWhole(watch.price)].compactMap { $0 }.joined(separator: " · ")
@@ -186,22 +180,14 @@ struct SearchScreen: View {
 
 private struct SearchRow: View {
     let store: AppStore
-    let itemID: String
-    let filename: String?
-    let focus: PhotoFocus?
-    let wishlist: Bool
+    let cover: WatchCover?
     let title: String
     let subtitle: String
 
     var body: some View {
         HStack(spacing: 14) {
-            RemoteWatchImage(
-                asset: filename.flatMap { store.photoAsset(itemID: itemID, filename: $0, wishlist: wishlist) },
-                allowsRemoteFetch: !store.isOffline,
-                focus: focus,
-                maxPixel: DisplayImageCache.icon
-            )
-            .frame(width: 56, height: 56)
+            RemoteWatchImage(cover: cover, allowsRemoteFetch: !store.isOffline, maxPixel: DisplayImageCache.icon)
+                .frame(width: 56, height: 56)
             .clipped()
             VStack(alignment: .leading, spacing: 3) {
                 Text(title)
