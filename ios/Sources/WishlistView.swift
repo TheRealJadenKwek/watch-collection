@@ -12,6 +12,7 @@ struct WishlistScreen: View {
     @State private var radarBrand = ""
     @State private var prefilledBrand = ""
     @Environment(\.sectionIsActive) private var sectionIsActive
+    @Environment(\.pageMargin) private var margin
 
     private var ranked: [WishlistItem] {
         (store.data?.wishlist ?? []).sorted { left, right in
@@ -31,7 +32,11 @@ struct WishlistScreen: View {
             ScrollViewReader { proxy in
                 RefreshableScreen(store: store) {
                     ScrollView {
-                        LazyVStack(spacing: 14) {
+                        LazyVStack(spacing: WatchTheme.gridGap) {
+                            #if os(iOS)
+                            Masthead(kicker: "Wishlist", title: "Next Watch", subtitle: subtitle)
+                                .padding(.horizontal, max(margin - WatchTheme.narrowMargin, 0))
+                            #endif
                             if ranked.isEmpty {
                                 EmptyCollectionView(title: "Wishlist empty", detail: "Add a candidate to start comparing fit.")
                                     .frame(minHeight: 320)
@@ -45,12 +50,12 @@ struct WishlistScreen: View {
                                         bought: { boughtItem = top }
                                     )
                                     .id("wishlist-\(top.id)")
-                                    .padding(.bottom, 10)
+                                    .padding(.bottom, WatchTheme.sectionGap - WatchTheme.gridGap)
                                 }
                                 // One column on the phone; as many as fit on the desktop.
                                 LazyVGrid(columns: Platform.isMac
-                                          ? [GridItem(.adaptive(minimum: 380), spacing: 14, alignment: .top)]
-                                          : [GridItem(.flexible(), alignment: .top)], spacing: 14) {
+                                          ? [GridItem(.adaptive(minimum: 380), spacing: WatchTheme.gridGap, alignment: .top)]
+                                          : [GridItem(.flexible(), alignment: .top)], spacing: WatchTheme.gridGap) {
                                     ForEach(ranked.first?.status == "considering" ? Array(ranked.dropFirst()) : ranked) { item in
                                         WishlistCard(
                                             store: store,
@@ -68,12 +73,15 @@ struct WishlistScreen: View {
                             nextMoveSection { id in
                                 withAnimation { proxy.scrollTo("wishlist-\(id)", anchor: .top) }
                             }
+                            .padding(.top, WatchTheme.sectionGap - WatchTheme.gridGap)
                             radarStrip
                         }
-                        .padding(.horizontal, Platform.isMac ? 24 : 16)
-                        .padding(.top, 4)
+                        .padding(.horizontal, Platform.isMac ? 24 : WatchTheme.narrowMargin)
+                        .padding(.top, Platform.isMac ? 4 : 0)
                         .padding(.bottom, 24)
                     }
+                    .mastheadTitle("Wishlist")
+                    .atelierProbeScroll("wishlist")
                     .screenBackground()
                 }
             }
@@ -84,8 +92,6 @@ struct WishlistScreen: View {
                 addButton
             }
             #else
-            .navigationTitle("Wishlist")
-            .navigationSubtitle(subtitle)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
                 ToolbarItem(placement: .topBarTrailing) { addButton }
@@ -116,7 +122,7 @@ struct WishlistScreen: View {
     }
 
     private var radarStrip: some View {
-        SectionCard("On the Radar", systemImage: "scope", color: .pink, detail: "Brands to explore") {
+        SectionCard("On the Radar", systemImage: "scope", color: .pink, kicker: "Brands to explore") {
             ScrollView(.horizontal, showsIndicators: false) {
                 HStack(spacing: 8) {
                     ForEach(store.data?.brandWatchlist ?? [], id: \.brand) { entry in
@@ -130,13 +136,16 @@ struct WishlistScreen: View {
                             }
                         } label: {
                             VStack(alignment: .leading, spacing: 2) {
-                                Text(entry.brand).font(.subheadline.weight(.semibold))
-                                Text(radarStatus(entry.brand)).font(.caption).foregroundStyle(.secondary)
+                                Text(entry.brand)
+                                    .font(.subheadline.weight(.bold))
+                                    .foregroundStyle(WatchTheme.ink)
+                                Text(radarStatus(entry.brand))
+                                    .font(.caption)
+                                    .foregroundStyle(WatchTheme.muted)
                             }
-                            .foregroundStyle(.pink)
-                            .padding(.horizontal, 12)
+                            .padding(.horizontal, 18)
                             .padding(.vertical, 9)
-                            .background(Color.pink.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                            .background(WatchTheme.fill, in: Capsule())
                         }
                         #if os(macOS)
                         .menuStyle(.button)
@@ -151,8 +160,8 @@ struct WishlistScreen: View {
                 TextField("Add a brand", text: $radarBrand)
                     .disabled(!sectionIsActive)
                     .textInputAutocapitalization(.words)
-                    .padding(.horizontal, 12)
-                    .padding(.vertical, 9)
+                    .padding(.horizontal, 16)
+                    .padding(.vertical, 10)
                     .background(WatchTheme.raised, in: Capsule())
                 Button("Add") {
                     let brand = radarBrand.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -160,16 +169,18 @@ struct WishlistScreen: View {
                     radarBrand = ""
                     Task { await store.addRadarBrand(brand) }
                 }
+                .quietButton()
+                .controlSize(.small)
                 .disabled(store.isOffline)
             }
         }
     }
 
     private func nextMoveSection(scrollTo: @escaping (String) -> Void) -> some View {
-        SectionCard("Next Move", systemImage: "sparkles", color: .purple, detail: "Collection gaps") {
+        SectionCard("Next Move", systemImage: "sparkles", color: .purple, kicker: "Collection gaps") {
             Text(saturationLine)
-                .font(.caption)
-                .foregroundStyle(Color.secondary)
+                .font(AtelierType.caption)
+                .foregroundStyle(WatchTheme.muted)
             if let suggestions = store.suggestions?.suggestions, !suggestions.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(alignment: .top, spacing: 10) {
@@ -185,8 +196,8 @@ struct WishlistScreen: View {
                     .scrollTargetLayout()
                 }
                 .scrollTargetBehavior(.viewAligned)
-                .padding(.horizontal, -16)
-                .contentMargins(.horizontal, 16, for: .scrollContent)
+                .padding(.horizontal, -WatchTheme.panelPadding)
+                .contentMargins(.horizontal, WatchTheme.panelPadding, for: .scrollContent)
             } else {
                 Text("No eligible category gaps. Adjust suggestion categories in Settings.")
                     .font(.subheadline)
@@ -205,7 +216,7 @@ struct WishlistScreen: View {
         let parts = saturated.categories.map { "\($0) ×\(categoryCounts[$0]?.count ?? 0)" }
             + saturated.dials.map { "\($0) dials ×\(dialCounts[$0]?.count ?? 0)" }
             + saturated.brands.map { "\($0) brand ×\(brandCounts[$0]?.count ?? 0)" }
-        return parts.isEmpty ? "No saturated areas yet — the collection is wide open." : "Well covered: " + parts.joined(separator: " · ")
+        return parts.isEmpty ? "No saturated areas yet. The collection is wide open." : "Well covered: " + parts.joined(separator: " · ")
     }
 
     private func radarStatus(_ brand: String) -> String {
@@ -231,15 +242,16 @@ struct NextMoveSuggestionCard: View {
         VStack(alignment: .leading, spacing: 10) {
             HStack(alignment: .top, spacing: 10) {
                 Text(suggestion.headline)
-                    .font(.headline)
+                    .font(AtelierType.cardTitle)
+                    .foregroundStyle(WatchTheme.ink)
                     .frame(maxWidth: .infinity, alignment: .leading)
                 VStack(spacing: 0) {
                     Text("\(suggestion.score)")
                         .font(.figure(.title2))
-                        .foregroundStyle(.purple)
+                        .foregroundStyle(WatchTheme.accent)
                     Text("/ 9")
                         .font(.caption2.weight(.bold))
-                        .foregroundStyle(Color.secondary)
+                        .foregroundStyle(WatchTheme.muted)
                 }
             }
             if let brands = suggestion.brands, !brands.isEmpty {
@@ -249,7 +261,7 @@ struct NextMoveSuggestionCard: View {
                         ForEach(brands, id: \.name) { brand in
                             CapsuleChip(
                                 text: "\(brand.name) · \(brand.status)",
-                                color: brand.status == "radar" ? .pink : .secondary
+                                color: brand.status == "radar" ? WatchTheme.accent : WatchTheme.muted
                             )
                             .accessibilityLabel("\(brand.name), \(brand.status)")
                         }
@@ -259,10 +271,10 @@ struct NextMoveSuggestionCard: View {
             VStack(alignment: .leading, spacing: 6) {
                 ForEach(Array(suggestion.reasons.enumerated()), id: \.offset) { _, reason in
                     HStack(alignment: .firstTextBaseline, spacing: 7) {
-                        Circle().fill(Color.purple.opacity(0.7)).frame(width: 5, height: 5)
+                        Circle().fill(WatchTheme.muted).frame(width: 5, height: 5)
                         Text(reason)
                             .font(.caption)
-                            .foregroundStyle(Color.secondary)
+                            .foregroundStyle(WatchTheme.muted)
                             .fixedSize(horizontal: false, vertical: true)
                     }
                 }
@@ -278,14 +290,14 @@ struct NextMoveSuggestionCard: View {
                                 .font(.caption.weight(.semibold))
                         }
                         .buttonStyle(.plain)
-                        .foregroundStyle(.purple)
+                        .foregroundStyle(WatchTheme.accent)
                     }
                 }
             }
         }
         .padding(16)
         .frame(maxHeight: .infinity, alignment: .top)
-        .background(WatchTheme.raised, in: RoundedRectangle(cornerRadius: 18, style: .continuous))
+        .background(WatchTheme.raised)
     }
 }
 
@@ -306,10 +318,11 @@ struct WishlistCard: View {
     private var imageAsset: PhotoAsset? {
         item.photos.first.flatMap { store.photoAsset(itemID: item.id, filename: $0, wishlist: true) }
     }
+    /// Category and diameter, as "Dive, 40 mm".
     private var detailLine: String {
-        [item.category, item.diameter.map { "\(compactNumber($0))mm" }]
+        [item.category, item.diameter.map { "\(compactNumber($0)) mm" }]
             .compactMap { $0 }
-            .joined(separator: " · ")
+            .joined(separator: ", ")
     }
 
     var body: some View {
@@ -317,34 +330,36 @@ struct WishlistCard: View {
             HStack(alignment: .top, spacing: 14) {
                 RemoteWatchImage(asset: imageAsset, allowsRemoteFetch: !store.isOffline, focus: item.focus(for: item.photos.first), maxPixel: DisplayImageCache.icon)
                     .frame(width: 96, height: 120)
-                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-                VStack(alignment: .leading, spacing: 6) {
+                    .clipped()
+                VStack(alignment: .leading, spacing: 5) {
                     Text(item.name)
-                        .font(.headline)
+                        .font(AtelierType.cardTitle)
+                        .foregroundStyle(WatchTheme.ink)
                         .lineLimit(3)
-                    Text(item.priceNote.isEmpty ? cad(item.priceExpected) : item.priceNote)
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(2)
                     if !detailLine.isEmpty {
                         Text(detailLine)
-                            .font(.footnote)
-                            .foregroundStyle(Color.secondary)
+                            .font(AtelierType.detail)
+                            .foregroundStyle(WatchTheme.muted)
                             .lineLimit(1)
                     }
+                    Text(item.priceNote.isEmpty ? cad(item.priceExpected) : item.priceNote)
+                        .font(.system(.subheadline, weight: .regular))
+                        .foregroundStyle(WatchTheme.ink)
+                        .lineLimit(2)
                     if let wrist = store.data?.settings.wrist,
                        let fit = fitInfo(for: item.diameter, lugToLug: item.lugToLug, wrist: wrist) {
                         FitIndicator(info: fit)
+                            .padding(.top, 2)
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 ScoreRing(score: score?.total, maximum: score?.max ?? 14)
             }
-            .padding(14)
+            .padding(WatchTheme.panelPadding)
 
             lensStrip
-                .padding(.horizontal, 14)
-                .padding(.bottom, showsLenses ? 4 : 12)
+                .padding(.horizontal, WatchTheme.panelPadding)
+                .padding(.bottom, showsLenses ? 4 : 14)
 
             if showsLenses {
                 VStack(spacing: 0) {
@@ -353,57 +368,59 @@ struct WishlistCard: View {
                         HStack(alignment: .firstTextBaseline) {
                             Text(name.capitalized)
                                 .font(.caption.weight(.semibold))
-                                .foregroundStyle(Color.primary)
+                                .foregroundStyle(WatchTheme.ink)
                                 .frame(width: 62, alignment: .leading)
                             Text(lens?.reason ?? "Waiting for score")
                                 .font(.caption)
-                                .foregroundStyle(Color.secondary)
+                                .foregroundStyle(WatchTheme.muted)
                                 .frame(maxWidth: .infinity, alignment: .leading)
-                            Text(lens.map { $0.score >= 0 ? "+\($0.score)" : "\($0.score)" } ?? "—")
+                            Text(lens.map { $0.score >= 0 ? "+\($0.score)" : "\($0.score)" } ?? "–")
                                 .font(.caption.weight(.bold).monospacedDigit())
-                                .foregroundStyle((lens?.score ?? 0) > 0 ? Color.green : Color.secondary)
+                                .foregroundStyle((lens?.score ?? 0) > 0 ? WatchTheme.accent : WatchTheme.muted)
                         }
                         .padding(.vertical, 6)
                     }
                 }
-                .padding(.horizontal, 14)
+                .padding(.horizontal, WatchTheme.panelPadding)
                 .padding(.bottom, 8)
                 .transition(.opacity.combined(with: .move(edge: .top)))
             }
 
-            Divider().padding(.leading, 14)
+            Hairline().padding(.horizontal, WatchTheme.panelPadding)
 
             HStack(spacing: 8) {
                 if item.status == "considering" {
                     Button("Bought It", action: bought)
                         .prominentButton()
                     Button("Pass", action: pass)
-                        .buttonStyle(.bordered)
+                        .quietButton()
                 } else {
                     CapsuleChip(text: item.status.capitalized)
                 }
-                Spacer()
+                Spacer(minLength: 0)
                 Button("Edit", action: edit)
-                    .buttonStyle(.bordered)
+                    .quietButton()
                 Menu {
                     Button(action: findImage) { Label("Find Image Online", systemImage: "photo.badge.magnifyingglass") }
                 } label: {
                     Image(systemName: "ellipsis")
-                        .frame(height: 20)
+                        .font(.body.weight(.bold))
+                        .foregroundStyle(WatchTheme.ink)
+                        .frame(width: 34, height: 34)
+                        .background(WatchTheme.fill, in: Circle())
+                        .contentShape(Circle())
                 }
-                .buttonStyle(.bordered)
-                .buttonBorderShape(.circle)
+                .buttonStyle(.plain)
                 .menuIndicator(.hidden)
                 .fixedSize()
                 .accessibilityLabel("More")
             }
             .controlSize(.small)
-            .buttonBorderShape(.capsule)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 12)
+            .padding(.horizontal, WatchTheme.panelPadding)
+            .padding(.vertical, 14)
             .disabled(store.isOffline)
         }
-        .background(WatchTheme.card, in: RoundedRectangle(cornerRadius: WatchTheme.corner, style: .continuous))
+        .background(WatchTheme.card)
         .opacity(item.status == "passed" ? 0.55 : 1)
     }
 
@@ -416,19 +433,19 @@ struct WishlistCard: View {
                 ForEach(lensOrder, id: \.self) { name in
                     let value = score?.lenses[name]?.score ?? 0
                     VStack(spacing: 4) {
-                        Capsule()
-                            .fill(value > 0 ? Color.green.opacity(min(1, 0.45 + Double(value) * 0.18)) : WatchTheme.fill)
+                        Rectangle()
+                            .fill(value > 0 ? WatchTheme.accent.opacity(min(1, 0.45 + Double(value) * 0.18)) : WatchTheme.raised)
                             .frame(height: 4)
                         Text(name.capitalized)
                             .font(.system(size: 10, weight: .medium))
                             .lineLimit(1)
                             .minimumScaleFactor(0.7)
-                            .foregroundStyle(value > 0 ? Color.primary : Color.secondary)
+                            .foregroundStyle(value > 0 ? WatchTheme.ink : WatchTheme.muted)
                     }
                 }
                 Image(systemName: "chevron.down")
                     .font(.system(size: 10, weight: .bold))
-                    .foregroundStyle(Color.secondary)
+                    .foregroundStyle(WatchTheme.muted)
                     .rotationEffect(.degrees(showsLenses ? 180 : 0))
                     .padding(.leading, 2)
             }
@@ -481,14 +498,13 @@ struct TopPickView: View {
                     aspect: PhotoShape.plate,
                     maxPixel: DisplayImageCache.page
                 )
-                .clipShape(RoundedRectangle(cornerRadius: WatchTheme.corner, style: .continuous))
                 .overlay(alignment: .topLeading) {
                     PhotoTag(text: "Top Pick").padding(14)
                 }
                 .overlay(alignment: .topTrailing) {
                     ScoreRing(score: score?.total, maximum: score?.max ?? 14)
                         .padding(8)
-                        .glassEffect(.regular, in: .circle)
+                        .background(WatchTheme.card, in: Circle())
                         .padding(12)
                 }
             }
@@ -497,22 +513,26 @@ struct TopPickView: View {
 
     @ViewBuilder
     private var details: some View {
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 8) {
+                Eyebrow(item.brand.isEmpty ? "Top pick" : item.brand)
                 Text(item.name)
-                    .font(.title2.bold())
+                    .font(AtelierType.heading)
+                    .tracking(-0.4)
+                    .foregroundStyle(WatchTheme.ink)
                     .fixedSize(horizontal: false, vertical: true)
                 Text(item.priceNote.isEmpty ? cad(item.priceExpected) : item.priceNote)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
+                    .font(.system(.body, weight: .regular))
+                    .foregroundStyle(WatchTheme.ink)
             }
             if !highlights.isEmpty {
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(highlights.prefix(4), id: \.self) { reason in
                         HStack(alignment: .firstTextBaseline, spacing: 9) {
                             Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.green)
+                                .foregroundStyle(WatchTheme.accent)
                             Text(reason)
-                                .font(.subheadline)
+                                .font(AtelierType.detail)
+                                .foregroundStyle(WatchTheme.ink)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
@@ -522,11 +542,10 @@ struct TopPickView: View {
                 Button("Bought It", action: bought)
                     .prominentButton()
                 Button("Details", action: edit)
-                    .buttonStyle(.bordered)
-                Spacer()
+                    .quietButton()
+                Spacer(minLength: 0)
             }
-            .controlSize(.large)
-            .buttonBorderShape(.capsule)
+            .padding(.top, 4)
             .disabled(store.isOffline)
     }
 }
@@ -542,17 +561,18 @@ struct ScoreRing: View {
 
     var body: some View {
         ZStack {
-            Circle().stroke(Color.green.opacity(0.2), lineWidth: 6)
+            Circle().stroke(WatchTheme.separator, lineWidth: 6)
             Circle()
                 .trim(from: 0, to: fraction)
-                .stroke(Color.green, style: StrokeStyle(lineWidth: 6, lineCap: .round))
+                .stroke(WatchTheme.accent, style: StrokeStyle(lineWidth: 6, lineCap: .round))
                 .rotationEffect(.degrees(-90))
             VStack(spacing: -2) {
-                Text(score.map(String.init) ?? "—")
+                Text(score.map(String.init) ?? "–")
                     .font(.figure(.headline))
+                    .foregroundStyle(WatchTheme.ink)
                 Text("/\(maximum)")
                     .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(Color.secondary)
+                    .foregroundStyle(WatchTheme.muted)
             }
         }
         .frame(width: 52, height: 52)
@@ -659,7 +679,7 @@ struct WishlistDetailScreen: View {
     private var photoSection: some View {
         Section("Gallery") {
             if draft.photos.isEmpty {
-                WatchPlaceholder().frame(height: 210).clipShape(RoundedRectangle(cornerRadius: 14))
+                WatchPlaceholder().frame(height: 210)
             } else {
                 PhotoPager(selection: $selectedPhotoIndex, count: draft.photos.count) { index in
                     RemoteWatchImage(
@@ -668,7 +688,7 @@ struct WishlistDetailScreen: View {
                         focus: draft.focus(for: draft.photos[index])
                     )
                     .frame(height: 230)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .clipped()
                 }
                 .frame(height: 240)
                 if draft.photos.indices.contains(selectedPhotoIndex) {

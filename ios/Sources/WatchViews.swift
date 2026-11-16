@@ -127,7 +127,6 @@ struct WatchDetailScreen: View {
             if isNew, pendingPhotos.isEmpty {
                 WatchPlaceholder()
                     .frame(height: 230)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
             } else if isNew {
                 PhotoPager(selection: $selectedPhotoIndex, count: pendingPhotos.count) { index in
                     Group {
@@ -140,7 +139,7 @@ struct WatchDetailScreen: View {
                         }
                     }
                     .frame(height: 250)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
+                    .clipped()
                 }
                 .frame(height: 260)
                 if pendingPhotos.indices.contains(selectedPhotoIndex) {
@@ -160,7 +159,6 @@ struct WatchDetailScreen: View {
             } else if draft.photos.isEmpty {
                 WatchPlaceholder()
                     .frame(height: 230)
-                    .clipShape(RoundedRectangle(cornerRadius: 14))
             } else {
                 existingPhotoGallery
             }
@@ -176,7 +174,7 @@ struct WatchDetailScreen: View {
                 Button { showFilePicker = true } label: { Label("Choose File…", systemImage: "folder") }
                 #endif
             }
-            // Borderless keeps each control its own tap target — otherwise the Form row
+            // Borderless keeps each control its own tap target; otherwise the Form row
             // acts as one big button and every tap opens the camera.
             .buttonStyle(.borderless)
             .disabled(store.isOffline)
@@ -199,7 +197,7 @@ struct WatchDetailScreen: View {
                 focus: draft.focus(for: draft.photos[index])
             )
             .frame(height: 250)
-            .clipShape(RoundedRectangle(cornerRadius: 14))
+            .clipped()
         }
         .frame(height: 260)
         if draft.photos.indices.contains(selectedPhotoIndex) {

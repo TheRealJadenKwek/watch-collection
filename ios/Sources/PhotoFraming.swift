@@ -100,16 +100,13 @@ struct PhotoFramingSheet: View {
                         .foregroundStyle(Color.secondary)
                     if let image, !previews.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("ALSO APPEARS AS")
-                                .font(.caption2.weight(.bold))
-                                .tracking(1.2)
-                                .foregroundStyle(Color.secondary)
+                            Eyebrow("Also appears as")
                             HStack(alignment: .bottom, spacing: 12) {
                                 ForEach(previews.indices, id: \.self) { index in
                                     VStack(spacing: 6) {
                                         FocusedImage(image: image, focus: focus)
                                             .frame(width: 88 * min(previews[index].aspect, 1.6), height: 88)
-                                            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+                                            .clipped()
                                         Text(previews[index].label)
                                             .font(.caption2)
                                             .foregroundStyle(Color.secondary)
@@ -174,14 +171,14 @@ struct PhotoFramingSheet: View {
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height)
-            .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+            .clipped()
             // Gestures live on the fixed frame, not the scaled image, so the hit area
             // never depends on zoom or where the oversized image is positioned.
             .contentShape(Rectangle())
             .onTapGesture(count: 2) { withAnimation(.easeOut(duration: 0.2)) { focus = .centered } }
             .gesture(framingGesture(frame: geo.size))
             .overlay(
-                RoundedRectangle(cornerRadius: 18, style: .continuous)
+                Rectangle()
                     .strokeBorder(Color.white.opacity(0.6), lineWidth: 1)
             )
         }

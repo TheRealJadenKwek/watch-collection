@@ -7,6 +7,7 @@ struct SearchScreen: View {
     @State private var query = ""
     @State private var editingItem: WishlistItem?
     @Environment(\.sectionIsActive) private var sectionIsActive
+    @Environment(\.pageMargin) private var margin
 
     private var trimmed: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var watches: [Watch] { store.data?.watches ?? [] }
@@ -37,46 +38,64 @@ struct SearchScreen: View {
 
     var body: some View {
         SectionStack {
-            List {
-                if trimmed.isEmpty {
-                    Section("Browse by Brand") {
-                        ForEach(brands, id: \.name) { brand in
-                            Button { query = brand.name } label: {
-                                HStack(spacing: 12) {
-                                    Image(systemName: "magnifyingglass")
-                                        .foregroundStyle(.secondary)
-                                    Text(brand.name)
-                                        .foregroundStyle(.primary)
-                                    Spacer()
-                                    Text("\(brand.count)")
-                                        .foregroundStyle(.secondary)
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: WatchTheme.sectionGap) {
+                    if trimmed.isEmpty {
+                        #if os(iOS)
+                        Masthead(kicker: "Search", title: "Find a watch")
+                            .padding(.bottom, -WatchTheme.sectionGap + 8)
+                        #endif
+                        GroupedSection("Browse by Brand") {
+                            ForEach(brands, id: \.name) { brand in
+                                Button { query = brand.name } label: {
+                                    HStack(spacing: 12) {
+                                        Image(systemName: "magnifyingglass")
+                                            .foregroundStyle(WatchTheme.muted)
+                                        Text(brand.name)
+                                            .font(.system(.body, weight: .bold))
+                                            .foregroundStyle(WatchTheme.ink)
+                                        Spacer()
+                                        Text("\(brand.count)")
+                                            .font(AtelierType.detail)
+                                            .foregroundStyle(WatchTheme.muted)
+                                    }
+                                    .padding(.vertical, 14)
+                                    .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
                             }
                         }
-                    }
-                } else {
-                    resultSection("Collection", foundWatches.filter { $0.status == "owned" })
-                    resultSection("Archive", foundWatches.filter { $0.status != "owned" })
-                    if !foundWishlist.isEmpty {
-                        Section("Wishlist") {
-                            ForEach(foundWishlist) { item in
-                                Button { editingItem = item } label: {
-                                    SearchRow(
-                                        store: store,
-                                        itemID: item.id,
-                                        filename: item.photos.first,
-                                        focus: item.focus(for: item.photos.first),
-                                        wishlist: true,
-                                        title: item.name,
-                                        subtitle: item.priceNote.isEmpty ? cad(item.priceExpected) : item.priceNote
-                                    )
+                    } else {
+                        resultSection("Collection", foundWatches.filter { $0.status == "owned" })
+                        resultSection("Archive", foundWatches.filter { $0.status != "owned" })
+                        if !foundWishlist.isEmpty {
+                            GroupedSection("Wishlist") {
+                                ForEach(foundWishlist) { item in
+                                    Button { editingItem = item } label: {
+                                        SearchRow(
+                                            store: store,
+                                            itemID: item.id,
+                                            filename: item.photos.first,
+                                            focus: item.focus(for: item.photos.first),
+                                            wishlist: true,
+                                            title: item.name,
+                                            subtitle: item.priceNote.isEmpty ? cad(item.priceExpected) : item.priceNote
+                                        )
+                                    }
+                                    .buttonStyle(.plain)
                                 }
                             }
                         }
                     }
                 }
+                .padding(.horizontal, margin)
+                .padding(.top, Platform.isMac ? 8 : 12)
+                .padding(.bottom, 32)
             }
-            .desktopPlainRows()
+            .scrollDismissesKeyboard(.immediately)
+            .mastheadTitle("Search", showsMasthead: trimmed.isEmpty)
+            .atelierProbeScroll("search")
+            .screenBackground()
             .overlay {
                 if !trimmed.isEmpty, foundWatches.isEmpty, foundWishlist.isEmpty {
                     ContentUnavailableView.search(text: trimmed)
@@ -102,8 +121,12 @@ struct SearchScreen: View {
                 .background(WatchTheme.fill, in: Capsule())
             })
             #else
-            .navigationTitle("Search")
             .searchable(text: $query, prompt: "Watches, brands and stories")
+            #endif
+            #if DEBUG
+            .onAppear {
+                if let probe = AtelierProbe.search, query.isEmpty { query = probe }
+            }
             #endif
             #if os(iOS)
             .navigationDestination(for: WatchRoute.self) { route in
@@ -120,7 +143,7 @@ struct SearchScreen: View {
     @ViewBuilder
     private func resultSection(_ title: String, _ found: [Watch]) -> some View {
         if !found.isEmpty {
-            Section(title) {
+            GroupedSection(title) {
                 ForEach(found) { watch in
                     NavigationLink(value: WatchRoute(id: watch.id)) {
                         SearchRow(
@@ -135,6 +158,7 @@ struct SearchScreen: View {
                                 : archiveDetail(watch)
                         )
                     }
+                    .buttonStyle(.plain)
                 }
             }
         }
@@ -151,24 +175,31 @@ private struct SearchRow: View {
     let subtitle: String
 
     var body: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 14) {
             RemoteWatchImage(
                 asset: filename.flatMap { store.photoAsset(itemID: itemID, filename: $0, wishlist: wishlist) },
                 allowsRemoteFetch: !store.isOffline,
                 focus: focus,
                 maxPixel: DisplayImageCache.icon
             )
-            .frame(width: 48, height: 48)
-            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
-            VStack(alignment: .leading, spacing: 2) {
+            .frame(width: 56, height: 56)
+            .clipped()
+            VStack(alignment: .leading, spacing: 3) {
                 Text(title)
-                    .foregroundStyle(.primary)
+                    .font(.system(.body, weight: .bold))
+                    .foregroundStyle(WatchTheme.ink)
                     .lineLimit(1)
                 Text(subtitle)
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .font(AtelierType.detail)
+                    .foregroundStyle(WatchTheme.muted)
                     .lineLimit(1)
             }
+            Spacer(minLength: 8)
+            Image(systemName: "chevron.right")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(WatchTheme.muted)
         }
+        .padding(.vertical, 12)
+        .contentShape(Rectangle())
     }
 }
