@@ -46,18 +46,39 @@ actor PhotoStore {
         )
     }
 
+    /// Where the hub keeps the empty pillow tiles, one per box finish.
+    static let boxTileDirectory = "_box"
+
+    /// Every file the document references: each item's photos and rendered box tiles, then the empty
+    /// tiles. Tiles travel like photos (download, upload, backup) but are never in `photos`.
     nonisolated static func assets(in data: CollectionData, baseURL: String?) -> [PhotoAsset] {
         let watchPhotos = data.watches.flatMap { watch in
-            watch.photos.compactMap {
+            (watch.photos + tileNames(watch.boxTiles)).compactMap {
                 asset(itemID: watch.id, filename: $0, wishlist: false, baseURL: baseURL)
             }
         }
         let wishlistPhotos = data.wishlist.flatMap { item in
-            item.photos.compactMap {
+            (item.photos + tileNames(item.boxTiles)).compactMap {
                 asset(itemID: item.id, filename: $0, wishlist: true, baseURL: baseURL)
             }
         }
-        return watchPhotos + wishlistPhotos
+        let emptyTiles = tileNames(data.emptyBoxTiles).compactMap { emptyTileAsset(filename: $0, baseURL: baseURL) }
+        return watchPhotos + wishlistPhotos + emptyTiles
+    }
+
+    /// The tile file names in a boxTiles or emptyBoxTiles object, in finish order.
+    nonisolated static func tileNames(_ tiles: [String: String]?) -> [String] {
+        guard let tiles else { return [] }
+        return BoxModel.finishes.compactMap { tiles[$0] }
+    }
+
+    nonisolated static func emptyTileAsset(filename: String, baseURL: String?) -> PhotoAsset? {
+        guard isSafePathComponent(filename) else { return nil }
+        return PhotoAsset(
+            directory: boxTileDirectory,
+            filename: filename,
+            remoteURL: remoteURL(baseURL: baseURL, directory: boxTileDirectory, filename: filename)
+        )
     }
 
     func load(_ asset: PhotoAsset, allowDownload: Bool) async -> Data? {
@@ -158,6 +179,15 @@ actor PhotoStore {
                 return false
             }
         }
+    }
+
+    /// Copies a candidate's rendered box tiles into the new watch's folder, the same way as its photos.
+    /// Returns the entries whose file made it across, or nil when none did.
+    nonisolated static func copyTiles(_ tiles: [String: String]?, fromWishlist itemID: String, toWatch watchID: String) -> [String: String]? {
+        guard let tiles else { return nil }
+        let copied = Set(copyPhotos(tileNames(tiles), fromWishlist: itemID, toWatch: watchID))
+        let kept = tiles.filter { BoxModel.finishes.contains($0.key) && copied.contains($0.value) }
+        return kept.isEmpty ? nil : kept
     }
 
     /// The file, if it's already on disk. Readable from anywhere, so photos don't queue behind the actor.

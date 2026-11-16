@@ -9,6 +9,10 @@ struct CollectionData: Codable, Sendable {
     var dialColors: [String]
     var materials: [String]
     var headlineStats: [String: HeadlineStatsPayload]?
+    /// The watch boxes, in tab order. nil = never set up (the iPhone seeds them), [] = he deleted them all.
+    var boxes: [WatchBox]?
+    /// The hub's empty pillow tile per box finish ("black", "brown"), in photos/_box. Hub-owned: sent back as received.
+    var emptyBoxTiles: [String: String]?
 }
 
 struct HeadlineStatsPayload: Codable, Sendable {
@@ -68,6 +72,10 @@ struct Watch: Codable, Identifiable, Hashable, Sendable {
     /// What a sold watch brought back, in CAD, and the month it sold ("2019-12").
     var salePrice: Double? = nil
     var soldOn: String? = nil
+    /// How the box cutout is made from a photo; nil = fully automatic.
+    var boxCutout: BoxCutout? = nil
+    /// The hub's rendered tile per box finish, in this watch's photo folder. Hub-owned; never in `photos`.
+    var boxTiles: [String: String]? = nil
 
     var isTrade: Bool { acquisitionMethod == "trade" }
 }
@@ -111,6 +119,8 @@ struct WishlistItem: Codable, Identifiable, Hashable, Sendable {
     var material: String?
     var photos: [String]
     var photoFocus: [String: PhotoFocus]? = nil
+    var boxCutout: BoxCutout? = nil
+    var boxTiles: [String: String]? = nil
 }
 
 /// How a photo sits inside its frame: the image point (x, y in 0...1) that is

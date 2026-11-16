@@ -31,10 +31,39 @@ struct SyncConflict: Decodable, Identifiable {
     let remote: SyncValue?
     let localDeleted: Bool
     let remoteDeleted: Bool
+    /// Wording worked out from the collection, so a box space reads "Black Box, space 6".
+    private var label: Label? = nil
 
-    var title: String { path.joined(separator: " / ") }
-    var localText: String { localDeleted ? "Deleted" : local?.description ?? "Empty" }
-    var remoteText: String { remoteDeleted ? "Deleted" : remote?.description ?? "Empty" }
+    private struct Label {
+        var title: String
+        var local: String?
+        var remote: String?
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id, path, local, remote, localDeleted, remoteDeleted
+    }
+
+    var title: String { label?.title ?? path.joined(separator: " / ") }
+    var localText: String { localDeleted ? "Deleted" : label?.local ?? local?.description ?? "Empty" }
+    var remoteText: String { remoteDeleted ? "Deleted" : label?.remote ?? remote?.description ?? "Empty" }
+
+    /// This conflict worded with names from the given collections (the first that knows a name wins):
+    /// `boxes / black / slots / 5` becomes "Black Box, space 6" and its two values the watches' names.
+    func labelled(using collections: [CollectionData?]) -> SyncConflict {
+        guard path.count == 4, path[0] == "boxes", path[2] == "slots", let slot = BoxModel.slotIndex(path[3]) else {
+            return self
+        }
+        let known = collections.compactMap { $0 }
+        let boxName = known.lazy.compactMap { $0.boxes?.first { $0.id == path[1] }?.name }.first ?? path[1]
+        func watchName(_ value: SyncValue?) -> String? {
+            guard case let .string(id)? = value else { return nil }
+            return known.lazy.compactMap { $0.watches.first { $0.id == id }?.name }.first
+        }
+        var labelled = self
+        labelled.label = Label(title: "\(boxName), space \(slot + 1)", local: watchName(local), remote: watchName(remote))
+        return labelled
+    }
 }
 
 indirect enum SyncValue: Decodable {
@@ -134,18 +163,29 @@ actor CollectionSyncClient {
         }
     }
 
-    private static func removingPhotos(_ keys: Set<String>, from data: CollectionData) -> CollectionData {
+    /// Drops references to files that are gone on both sides ("dir/file" keys): photos, their framing,
+    /// a box cutout made from a lost photo, and box tiles.
+    static func removingPhotos(_ keys: Set<String>, from data: CollectionData) -> CollectionData {
         var data = data
+        func tiles(_ tiles: [String: String]?, in dir: String) -> [String: String]? {
+            let kept = tiles?.filter { !keys.contains(dir + "/" + $0.value) }
+            return kept?.isEmpty == false ? kept : nil
+        }
         for i in data.watches.indices {
             let dir = data.watches[i].id
             data.watches[i].photos.removeAll { keys.contains(dir + "/" + $0) }
             data.watches[i].photoFocus = data.watches[i].photoFocus?.filter { !keys.contains(dir + "/" + $0.key) }
+            if let cutout = data.watches[i].boxCutout, keys.contains(dir + "/" + cutout.photo) { data.watches[i].boxCutout = nil }
+            data.watches[i].boxTiles = tiles(data.watches[i].boxTiles, in: dir)
         }
         for i in data.wishlist.indices {
             let dir = "wl-" + data.wishlist[i].id
             data.wishlist[i].photos.removeAll { keys.contains(dir + "/" + $0) }
             data.wishlist[i].photoFocus = data.wishlist[i].photoFocus?.filter { !keys.contains(dir + "/" + $0.key) }
+            if let cutout = data.wishlist[i].boxCutout, keys.contains(dir + "/" + cutout.photo) { data.wishlist[i].boxCutout = nil }
+            data.wishlist[i].boxTiles = tiles(data.wishlist[i].boxTiles, in: dir)
         }
+        data.emptyBoxTiles = tiles(data.emptyBoxTiles, in: PhotoStore.boxTileDirectory)
         return data
     }
 
