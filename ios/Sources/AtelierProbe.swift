@@ -3,7 +3,9 @@ import SwiftUI
 #if DEBUG
 /// Debug builds only. Launch arguments for capturing screens on a simulator, which has no tap input:
 ///   -atelierProbe dossier:<watch-id>   opens that watch's page from Collection
+///   -atelierProbe edit:<watch-id>      opens that watch's page, then its edit sheet
 ///   -atelierProbe timeline             opens the purchase timeline from Insights
+///   -atelierTimelinePage <n>           then moves it to its nth page (0 is the opening page)
 ///   -atelierProbe settings             opens Settings
 ///   -atelierSearch <text>              starts Search with that text
 ///   -atelierScroll <screen>:<points>   scrolls collection, dossier, insights, wishlist or search
@@ -13,11 +15,15 @@ enum AtelierProbe {
     static var page: String? { UserDefaults.standard.string(forKey: "atelierProbe") }
 
     static var dossierID: String? {
-        guard let page, page.hasPrefix("dossier:") else { return nil }
-        return String(page.dropFirst("dossier:".count))
+        guard let page else { return nil }
+        for prefix in ["dossier:", "edit:"] where page.hasPrefix(prefix) { return String(page.dropFirst(prefix.count)) }
+        return nil
     }
 
+    static var opensEdit: Bool { page?.hasPrefix("edit:") == true }
+
     static var opensTimeline: Bool { page == "timeline" }
+    static var timelinePage: Int? { UserDefaults.standard.string(forKey: "atelierTimelinePage").flatMap { Int($0) } }
     static var opensSettings: Bool { page == "settings" }
     static var search: String? { UserDefaults.standard.string(forKey: "atelierSearch") }
 

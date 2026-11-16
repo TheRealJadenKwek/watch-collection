@@ -165,13 +165,18 @@ struct PhotoPager<Content: View>: View {
     @Binding var selection: Int
     let count: Int
     var showsDotsForOne = false
+    /// Edges where each photo runs on under the bars. A page-style TabView keeps its pages inside the window's
+    /// safe area even when the pager itself ignores it, so a pager placed under the bars needs this.
+    var pagesIgnoreSafeArea: Edge.Set = []
     @ViewBuilder let content: (Int) -> Content
 
     var body: some View {
         #if os(iOS)
         TabView(selection: $selection) {
             ForEach(0..<count, id: \.self) { index in
-                content(index).tag(index)
+                content(index)
+                    .ignoresSafeArea(.container, edges: pagesIgnoreSafeArea)
+                    .tag(index)
             }
         }
         .tabViewStyle(.page(indexDisplayMode: count > 1 ? .always : .never))
@@ -332,13 +337,25 @@ struct SectionCard<Content: View>: View {
 
 /// A spec list: the section title, then rows on the page between full-width hairlines,
 /// one above the first row and one after each row. No card behind it.
+/// With more than one column (a folding iPhone held like a book) the rows run down the first column and on down
+/// the next, each column with its own hairlines, `gap` apart.
 struct GroupedSection<Content: View, Accessory: View>: View {
     let title: String?
+    let columns: Int
+    let gap: CGFloat
     @ViewBuilder let accessory: Accessory
     @ViewBuilder let content: Content
 
-    init(_ title: String? = nil, @ViewBuilder accessory: () -> Accessory, @ViewBuilder content: () -> Content) {
+    init(
+        _ title: String? = nil,
+        columns: Int = 1,
+        gap: CGFloat = 0,
+        @ViewBuilder accessory: () -> Accessory,
+        @ViewBuilder content: () -> Content
+    ) {
         self.title = title
+        self.columns = columns
+        self.gap = gap
         self.accessory = accessory()
         self.content = content()
     }
@@ -357,23 +374,43 @@ struct GroupedSection<Content: View, Accessory: View>: View {
                         .tint(WatchTheme.accent)
                 }
             }
-            VStack(alignment: .leading, spacing: 0) {
-                Hairline()
+            if columns > 1 {
                 Group(subviews: content) { rows in
-                    ForEach(rows) { row in
-                        row
-                        Hairline()
+                    let perColumn = max(1, (rows.count + columns - 1) / columns)
+                    // A column the rows do not reach stays empty, without a hairline of its own.
+                    let used = max(1, (rows.count + perColumn - 1) / perColumn)
+                    CardColumns(columns: columns, spacing: 0, gap: gap) {
+                        ForEach(0..<used, id: \.self) { column in
+                            Hairline().cardColumn(column, of: columns)
+                        }
+                        ForEach(rows.indices, id: \.self) { index in
+                            VStack(alignment: .leading, spacing: 0) {
+                                rows[index]
+                                Hairline()
+                            }
+                            .cardColumn(index / perColumn, of: columns)
+                        }
                     }
                 }
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    Hairline()
+                    Group(subviews: content) { rows in
+                        ForEach(rows) { row in
+                            row
+                            Hairline()
+                        }
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 }
 
 extension GroupedSection where Accessory == EmptyView {
-    init(_ title: String? = nil, @ViewBuilder content: () -> Content) {
-        self.init(title, accessory: { EmptyView() }, content: content)
+    init(_ title: String? = nil, columns: Int = 1, gap: CGFloat = 0, @ViewBuilder content: () -> Content) {
+        self.init(title, columns: columns, gap: gap, accessory: { EmptyView() }, content: content)
     }
 }
 

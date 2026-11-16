@@ -13,6 +13,7 @@ struct TimelinePresentationScreen: View {
     @State private var position: String?
     @State private var playing = false
     @FocusState private var focused: Bool
+    @Environment(\.duo) private var duo
 
     init(store: AppStore, ownedOnly: Bool = false) {
         self.store = store
@@ -28,10 +29,11 @@ struct TimelinePresentationScreen: View {
             // Each page lays out between the timeline bar (and on the Mac the picker) at the top and the
             // play controls at the bottom, so nothing slides underneath them.
             let content = CGSize(width: geo.size.width, height: max(geo.size.height - TimelineBarMetrics.chromeTop - TimelineBarMetrics.chromeBottom, 240))
+            let crease = pageCrease(in: geo)
             ScrollView(.vertical) {
                 LazyVStack(spacing: 0) {
                     ForEach(slides) { slide in
-                        page(slide, size: content)
+                        page(slide, size: content, crease: crease)
                             .frame(width: content.width, height: content.height)
                             .padding(.top, TimelineBarMetrics.chromeTop)
                             .padding(.bottom, TimelineBarMetrics.chromeBottom)
@@ -58,7 +60,12 @@ struct TimelinePresentationScreen: View {
                     .padding(.top, TimelineBarMetrics.height + 20)
                 }
             }
-            .overlay(alignment: .trailing) { yearRail(slides: slides, current: slides[safe: index]) }
+            .overlay(alignment: .trailing) {
+                yearRail(slides: slides, current: slides[safe: index])
+                    // With the crease across the inner screen, the rail stands below it rather than on it.
+                    .frame(maxHeight: .infinity)
+                    .padding(.top, railTop(in: geo))
+            }
             .overlay(alignment: .bottom) { controls(slides: slides, index: index) }
         }
         .background(WatchTheme.background)
@@ -74,6 +81,13 @@ struct TimelinePresentationScreen: View {
             if position == nil { position = slides.first?.id }
             focused = true
         }
+        #if DEBUG
+        .task {
+            guard let page = AtelierProbe.timelinePage else { return }
+            try? await Task.sleep(for: .seconds(1.5))
+            position = buildSlides()[safe: page]?.id
+        }
+        #endif
         .onChange(of: ownedOnly) { _, _ in
             playing = false
             position = "intro"
@@ -187,8 +201,32 @@ struct TimelinePresentationScreen: View {
 
     // MARK: Pages
 
+    /// Where the inner screen's crease crosses a page that is on screen, in the page's own coordinates: across its
+    /// width held like a book, down its height with the crease across. Nil on every screen without a crease.
+    private func pageCrease(in geo: GeometryProxy) -> CGFloat? {
+        guard let crease = duo.crease else { return nil }
+        let frame = geo.frame(in: .global)
+        return duo.isBook ? crease - frame.minX : crease - frame.minY - TimelineBarMetrics.chromeTop
+    }
+
+    /// How far down the year rail starts: below the crease when it runs across the inner screen, else the top.
+    private func railTop(in geo: GeometryProxy) -> CGFloat {
+        guard duo.isAcross, let crease = duo.crease else { return 0 }
+        return max(0, crease + DuoLayout.creaseClearance - geo.frame(in: .global).minY)
+    }
+
     @ViewBuilder
-    private func page(_ slide: TimelineSlide, size: CGSize) -> some View {
+    private func page(_ slide: TimelineSlide, size: CGSize, crease: CGFloat?) -> some View {
+        if let crease {
+            spreadPage(slide, size: size, crease: crease)
+        } else {
+            singlePage(slide, size: size)
+        }
+    }
+
+    /// A page on a phone, a cover screen or the Mac.
+    @ViewBuilder
+    private func singlePage(_ slide: TimelineSlide, size: CGSize) -> some View {
         let wide = size.width >= 820
         switch slide {
         case let .intro(label, total, from, to, photos):
@@ -266,7 +304,7 @@ struct TimelinePresentationScreen: View {
             }
 
         case let .purchase(entry, number, of, runningTotal, catalogue):
-            purchasePage(entry, number: number, of: of, runningTotal: runningTotal, catalogue: catalogue, size: size, wide: wide)
+            purchasePage(entry, number: number, of: of, runningTotal: runningTotal, catalogue: catalogue, size: size, wide: wide, crease: nil)
 
         case let .outro(label, total, from, to):
             VStack(spacing: 18) {
@@ -296,6 +334,145 @@ struct TimelinePresentationScreen: View {
         }
     }
 
+    /// A page on the inner screen, in two parts either side of the crease so no text sits on the fold: held like a
+    /// book the words stand on the left page and the photos on the right, with the crease across above and below it.
+    @ViewBuilder
+    private func spreadPage(_ slide: TimelineSlide, size: CGSize, crease: CGFloat) -> some View {
+        let book = duo.isBook
+        let panes = CreaseSplit.panes(in: CGRect(origin: .zero, size: size), axis: book ? .horizontal : .vertical, crease: crease)
+        // The year rail stands at the right edge of the right page, or of the part below the crease.
+        let rail: CGFloat = 44
+        let secondWidth = panes.second.width - (book ? rail + 24 : 2 * (rail + 8))
+        switch slide {
+        case let .intro(label, total, from, to, photos):
+            creaseSpread(size: size, crease: crease) {
+                VStack(spacing: 22) {
+                    Eyebrow(ownedOnly ? "The watches you own" : "Every watch you've bought")
+                    Text("\(from) – \(to)")
+                        .font(.system(size: book ? 64 : 56, weight: .bold))
+                        .monospacedDigit()
+                        .tracking(-0.6)
+                        .foregroundStyle(WatchTheme.ink)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                    Text("\(label) · \(cadWhole(total))")
+                        .font(.title2.weight(.light))
+                        .foregroundStyle(WatchTheme.muted)
+                }
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+            } second: {
+                VStack(spacing: 26) {
+                    photoFan(photos, size: book ? 84 : 58, maxWidth: secondWidth)
+                    Label("Swipe up, or press play", systemImage: "chevron.down")
+                        .font(.callout)
+                        .foregroundStyle(WatchTheme.muted)
+                }
+                .padding(.trailing, book ? rail : 0)
+            }
+            .scrollTransition(.interactive, axis: .vertical) { content, phase in
+                content
+                    .opacity(1 - abs(phase.value) * 0.9)
+                    .scaleEffect(1 - abs(phase.value) * 0.12)
+                    .offset(y: phase.value * 160)
+            }
+
+        case let .year(year, count, total, photos, sinceStart):
+            // The year's panel, folded at the crease: the year on one part, its watches on the other.
+            creaseSpread(size: size, crease: crease) {
+                VStack(spacing: 14) {
+                    Text(year)
+                        .font(.system(size: book ? 128 : 104, weight: .bold))
+                        .monospacedDigit()
+                        .tracking(-0.6)
+                        .foregroundStyle(WatchTheme.ink)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.5)
+                        .scrollTransition(.interactive, axis: .vertical) { content, phase in
+                            content
+                                .scaleEffect(1 + phase.value * 0.35)
+                                .opacity(1 - abs(phase.value))
+                        }
+                    Text("\(count) \(count == 1 ? "watch" : "watches") · \(cadWhole(total))")
+                        .font(.title2.weight(.light))
+                        .foregroundStyle(WatchTheme.muted)
+                    if sinceStart > 0 {
+                        Text("\(sinceStart) before this")
+                            .font(.callout)
+                            .foregroundStyle(WatchTheme.muted)
+                    }
+                }
+                .padding(24)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(WatchTheme.card)
+                .padding(book ? [.leading, .vertical] : [.leading, .top], 24)
+                .padding(.trailing, book ? 0 : rail)
+            } second: {
+                photoFan(photos, size: book ? 84 : 52, maxWidth: secondWidth - 24)
+                    .scrollTransition(.interactive, axis: .vertical) { content, phase in
+                        content
+                            .offset(y: phase.value * 240)
+                            .opacity(1 - abs(phase.value) * 1.4)
+                    }
+                    .padding(24)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .background(WatchTheme.card)
+                    .padding(book ? .vertical : .bottom, 24)
+                    .padding(.leading, book ? 0 : 24)
+                    .padding(.trailing, rail)
+            }
+            .scrollTransition(.interactive, axis: .vertical) { content, phase in
+                content.opacity(1 - abs(phase.value) * 0.8)
+            }
+
+        case let .purchase(entry, number, of, runningTotal, catalogue):
+            purchasePage(entry, number: number, of: of, runningTotal: runningTotal, catalogue: catalogue, size: size, wide: book, crease: crease)
+
+        case let .outro(label, total, from, to):
+            creaseSpread(size: size, crease: crease) {
+                VStack(spacing: 18) {
+                    Eyebrow("That's the story so far")
+                    Text(label)
+                        .font(.system(size: book ? 64 : 56, weight: .bold))
+                        .tracking(-0.6)
+                        .foregroundStyle(WatchTheme.ink)
+                        .lineLimit(1)
+                        .minimumScaleFactor(0.6)
+                    Text("\(cadWhole(total)) from \(from) to \(to)")
+                        .font(.title2.weight(.light))
+                        .foregroundStyle(WatchTheme.muted)
+                }
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 32)
+            } second: {
+                Button {
+                    jump(to: "intro")
+                } label: {
+                    Label("Back to the start", systemImage: "arrow.up")
+                }
+                .quietButton()
+                .padding(.trailing, book ? rail : 0)
+            }
+            .scrollTransition(.interactive, axis: .vertical) { content, phase in
+                content.opacity(1 - abs(phase.value)).offset(y: phase.value * 140)
+            }
+        }
+    }
+
+    /// A page's two parts either side of the crease, each centred in its part.
+    private func creaseSpread<First: View, Second: View>(
+        size: CGSize,
+        crease: CGFloat,
+        @ViewBuilder first: () -> First,
+        @ViewBuilder second: () -> Second
+    ) -> some View {
+        CreaseSplit(axis: duo.isBook ? .horizontal : .vertical, crease: crease) {
+            first().frame(maxWidth: .infinity, maxHeight: .infinity)
+            second().frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .frame(width: size.width, height: size.height)
+    }
+
     private func purchasePage(
         _ entry: PurchaseTimelineEntry,
         number: Int,
@@ -303,16 +480,31 @@ struct TimelinePresentationScreen: View {
         runningTotal: Double,
         catalogue: Int?,
         size: CGSize,
-        wide: Bool
+        wide: Bool,
+        crease: CGFloat?
     ) -> some View {
         let watch = entry.watch
         // The year rail sits at the right edge, so the page keeps clear of it.
         let rail: CGFloat = Platform.isMac ? 112 : 44
         let inner = size.width - (wide ? 72 + rail : 24 + rail)
-        let detailsWidth = wide ? min(440, max(300, inner * 0.42)) : inner
-        let photoWidth = wide
-            ? max(160, min(inner - detailsWidth - 56, size.height * 0.92 * PhotoShape.plate))
-            : max(160, min(inner, size.height * 0.62 * PhotoShape.plate))
+        // On the inner screen the photo and the words stand either side of the crease.
+        let panes = crease.map {
+            CreaseSplit.panes(in: CGRect(origin: .zero, size: size), axis: duo.isBook ? .horizontal : .vertical, crease: $0)
+        }
+        let detailsWidth: CGFloat
+        let photoWidth: CGFloat
+        if let panes, duo.isBook {
+            detailsWidth = panes.second.width - 32 - rail
+            photoWidth = max(160, min(panes.first.width - 2 * 32, size.height * 0.92 * PhotoShape.plate))
+        } else if let panes {
+            detailsWidth = inner
+            photoWidth = max(160, min(inner, (panes.first.height - 24) * PhotoShape.plate))
+        } else {
+            detailsWidth = wide ? min(440, max(300, inner * 0.42)) : inner
+            photoWidth = wide
+                ? max(160, min(inner - detailsWidth - 56, size.height * 0.92 * PhotoShape.plate))
+                : max(160, min(inner, size.height * 0.62 * PhotoShape.plate))
+        }
         let photoHeight = photoWidth / PhotoShape.plate
         // The photo takes whatever height the text leaves, up to its full size, keeping its shape.
         let photo = Color.clear
@@ -376,7 +568,8 @@ struct TimelinePresentationScreen: View {
                 Text(story)
                     .font(AtelierType.body)
                     .foregroundStyle(WatchTheme.muted)
-                    .lineLimit(wide ? 4 : 3)
+                    // Below the crease the words have about half the screen.
+                    .lineLimit(wide ? 4 : panes == nil ? 3 : 2)
                     .padding(.top, 4)
             }
             Text("\(number) \(number == 1 ? "watch" : "watches") and \(cadWhole(runningTotal)) so far")
@@ -395,7 +588,15 @@ struct TimelinePresentationScreen: View {
         }
 
         return Group {
-            if wide {
+            if let crease {
+                creaseSpread(size: size, crease: crease) {
+                    photo
+                } second: {
+                    details
+                        .padding(.leading, duo.isBook ? 0 : 24)
+                        .padding(.trailing, rail)
+                }
+            } else if wide {
                 HStack(spacing: 56) {
                     photo
                     details

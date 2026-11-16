@@ -16,13 +16,14 @@ struct StatsScreen: View {
     @State private var path = NavigationPath()
     @Environment(\.openPage) private var openPage
     @Environment(\.pageMargin) private var margin
+    @Environment(\.duo) private var duo
 
     /// The month the time scrubber is set to; nil means now.
     @State private var asOfIndex: Int?
     @State private var playingTime = false
 
-    /// Mac only: measured column heights, so the purchase list can scroll inside its card and the two
-    /// columns end level instead of the right one running far past the left.
+    /// Mac and a folding iPhone held like a book: measured column heights, so the purchase list can scroll inside
+    /// its card and the two columns end level instead of the right one running far past the left.
     @State private var leftColumnHeight: CGFloat = 0
     @State private var rightColumnHeight: CGFloat = 0
     @State private var timelineViewport: CGFloat = 0
@@ -228,18 +229,19 @@ struct StatsScreen: View {
                 ScrollView {
                     LazyVStack(spacing: WatchTheme.gridGap) {
                         #if os(iOS)
-                        Group {
-                            Masthead(kicker: "Watch Collection", title: "Insights")
-                            UnderlineTabs(selection: $scope, options: [(value: "owned", label: "Current"), (value: "all", label: "All Time")])
-                            timeScrubber
-                                .padding(.top, 14)
-                        }
-                        // Panels tile at the grid's 16; the masthead and controls keep the page margin.
-                        .padding(.horizontal, max(margin - WatchTheme.narrowMargin, 0))
+                        // Held like a book the masthead heads the left page's column instead.
+                        if !duo.isBook { pageHeader }
                         #endif
-                        if Platform.isMac {
-                            HStack(alignment: .top, spacing: WatchTheme.gridGap) {
+                        // The Mac's two columns, which a folding iPhone held like a book lays out one per page.
+                        if Platform.isMac || duo.isBook {
+                            HStack(alignment: .top, spacing: Platform.isMac ? WatchTheme.gridGap : DuoLayout.creaseGap(inset: WatchTheme.narrowMargin)) {
                                 VStack(spacing: WatchTheme.gridGap) {
+                                    #if os(iOS)
+                                    if duo.isBook {
+                                        pageHeader
+                                            .padding(.bottom, groupGap)
+                                    }
+                                    #endif
                                     headlineTiles
                                     costChart
                                     sizeChart
@@ -343,6 +345,20 @@ struct StatsScreen: View {
 
     /// Space between groups of panels, on top of the panel gap.
     private var groupGap: CGFloat { WatchTheme.sectionGap - WatchTheme.gridGap }
+
+    #if os(iOS)
+    /// The masthead, the scope tabs and the time scrubber.
+    private var pageHeader: some View {
+        Group {
+            Masthead(kicker: "Watch Collection", title: "Insights")
+            UnderlineTabs(selection: $scope, options: [(value: "owned", label: "Current"), (value: "all", label: "All Time")])
+            timeScrubber
+                .padding(.top, 14)
+        }
+        // Panels tile at the grid's 16; the masthead and controls keep the page margin.
+        .padding(.horizontal, max(margin - WatchTheme.narrowMargin, 0))
+    }
+    #endif
 
     private var scopePicker: some View {
         Picker("Scope", selection: $scope) {
@@ -657,10 +673,11 @@ struct StatsScreen: View {
         if abs(value - new) > 1 { value = new }
     }
 
-    /// The height the purchase list may use on the Mac: whatever keeps the right column level with the
-    /// left, but never under 320 points. Everything else in the right column stays where it is.
+    /// The height the purchase list may use in two columns (the Mac, a folding iPhone held like a book): whatever
+    /// keeps the right column level with the left, but never under 320 points. Everything else in the right column
+    /// stays where it is.
     private var timelineListLimit: CGFloat? {
-        guard Platform.isMac else { return nil }
+        guard Platform.isMac || duo.isBook else { return nil }
         guard leftColumnHeight > 0, rightColumnHeight > 0 else { return 600 }
         let restOfRightColumn = rightColumnHeight - timelineViewport
         return max(320, leftColumnHeight - restOfRightColumn)

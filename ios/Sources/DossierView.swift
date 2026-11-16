@@ -9,7 +9,10 @@ struct WatchDossierView: View {
     @Environment(\.dismiss) private var dismiss
     @State private var sheet: DossierSheet?
     @State private var titleInBar = false
+    /// The title block's height on the inner screen's scrolling pane, for when to show the name in the bar.
+    @State private var titleHeight: CGFloat = 120
     @Environment(\.pageMargin) private var margin
+    @Environment(\.duo) private var duo
 
     private var watch: Watch? { store.data?.watches.first { $0.id == watchID } }
 
@@ -41,6 +44,13 @@ struct WatchDossierView: View {
                 }
             }
         }
+        #if DEBUG
+        .task {
+            guard AtelierProbe.opensEdit, watch != nil else { return }
+            try? await Task.sleep(for: .seconds(2))
+            sheet = .edit
+        }
+        #endif
         .onChange(of: watch == nil) { _, removed in
             // Deleted here or by a sync: close any open sheet and leave the page.
             guard removed else { return }
@@ -71,7 +81,13 @@ struct WatchDossierView: View {
 
     @ViewBuilder
     private func content(_ watch: Watch) -> some View {
-        if Platform.isMac { desktopContent(watch) } else { phoneContent(watch) }
+        if Platform.isMac {
+            desktopContent(watch)
+        } else if duo.isBook || duo.isTableTop {
+            panesContent(watch)
+        } else {
+            phoneContent(watch)
+        }
     }
 
     /// Desktop: the photo fills the left of the window at full size, details scroll on the right.
@@ -118,23 +134,9 @@ struct WatchDossierView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 hero(watch)
-                titleBlock(watch)
-                    .padding(.horizontal, margin)
-                    .padding(.top, 24)
-                    .padding(.bottom, 32)
-                // Full bleed: the statement panel runs edge to edge.
-                if let statement = statement(watch) {
-                    statement
-                        .padding(.bottom, 36)
-                }
-                VStack(alignment: .leading, spacing: 40) {
-                    if watch.status != "owned" { statusNote(watch) }
-                    details(watch)
-                    story(watch)
-                    service(watch)
-                }
-                .padding(.horizontal, margin)
-                .padding(.bottom, 48)
+                    // On a cover screen the photo runs under the status strip to the edge.
+                    .runsUnderStatusStrip(duo)
+                pageText(watch)
             }
         }
         .atelierProbeScroll("dossier")
@@ -142,37 +144,101 @@ struct WatchDossierView: View {
         .ignoresSafeArea(edges: .top)
         // Once the large name has scrolled up under the bar, show it in the bar.
         .onScrollGeometryChange(for: Bool.self) { geometry in
-            geometry.contentOffset.y > geometry.containerSize.width / PhotoShape.dossier - 10
+            geometry.contentOffset.y > (heroHeight ?? geometry.containerSize.width / PhotoShape.dossier) - 10
         } action: { _, past in
             withAnimation(.easeInOut(duration: 0.2)) { titleInBar = past }
         }
     }
 
+    /// The inner screen held like a book or half open on a table: the photos fill the left page (or the pane above
+    /// the crease) and stay put, the title, statement and specs scroll on the right page (or below the crease).
+    private func panesContent(_ watch: Watch) -> some View {
+        // The photos run up under the navigation bar, as the phone's hero does.
+        CreasePanes(firstRunsToTop: true) {
+            photos(watch, underBars: .top)
+                .clipped()
+        } second: {
+            ScrollView {
+                pageText(watch)
+            }
+            .atelierProbeScroll("dossier")
+            // Once the title block has scrolled away under the bar, show the name in the bar.
+            .onScrollGeometryChange(for: Bool.self) { geometry in
+                geometry.contentOffset.y + geometry.contentInsets.top > 24 + titleHeight - 20
+            } action: { _, past in
+                withAnimation(.easeInOut(duration: 0.2)) { titleInBar = past }
+            }
+        }
+        .screenBackground()
+    }
+
+    /// Everything under the photo: the title block, the statement, and the spec lists.
+    private func pageText(_ watch: Watch) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            titleBlock(watch)
+                .padding(.horizontal, margin)
+                .padding(.top, 24)
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { titleHeight = $0 }
+                .padding(.bottom, 32)
+            // Full bleed: the statement panel runs edge to edge.
+            if let statement = statement(watch) {
+                statement
+                    .padding(.bottom, 36)
+            }
+            VStack(alignment: .leading, spacing: 40) {
+                if watch.status != "owned" { statusNote(watch) }
+                details(watch)
+                story(watch)
+                service(watch)
+            }
+            .padding(.horizontal, margin)
+            .padding(.bottom, 48)
+        }
+    }
+
+    /// The hero's height where it is not the phone's shape: on a cover screen the phone's shape across the width
+    /// left of the status strip, and with the crease across exactly the top half, down to the crease's clear band.
+    private var heroHeight: CGFloat? {
+        if duo.posture == .folded { return (duo.size.width - duo.statusStrip) / PhotoShape.dossier }
+        if duo.isAcross, let crease = duo.crease { return crease - DuoLayout.creaseClearance }
+        return nil
+    }
+
     // MARK: Sections
 
     private func hero(_ watch: Watch) -> some View {
-        Color.clear
-            .aspectRatio(PhotoShape.dossier, contentMode: .fit)
-            .overlay {
-                if watch.photos.isEmpty {
-                    WatchPlaceholder()
-                } else {
-                    PhotoPager(selection: $page, count: watch.photos.count) { index in
-                        RemoteWatchImage(
-                            asset: store.photoAsset(itemID: watch.id, filename: watch.photos[index], wishlist: false),
-                            allowsRemoteFetch: !store.isOffline,
-                            focus: watch.focus(for: watch.photos[index])
-                        )
-                    }
-                }
+        Group {
+            if let heroHeight {
+                Color.clear.frame(height: heroHeight)
+            } else {
+                Color.clear.aspectRatio(PhotoShape.dossier, contentMode: .fit)
             }
-            .clipped()
-            // Pulling down past the top stretches the photo instead of showing a gap.
-            .visualEffect { content, proxy in
-                let pull = max(0, proxy.frame(in: .scrollView).minY)
-                return content
-                    .scaleEffect(1 + pull / 400, anchor: .bottom)
+        }
+        .overlay { photos(watch) }
+        .clipped()
+        // Pulling down past the top stretches the photo instead of showing a gap.
+        .visualEffect { content, proxy in
+            let pull = max(0, proxy.frame(in: .scrollView).minY)
+            return content
+                .scaleEffect(1 + pull / 400, anchor: .bottom)
+        }
+    }
+
+    /// The photos to swipe through, each filling the frame in its saved framing, running on under the bars at
+    /// `underBars` when the frame reaches up there.
+    @ViewBuilder
+    private func photos(_ watch: Watch, underBars: Edge.Set = []) -> some View {
+        if watch.photos.isEmpty {
+            WatchPlaceholder()
+        } else {
+            PhotoPager(selection: $page, count: watch.photos.count, pagesIgnoreSafeArea: underBars) { index in
+                RemoteWatchImage(
+                    asset: store.photoAsset(itemID: watch.id, filename: watch.photos[index], wishlist: false),
+                    allowsRemoteFetch: !store.isOffline,
+                    focus: watch.focus(for: watch.photos[index])
+                )
             }
+        }
     }
 
     private func titleBlock(_ watch: Watch) -> some View {

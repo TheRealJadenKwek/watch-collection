@@ -8,6 +8,11 @@ struct SearchScreen: View {
     @State private var editingItem: WishlistItem?
     @Environment(\.sectionIsActive) private var sectionIsActive
     @Environment(\.pageMargin) private var margin
+    @Environment(\.duo) private var duo
+
+    /// Two columns, one per page, on a folding iPhone held like a book; one everywhere else.
+    private var columns: Int { duo.isBook ? 2 : 1 }
+    private var columnGap: CGFloat { DuoLayout.creaseGap(inset: margin) }
 
     private var trimmed: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var watches: [Watch] { store.data?.watches ?? [] }
@@ -42,10 +47,20 @@ struct SearchScreen: View {
                 LazyVStack(alignment: .leading, spacing: WatchTheme.sectionGap) {
                     if trimmed.isEmpty {
                         #if os(iOS)
-                        Masthead(kicker: "Search", title: "Find a watch")
-                            .padding(.bottom, -WatchTheme.sectionGap + 8)
+                        Group {
+                            if columns > 1 {
+                                // Held like a book the masthead heads the left page.
+                                CardColumns(columns: columns, spacing: 0, gap: columnGap) {
+                                    Masthead(kicker: "Search", title: "Find a watch")
+                                        .cardColumn(0, of: columns)
+                                }
+                            } else {
+                                Masthead(kicker: "Search", title: "Find a watch")
+                            }
+                        }
+                        .padding(.bottom, -WatchTheme.sectionGap + 8)
                         #endif
-                        GroupedSection("Browse by Brand") {
+                        GroupedSection("Browse by Brand", columns: columns, gap: columnGap) {
                             ForEach(brands, id: \.name) { brand in
                                 Button { query = brand.name } label: {
                                     HStack(spacing: 12) {
@@ -69,7 +84,7 @@ struct SearchScreen: View {
                         resultSection("Collection", foundWatches.filter { $0.status == "owned" })
                         resultSection("Archive", foundWatches.filter { $0.status != "owned" })
                         if !foundWishlist.isEmpty {
-                            GroupedSection("Wishlist") {
+                            GroupedSection("Wishlist", columns: columns, gap: columnGap) {
                                 ForEach(foundWishlist) { item in
                                     Button { editingItem = item } label: {
                                         SearchRow(
@@ -143,7 +158,7 @@ struct SearchScreen: View {
     @ViewBuilder
     private func resultSection(_ title: String, _ found: [Watch]) -> some View {
         if !found.isEmpty {
-            GroupedSection(title) {
+            GroupedSection(title, columns: columns, gap: columnGap) {
                 ForEach(found) { watch in
                     NavigationLink(value: WatchRoute(id: watch.id)) {
                         SearchRow(

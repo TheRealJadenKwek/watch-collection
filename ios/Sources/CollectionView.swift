@@ -10,6 +10,7 @@ struct CollectionScreen: View {
     @AppStorage("collectionLayout") private var layout = Layout.cards.rawValue
     @Namespace private var zoom
     @Environment(\.pageMargin) private var margin
+    @Environment(\.duo) private var duo
     #if DEBUG
     @State private var probePath = NavigationPath()
     #endif
@@ -64,50 +65,7 @@ struct CollectionScreen: View {
     var body: some View {
         SectionStack(path: stackPath) {
             RefreshableScreen(store: store) {
-                ScrollView {
-                    // Lazy, not VStack: a LazyVGrid inside an eager VStack re-measures as rows load,
-                    // which bounced the scroll position back and forth on every drag from the top.
-                    LazyVStack(alignment: .leading, spacing: 0) {
-                        let shown = watches
-                        #if os(iOS)
-                        Masthead(kicker: "Watch Collection", title: title, subtitle: subtitle)
-                            .padding(.horizontal, margin)
-                        UnderlineTabs(selection: $scope, options: Scope.allCases.map { (value: $0.rawValue, label: $0.rawValue) })
-                            .padding(.horizontal, margin)
-                            .padding(.bottom, 20)
-                        #endif
-
-                        if let featured = featuredWatch(shown) {
-                            featureBlock(featured)
-                                .padding(.bottom, WatchTheme.gridGap)
-                                .id("feature-\(contentKey)")
-                                .transition(.opacity)
-                        }
-
-                        Group {
-                        if shown.isEmpty {
-                            EmptyCollectionView(
-                                title: "Nothing Here Yet",
-                                detail: scope == Scope.archive.rawValue ? "Watches you part with appear in the archive." : Platform.isMac ? "Click + to add your first watch." : "Tap + to add your first watch."
-                            )
-                            .frame(minHeight: 360)
-                        } else if layout == Layout.grid.rawValue {
-                            grid(shown)
-                        } else {
-                            cards(shown)
-                        }
-                        }
-                        // A simple fade between Owned, Archive and All Time, and on a new sort or layout.
-                        .id(contentKey)
-                        .transition(.opacity)
-                    }
-                    .animation(.easeInOut(duration: 0.2), value: contentKey)
-                    .padding(.top, Platform.isMac ? 4 : 0)
-                    .padding(.bottom, 24)
-                }
-                .mastheadTitle(title)
-                .atelierProbeScroll("collection")
-                .screenBackground()
+                pages
             }
             #if os(macOS)
             .desktopHeader(title, subtitle: subtitle) {
@@ -157,6 +115,114 @@ struct CollectionScreen: View {
         .pageAppear()
     }
 
+    /// The page for how the phone is held. A phone, the cover and the inner screen with the crease across scroll as
+    /// one page. Held like a book the masthead and the feature stand on the left page and the tiles scroll on the
+    /// right; half open on a table they stand above the crease and the tiles scroll below it.
+    @ViewBuilder
+    private var pages: some View {
+        #if os(iOS)
+        if duo.isBook || duo.isTableTop {
+            CreasePanes {
+                fixedPane(watches)
+            } second: {
+                ScrollView {
+                    tileArea(watches)
+                        .animation(.easeInOut(duration: 0.2), value: contentKey)
+                        .padding(.bottom, 24)
+                }
+                .navigationTitle("")
+                .navigationBarTitleDisplayMode(.inline)
+                .atelierProbeScroll("collection")
+            }
+            .screenBackground()
+        } else {
+            scrollingPage
+        }
+        #else
+        scrollingPage
+        #endif
+    }
+
+    private var scrollingPage: some View {
+        ScrollView {
+            // Lazy, not VStack: a LazyVGrid inside an eager VStack re-measures as rows load,
+            // which bounced the scroll position back and forth on every drag from the top.
+            LazyVStack(alignment: .leading, spacing: 0) {
+                let shown = watches
+                #if os(iOS)
+                Masthead(kicker: "Watch Collection", title: title, subtitle: subtitle)
+                    .padding(.horizontal, margin)
+                UnderlineTabs(selection: $scope, options: Scope.allCases.map { (value: $0.rawValue, label: $0.rawValue) })
+                    .padding(.horizontal, margin)
+                    .padding(.bottom, 20)
+                #endif
+
+                if let featured = featuredWatch(shown) {
+                    featureBlock(featured, aspect: featureAspect)
+                        // On a cover screen the photo runs under the status strip to the edge. Its slot is offered
+                        // only the width left of the strip, so its height is set here or it would overflow its slot.
+                        .runsUnderStatusStrip(duo)
+                        .frame(height: coverFeatureHeight)
+                        .padding(.bottom, WatchTheme.gridGap)
+                        .id("feature-\(contentKey)")
+                        .transition(.opacity)
+                }
+
+                tileArea(shown)
+            }
+            .animation(.easeInOut(duration: 0.2), value: contentKey)
+            .padding(.top, Platform.isMac ? 4 : 0)
+            .padding(.bottom, 24)
+        }
+        .mastheadTitle(title)
+        .atelierProbeScroll("collection")
+        .screenBackground()
+    }
+
+    /// The tiles in the layout chosen, or the empty state.
+    private func tileArea(_ shown: [Watch]) -> some View {
+        Group {
+            if shown.isEmpty {
+                EmptyCollectionView(
+                    title: "Nothing Here Yet",
+                    detail: scope == Scope.archive.rawValue ? "Watches you part with appear in the archive." : Platform.isMac ? "Click + to add your first watch." : "Tap + to add your first watch."
+                )
+                .frame(minHeight: 360)
+            } else if layout == Layout.grid.rawValue {
+                grid(shown)
+            } else {
+                cards(shown)
+            }
+        }
+        // A simple fade between Owned, Archive and All Time, and on a new sort or layout.
+        .id(contentKey)
+        .transition(.opacity)
+    }
+
+    /// The pane that stays put on the inner screen: the masthead, the scope tabs, and the feature filling the rest,
+    /// down to the tab bar on a book's left page, down to the crease on a table.
+    private func fixedPane(_ shown: [Watch]) -> some View {
+        VStack(spacing: 0) {
+            Masthead(kicker: "Watch Collection", title: title, subtitle: subtitle)
+                .padding(.horizontal, margin)
+            UnderlineTabs(selection: $scope, options: Scope.allCases.map { (value: $0.rawValue, label: $0.rawValue) })
+                .padding(.horizontal, margin)
+                .padding(.bottom, 20)
+            ZStack {
+                if let featured = paneFeature {
+                    featureBlock(featured, aspect: nil, kicker: scope == Scope.archive.rawValue ? "From the archive" : "Latest arrival")
+                        .id("feature-\(scope)-\(featured.id)")
+                        .transition(.opacity)
+                } else {
+                    WatchPlaceholder()
+                        .transition(.opacity)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .animation(.easeInOut(duration: 0.2), value: scope)
+        }
+    }
+
     /// Debug builds can open a watch's page at launch for screenshots; otherwise the stack keeps its own path.
     private var stackPath: Binding<NavigationPath>? {
         #if DEBUG
@@ -178,23 +244,76 @@ struct CollectionScreen: View {
             .last { datedSource($0, in: all).purchased != nil && !$0.photos.isEmpty }
     }
 
-    /// Edge to edge, the cover in its saved framing, the name set large over a dark fade.
+    /// The feature on the inner screen's fixed pane, in every scope and layout: the newest dated watch with a photo
+    /// in the scope shown.
+    private var paneFeature: Watch? {
+        let inScope = all.filter { watch in
+            switch Scope(rawValue: scope) ?? .owned {
+            case .owned: watch.status == "owned"
+            case .archive: watch.status != "owned"
+            case .allTime: true
+            }
+        }
+        return byPurchaseDate(inScope).last { datedSource($0, in: all).purchased != nil && !$0.photos.isEmpty }
+    }
+
+    /// The feature's shape on a scrolling page: the plate, but no taller than 420 points with the crease across. On
+    /// a cover screen it runs under the status strip as wide as the window, but only as tall as the plate across the
+    /// width left of the strip, so its name and pill are on the first screen.
+    private var featureAspect: CGFloat {
+        if duo.isAcross { return max(PhotoShape.plate, duo.size.width / 420) }
+        if duo.statusStrip > 0, duo.size.width > duo.statusStrip {
+            return PhotoShape.plate * duo.size.width / (duo.size.width - duo.statusStrip)
+        }
+        return PhotoShape.plate
+    }
+
+    /// The feature's height on a cover screen: the plate across the width left of the status strip. Nil elsewhere.
+    private var coverFeatureHeight: CGFloat? {
+        guard duo.posture == .folded, duo.statusStrip > 0, duo.size.width > duo.statusStrip else { return nil }
+        return (duo.size.width - duo.statusStrip) / PhotoShape.plate
+    }
+
+    /// Edge to edge, the cover in its saved framing, the name set large over a dark fade. With no `aspect` the photo
+    /// fills whatever frame it is given.
     /// Its zoom source has its own id, so it never collides with the same watch's tile in the grid.
-    private func featureBlock(_ watch: Watch) -> some View {
+    private func featureBlock(_ watch: Watch, aspect: CGFloat?, kicker: String = "Latest arrival") -> some View {
         let zoomID = "feature-\(watch.id)"
         return NavigationLink(value: WatchRoute(id: watch.id, zoomID: zoomID)) {
-            FramedPhoto(
-                store: store,
-                itemID: watch.id,
-                filename: watch.photos.first,
-                focus: watch.focus(for: watch.photos.first),
-                aspect: PhotoShape.plate,
-                // The size the watch's page decodes, so opening it reuses this image.
-                maxPixel: DisplayImageCache.page
-            )
+            Group {
+                if let aspect {
+                    FramedPhoto(
+                        store: store,
+                        itemID: watch.id,
+                        filename: watch.photos.first,
+                        focus: watch.focus(for: watch.photos.first),
+                        aspect: aspect,
+                        // The size the watch's page decodes, so opening it reuses this image.
+                        maxPixel: DisplayImageCache.page
+                    )
+                } else {
+                    Color.clear
+                        .overlay {
+                            RemoteWatchImage(
+                                asset: watch.photos.first.flatMap { store.photoAsset(itemID: watch.id, filename: $0, wishlist: false) },
+                                allowsRemoteFetch: !store.isOffline,
+                                focus: watch.focus(for: watch.photos.first),
+                                maxPixel: DisplayImageCache.page
+                            )
+                        }
+                        .clipped()
+                        .contentShape(Rectangle())
+                }
+            }
             .overlay {
+                // In the inner screen's fixed pane (a book's left page, a table's top half) the feature is short and
+                // the words fill most of it, so the fade starts at its top edge there.
+                let short = aspect == nil
                 LinearGradient(
-                    stops: [.init(color: .black.opacity(0), location: 0.5), .init(color: .black.opacity(0.55), location: 1)],
+                    stops: [
+                        .init(color: .black.opacity(short ? 0.25 : 0), location: short ? 0 : 0.5),
+                        .init(color: .black.opacity(0.55), location: 1),
+                    ],
                     startPoint: .top,
                     endPoint: .bottom
                 )
@@ -202,7 +321,7 @@ struct CollectionScreen: View {
             }
             .overlay(alignment: .bottom) {
                 VStack(spacing: 12) {
-                    Eyebrow("Latest arrival", color: .white)
+                    Eyebrow(kicker, color: .white)
                     Text(watch.name)
                         .font(AtelierType.display)
                         .tracking(-0.6)
@@ -215,12 +334,14 @@ struct CollectionScreen: View {
                 }
                 .padding(.horizontal, 28)
                 .padding(.bottom, 32)
+                // Under a cover screen's status strip the text stays centred in the width left of it.
+                .padding(.trailing, duo.statusStrip)
             }
             .zoomSource(id: zoomID, in: zoom)
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Latest arrival, \(watch.name)")
+        .accessibilityLabel("\(kicker), \(watch.name)")
         .accessibilityHint("Opens the watch")
         .accessibilityAddTraits(.isButton)
     }
@@ -284,7 +405,7 @@ struct CollectionScreen: View {
     private func cards(_ watches: [Watch]) -> some View {
         LazyVGrid(columns: Platform.isMac
                   ? [GridItem(.adaptive(minimum: 230, maximum: 340), spacing: WatchTheme.gridGap, alignment: .top)]
-                  : Array(repeating: GridItem(.flexible(), spacing: WatchTheme.gridGap, alignment: .top), count: 2),
+                  : Array(repeating: GridItem(.flexible(), spacing: WatchTheme.gridGap, alignment: .top), count: duo.tileColumns),
                   spacing: WatchTheme.gridGap) {
             ForEach(watches) { watch in
                 NavigationLink(value: WatchRoute(id: watch.id)) {
@@ -299,7 +420,7 @@ struct CollectionScreen: View {
     private func grid(_ watches: [Watch]) -> some View {
         LazyVGrid(columns: Platform.isMac
                   ? [GridItem(.adaptive(minimum: 170), spacing: 2)]
-                  : Array(repeating: GridItem(.flexible(), spacing: 2), count: 3), spacing: 2) {
+                  : Array(repeating: GridItem(.flexible(), spacing: 2), count: duo.photoColumns), spacing: 2) {
             ForEach(watches) { watch in
                 NavigationLink(value: WatchRoute(id: watch.id)) {
                     FramedPhoto(

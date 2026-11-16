@@ -13,6 +13,7 @@ struct WishlistScreen: View {
     @State private var prefilledBrand = ""
     @Environment(\.sectionIsActive) private var sectionIsActive
     @Environment(\.pageMargin) private var margin
+    @Environment(\.duo) private var duo
 
     private var ranked: [WishlistItem] {
         (store.data?.wishlist ?? []).sorted { left, right in
@@ -32,53 +33,59 @@ struct WishlistScreen: View {
             ScrollViewReader { proxy in
                 RefreshableScreen(store: store) {
                     ScrollView {
-                        LazyVStack(spacing: WatchTheme.gridGap) {
-                            #if os(iOS)
-                            Masthead(kicker: "Wishlist", title: "Next Watch", subtitle: subtitle)
-                                .padding(.horizontal, max(margin - WatchTheme.narrowMargin, 0))
-                            #endif
-                            if ranked.isEmpty {
-                                EmptyCollectionView(title: "Wishlist empty", detail: "Add a candidate to start comparing fit.")
-                                    .frame(minHeight: 320)
-                            } else {
-                                if let top = ranked.first, top.status == "considering" {
-                                    TopPickView(
-                                        store: store,
-                                        item: top,
-                                        score: store.scores[top.id],
-                                        edit: { editingItem = top },
-                                        bought: { boughtItem = top }
-                                    )
-                                    .id("wishlist-\(top.id)")
-                                    .padding(.bottom, WatchTheme.sectionGap - WatchTheme.gridGap)
-                                }
-                                // One column on the phone; as many as fit on the desktop.
-                                LazyVGrid(columns: Platform.isMac
-                                          ? [GridItem(.adaptive(minimum: 380), spacing: WatchTheme.gridGap, alignment: .top)]
-                                          : [GridItem(.flexible(), alignment: .top)], spacing: WatchTheme.gridGap) {
-                                    ForEach(ranked.first?.status == "considering" ? Array(ranked.dropFirst()) : ranked) { item in
-                                        WishlistCard(
-                                            store: store,
-                                            item: item,
-                                            score: store.scores[item.id],
-                                            edit: { editingItem = item },
-                                            pass: { Task { await store.passWishlist(id: item.id) } },
-                                            bought: { boughtItem = item },
-                                            findImage: { findImage(item.id) }
-                                        )
-                                        .id("wishlist-\(item.id)")
-                                    }
-                                }
-                            }
-                            nextMoveSection { id in
+                        if duo.isWide {
+                            columns { id in
                                 withAnimation { proxy.scrollTo("wishlist-\(id)", anchor: .top) }
                             }
-                            .padding(.top, WatchTheme.sectionGap - WatchTheme.gridGap)
-                            radarStrip
+                        } else {
+                            LazyVStack(spacing: WatchTheme.gridGap) {
+                                #if os(iOS)
+                                Masthead(kicker: "Wishlist", title: "Next Watch", subtitle: subtitle)
+                                    .padding(.horizontal, max(margin - WatchTheme.narrowMargin, 0))
+                                #endif
+                                if ranked.isEmpty {
+                                    EmptyCollectionView(title: "Wishlist empty", detail: "Add a candidate to start comparing fit.")
+                                        .frame(minHeight: 320)
+                                } else {
+                                    if let top = ranked.first, top.status == "considering" {
+                                        TopPickView(
+                                            store: store,
+                                            item: top,
+                                            score: store.scores[top.id],
+                                            edit: { editingItem = top },
+                                            bought: { boughtItem = top }
+                                        )
+                                        .id("wishlist-\(top.id)")
+                                        .padding(.bottom, WatchTheme.sectionGap - WatchTheme.gridGap)
+                                    }
+                                    // One column on the phone; as many as fit on the desktop.
+                                    LazyVGrid(columns: Platform.isMac
+                                              ? [GridItem(.adaptive(minimum: 380), spacing: WatchTheme.gridGap, alignment: .top)]
+                                              : [GridItem(.flexible(), alignment: .top)], spacing: WatchTheme.gridGap) {
+                                        ForEach(ranked.first?.status == "considering" ? Array(ranked.dropFirst()) : ranked) { item in
+                                            WishlistCard(
+                                                store: store,
+                                                item: item,
+                                                score: store.scores[item.id],
+                                                edit: { editingItem = item },
+                                                pass: { Task { await store.passWishlist(id: item.id) } },
+                                                bought: { boughtItem = item },
+                                                findImage: { findImage(item.id) }
+                                            )
+                                            .id("wishlist-\(item.id)")
+                                        }
+                                    }
+                                }
+                                nextMoveSection { id in
+                                    withAnimation { proxy.scrollTo("wishlist-\(id)", anchor: .top) }
+                                }
+                                .padding(.top, WatchTheme.sectionGap - WatchTheme.gridGap)
+                                radarStrip
+                            }
+                            .padding(.horizontal, Platform.isMac ? 24 : WatchTheme.narrowMargin)
+                            .padding(.top, Platform.isMac ? 4 : 0)
+                            .padding(.bottom, 24)
                         }
-                        .padding(.horizontal, Platform.isMac ? 24 : WatchTheme.narrowMargin)
-                        .padding(.top, Platform.isMac ? 4 : 0)
-                        .padding(.bottom, 24)
                     }
                     .mastheadTitle("Wishlist")
                     .atelierProbeScroll("wishlist")
@@ -108,6 +115,83 @@ struct WishlistScreen: View {
             }
         }
         .pageAppear()
+    }
+
+    /// The inner screen. Held like a book: the candidates in two columns, one per page, the masthead heading the left
+    /// one, the top pick first and each column as level as it can be, then the suggestions one per page. With the
+    /// crease across, two columns would leave each card about 310 points wide, too narrow for its name and buttons,
+    /// so the candidates and suggestions run full width there, the top pick with its photo beside its reasons.
+    private func columns(scrollTo: @escaping (String) -> Void) -> some View {
+        let count = duo.isBook ? duo.cardColumns : 1
+        let gap = duo.isBook ? DuoLayout.creaseGap(inset: WatchTheme.narrowMargin) : WatchTheme.gridGap
+        let top = ranked.first.flatMap { $0.status == "considering" ? $0 : nil }
+        let rest = top == nil ? ranked : Array(ranked.dropFirst())
+        // Roughly in cards: the top pick is about three tall, the masthead well under one. Whatever heads the left
+        // column goes there first; the cards then fill whichever column is shorter.
+        let lead: CGFloat = (top == nil ? 0 : 3) + (duo.isBook ? 0.6 : 0)
+        let placed = DuoLayout.balance((lead > 0 ? [lead] : []) + rest.map { _ in 1 }, columns: count)
+        let restColumns = lead > 0 ? Array(placed.dropFirst()) : placed
+        let suggestionColumns = duo.isBook ? count : 1
+        return VStack(spacing: 0) {
+            #if os(iOS)
+            if !duo.isBook {
+                Masthead(kicker: "Wishlist", title: "Next Watch", subtitle: subtitle)
+                    .padding(.horizontal, max(margin - WatchTheme.narrowMargin, 0))
+                    .padding(.bottom, WatchTheme.gridGap)
+            }
+            #endif
+            if ranked.isEmpty, !duo.isBook {
+                EmptyCollectionView(title: "Wishlist empty", detail: "Add a candidate to start comparing fit.")
+                    .frame(minHeight: 320)
+            }
+            CardColumns(columns: count, spacing: WatchTheme.gridGap, gap: gap) {
+                #if os(iOS)
+                if duo.isBook {
+                    Masthead(kicker: "Wishlist", title: "Next Watch", subtitle: subtitle)
+                        .padding(.horizontal, max(margin - WatchTheme.narrowMargin, 0))
+                        .cardColumn(0, of: count)
+                }
+                #endif
+                if ranked.isEmpty, duo.isBook {
+                    EmptyCollectionView(title: "Wishlist empty", detail: "Add a candidate to start comparing fit.")
+                        .frame(minHeight: 320)
+                        .cardColumn(1, of: count)
+                }
+                if let top {
+                    TopPickView(
+                        store: store,
+                        item: top,
+                        score: store.scores[top.id],
+                        edit: { editingItem = top },
+                        bought: { boughtItem = top }
+                    )
+                    .id("wishlist-\(top.id)")
+                    .cardColumn(0, of: count)
+                }
+                ForEach(Array(rest.enumerated()), id: \.element.id) { index, item in
+                    WishlistCard(
+                        store: store,
+                        item: item,
+                        score: store.scores[item.id],
+                        edit: { editingItem = item },
+                        pass: { Task { await store.passWishlist(id: item.id) } },
+                        bought: { boughtItem = item },
+                        findImage: { findImage(item.id) }
+                    )
+                    .id("wishlist-\(item.id)")
+                    .cardColumn(restColumns[safe: index] ?? 0, of: count)
+                }
+            }
+            CardColumns(columns: suggestionColumns, spacing: WatchTheme.gridGap, gap: gap) {
+                nextMoveSection(scrollTo: scrollTo)
+                    .cardColumn(0, of: suggestionColumns)
+                radarStrip
+                    .cardColumn(1, of: suggestionColumns)
+            }
+            .padding(.top, WatchTheme.sectionGap)
+        }
+        .padding(.horizontal, WatchTheme.narrowMargin)
+        .padding(.bottom, 24)
     }
 
     private var addButton: some View {
@@ -463,6 +547,7 @@ struct TopPickView: View {
     let score: WishlistScore?
     let edit: () -> Void
     let bought: () -> Void
+    @Environment(\.duo) private var duo
 
     private var highlights: [String] {
         ["category", "brand", "price", "dial", "size", "material"].compactMap { name in
@@ -472,10 +557,12 @@ struct TopPickView: View {
     }
 
     var body: some View {
-        if Platform.isMac {
-            // Desktop: photo beside the reasons, so the card doesn't fill the whole window.
+        if Platform.isMac || duo.isAcross {
+            // Desktop, and a folding iPhone's inner screen with the crease across: photo beside the reasons, so the
+            // card doesn't fill the whole window.
             HStack(alignment: .center, spacing: 28) {
-                photo.frame(width: 340)
+                // The inner screen is narrower than a desktop window: a smaller photo leaves the buttons their room.
+                photo.frame(width: Platform.isMac ? 340 : 280)
                 VStack(alignment: .leading, spacing: 16) { details }
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
