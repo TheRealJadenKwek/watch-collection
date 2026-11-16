@@ -184,27 +184,28 @@ import XCTest
         let frames = BoxFrames()
         frames.scroll = CGRect(x: 0, y: 0, width: 402, height: 545)
         frames.tray = CGRect(x: 0, y: 545, width: 402, height: 130)
-        frames.stage = CGRect(x: 16, y: boxTop, width: 370, height: box.canvas.height * phoneK)
+        frames.order = ["black"]
+        frames.stages["black"] = BoxFrames.Stage(rect: CGRect(x: 16, y: boxTop, width: 370, height: box.canvas.height * phoneK),
+                                                 scrolls: true)
         return frames
     }
 
-    /// The compartment under a point in the screen's space, as `BoxesScreen.slot(at:)` finds it.
+    /// The compartment under a point in the screen's space, as a drop finds it.
     private func slot(at point: CGPoint, _ frames: BoxFrames) -> Int? {
-        guard frames.showsBox(at: point) else { return nil }
-        return box.slotIndex(at: CGPoint(x: (point.x - frames.stage.minX) / phoneK, y: (point.y - frames.stage.minY) / phoneK))
+        frames.space(at: point, boxes: [(id: "black", geometry: box)], k: phoneK)?.slot
     }
 
     func testTheTopOfThePageBelowTheBarIsOnTheBox() {
         // Scrolled so the top 116 pt of the box is under the bar: a watch let go at y 34 is in the front row.
         let frames = phoneFrames(boxTop: -116)
         for y: CGFloat in [1, 34, 60, 115] {
-            XCTAssertTrue(frames.showsBox(at: CGPoint(x: 271, y: y)), "y \(y) is on screen, below the bar")
+            XCTAssertTrue(frames.shows("black", at: CGPoint(x: 271, y: y)), "y \(y) is on screen, below the bar")
         }
-        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 271, y: -1)), "under the bar")
-        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 271, y: 200)), "below the box")
+        XCTAssertFalse(frames.shows("black", at: CGPoint(x: 271, y: -1)), "under the bar")
+        XCTAssertFalse(frames.shows("black", at: CGPoint(x: 271, y: 200)), "below the box")
         let lower = phoneFrames(boxTop: 400)
-        XCTAssertTrue(lower.showsBox(at: CGPoint(x: 271, y: 544)))
-        XCTAssertFalse(lower.showsBox(at: CGPoint(x: 271, y: 545)), "under the tray")
+        XCTAssertTrue(lower.shows("black", at: CGPoint(x: 271, y: 544)))
+        XCTAssertFalse(lower.shows("black", at: CGPoint(x: 271, y: 545)), "under the tray")
         // So the compartment under the finger there is found, not taken for "outside the box".
         XCTAssertEqual(slot(at: CGPoint(x: 271, y: 34), frames), 10, "front row, space 5")
         XCTAssertNil(slot(at: CGPoint(x: 271, y: -1), frames), "the back row is under the bar")
@@ -217,7 +218,8 @@ import XCTest
         let frames = phoneFrames(boxTop: 0)
         for index in 0..<box.slotCount {
             let rect = box.slot(index)
-            let point = CGPoint(x: frames.stage.minX + rect.midX * phoneK, y: frames.stage.minY + rect.midY * phoneK)
+            let stage = frames.stages["black"]!.rect
+            let point = CGPoint(x: stage.minX + rect.midX * phoneK, y: stage.minY + rect.midY * phoneK)
             XCTAssertEqual(slot(at: point, frames), index, "the middle of space \(index)")
         }
         // Left to right along the back row, then the front row.
@@ -245,13 +247,14 @@ import XCTest
         // The inner screen with the crease across: one column, no tray; the scroll view's frame ends at the tab bar.
         let frames = BoxFrames()
         frames.scroll = CGRect(x: 0, y: 0, width: 669, height: 812)
-        frames.stage = CGRect(x: 20, y: 150, width: 629, height: 397)
+        frames.order = ["black"]
+        frames.stages["black"] = BoxFrames.Stage(rect: CGRect(x: 20, y: 150, width: 629, height: 397), scrolls: true)
         XCTAssertEqual(frames.visibleBottom, 812)
         XCTAssertEqual(frames.autoScrollStep(at: 790), 8)
         XCTAssertEqual(frames.autoScrollStep(at: 700), 0)
-        frames.stage.origin.y = 500
-        XCTAssertTrue(frames.showsBox(at: CGPoint(x: 200, y: 800)))
-        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 200, y: 820)), "under the tab bar")
+        frames.stages["black"]?.rect.origin.y = 500
+        XCTAssertTrue(frames.shows("black", at: CGPoint(x: 200, y: 800)))
+        XCTAssertFalse(frames.shows("black", at: CGPoint(x: 200, y: 820)), "under the tab bar")
     }
 
     func testRevealScrollsJustEnoughToShowACompartment() {
@@ -264,6 +267,138 @@ import XCTest
         // Under the bar: scroll up until its top is 12 pt below the bar, not 12 pt below the bar's height again.
         XCTAssertEqual(frames.revealDelta(for: CGRect(x: 20, y: -50, width: 148, height: 85)), -62)
         XCTAssertEqual(frames.revealDelta(for: CGRect(x: 20, y: 40, width: 148, height: 85)), 0)
+    }
+
+    // MARK: Every box at once (the Both view)
+
+    /// Two 6 by 2 boxes: two labels and one gap (60 pt), 436 mm of boxes.
+    private var two: [BoxGeometry] { [box, box] }
+
+    func testTheStackHeightIsLabelsGapsAndBoxes() {
+        XCTAssertEqual(BoxStack.chrome(2), 60)
+        XCTAssertEqual(two.reduce(0) { $0 + $1.canvas.height }, 436)
+        for k: CGFloat in [0, 0.5, 1, 1.7] {
+            XCTAssertEqual(BoxStack.height(two, k: k), 2 * 22 + 16 + 436 * k, accuracy: 0.0001)
+            XCTAssertEqual(BoxStack.height([box, box, box], k: k), 3 * 22 + 2 * 16 + 654 * k, accuracy: 0.0001)
+        }
+        XCTAssertEqual(BoxStack.height([box], k: 1), 22 + 218, accuracy: 0.0001)
+        XCTAssertEqual(BoxStack.height([], k: 1), 0)
+    }
+
+    func testThePhoneFitsBothBoxesBetweenTheBarAndTheTray() {
+        let space = CGSize(width: 370, height: 488)
+        let k = BoxStack.scale(two, .phone, space: space, mac: false)
+        XCTAssertEqual(k, (488 - 60) / 436, accuracy: 0.0001)
+        XCTAssertEqual(BoxStack.height(two, k: k), 488, accuracy: 0.001)
+        XCTAssertGreaterThanOrEqual(k * box.canvas.width, BoxStack.minimumFitWidth)
+        XCTAssertLessThan(k * box.canvas.width, 370, "narrower than the column")
+    }
+
+    func testAColumnTooShortToFitKeepsTheBoxesFullWidthAndScrolls() {
+        // Fitting would make each box 150 pt wide, under the 300 minimum.
+        let short = BoxStack.scale(two, .phone, space: CGSize(width: 350, height: 250), mac: false)
+        XCTAssertEqual(short, 350 / 345, accuracy: 0.0001)
+        // Not measured yet: as wide as the column, as a single box is.
+        XCTAssertEqual(BoxStack.scale(two, .phone, space: CGSize(width: 350, height: 0), mac: false), 350 / 345, accuracy: 0.0001)
+        // Room to spare: never wider than the column.
+        XCTAssertEqual(BoxStack.scale(two, .column, space: CGSize(width: 370, height: 900), mac: false), 370 / 345, accuracy: 0.0001)
+        // A wide Mac column: never wider than `widestBox`.
+        for height: CGFloat in [0, 3000] {
+            let mac = BoxStack.scale(two, .column, space: CGSize(width: 1400, height: height), mac: true)
+            XCTAssertEqual(mac * box.canvas.width, BoxArrangement.widestBox, accuracy: 0.001, "height \(height)")
+        }
+        // A narrow Mac column that has the height fits them, as the phone does.
+        let narrow = BoxStack.scale(two, .column, space: CGSize(width: 724, height: 794), mac: true)
+        XCTAssertEqual(BoxStack.height(two, k: narrow), 794, accuracy: 0.001)
+    }
+
+    func testABookPageAndTheDeskFitTheWholeStack() {
+        let page = CGSize(width: 437.5, height: 535)
+        let k = BoxStack.scale(two, .book, space: page, mac: false)
+        XCTAssertLessThanOrEqual(k * box.canvas.width, page.width + 0.001)
+        XCTAssertLessThanOrEqual(BoxStack.height(two, k: k), page.height + 0.001)
+        XCTAssertEqual(k, min(437.5 / 345, (535 - 60) / 436), accuracy: 0.0001)
+        let desk = BoxStack.scale(two, .desk, space: CGSize(width: 2000, height: 1500), mac: true)
+        XCTAssertEqual(desk * box.canvas.width, BoxArrangement.widestBox, accuracy: 0.001)
+        for empty in [CGSize.zero, CGSize(width: 400, height: 0), CGSize(width: 0, height: 400)] {
+            for arrangement in [BoxArrangement.book, .desk, .table] {
+                XCTAssertEqual(BoxStack.scale(two, arrangement, space: empty, mac: false), 0, "\(arrangement) \(empty)")
+            }
+        }
+        // Three and four boxes still fit a book's page.
+        for count in [3, 4] {
+            let boxes = Array(repeating: box, count: count)
+            let fitted = BoxStack.scale(boxes, .book, space: page, mac: false)
+            XCTAssertGreaterThan(fitted, 0)
+            XCTAssertLessThanOrEqual(BoxStack.height(boxes, k: fitted), page.height + 0.001, "\(count) boxes")
+            XCTAssertLessThanOrEqual(fitted * box.canvas.width, page.width + 0.001)
+        }
+    }
+
+    func testTheTableFitsTheFirstBoxAndItsLabelAboveTheCrease() {
+        let well = CGSize(width: 629, height: 312)
+        let k = BoxStack.scale(two, .table, space: well, mac: false)
+        XCTAssertEqual(k, (312 - 22) / 218, accuracy: 0.0001)
+        XCTAssertEqual(BoxStack.scale([box, box, box], .table, space: well, mac: false), k, accuracy: 0.0001)
+        XCTAssertLessThanOrEqual(BoxStack.label + box.canvas.height * k, well.height + 0.001)
+    }
+
+    func testOneScaleForBoxesOfDifferentSizes() {
+        let small = BoxGeometry(columns: 4, rows: 2)
+        let page = CGSize(width: 437.5, height: 900)
+        let k = BoxStack.scale([box, small], .book, space: page, mac: false)
+        // The wider box decides, and the smaller one draws truly smaller at the same scale.
+        XCTAssertEqual(k, 437.5 / box.canvas.width, accuracy: 0.0001)
+        XCTAssertLessThan(small.canvas.width * k, box.canvas.width * k)
+        XCTAssertEqual(BoxStack.scale([small, box], .book, space: page, mac: false), k, accuracy: 0.0001, "order does not matter")
+        let phone = BoxStack.scale([box, small], .phone, space: CGSize(width: 370, height: 0), mac: false)
+        XCTAssertEqual(phone * box.canvas.width, 370, accuracy: 0.001)
+    }
+
+    func testHowManyBoxesStandInTheFixedPane() {
+        for count in [2, 3, 4] {
+            XCTAssertEqual(BoxStack.fixedCount(.book, count: count), count)
+            XCTAssertEqual(BoxStack.fixedCount(.desk, count: count), count)
+            XCTAssertEqual(BoxStack.fixedCount(.table, count: count), 1)
+            XCTAssertEqual(BoxStack.fixedCount(.phone, count: count), 0)
+            XCTAssertEqual(BoxStack.fixedCount(.column, count: count), 0)
+        }
+        XCTAssertEqual(BoxStack.fixedCount(.table, count: 0), 0)
+    }
+
+    // MARK: Which boxes show, and their words
+
+    private let black = BoxFixture.box("black", slots: ["0": "field"])
+    private let brown = BoxFixture.box("brown")
+    private let grey = WatchBox(id: "box-0000abcd", name: "Grey Box", finish: "black", columns: 6, rows: 2, slots: [:])
+
+    func testBothShowsEveryBoxInBoxOrder() {
+        XCTAssertEqual(BoxShowing.boxes([black, brown], selected: "brown", all: true).map(\.id), ["black", "brown"])
+        XCTAssertEqual(BoxShowing.boxes([brown, black], selected: "black", all: true).map(\.id), ["brown", "black"])
+        // Stored with only one box: that box, and Both applies again once a second exists.
+        XCTAssertEqual(BoxShowing.boxes([brown], selected: "black", all: true).map(\.id), ["brown"])
+        XCTAssertEqual(BoxShowing.boxes([], selected: "black", all: true).map(\.id), [])
+        XCTAssertEqual(BoxShowing.boxes([black, brown, grey], selected: "black", all: true).map(\.id), ["black", "brown", "box-0000abcd"])
+        // Single view: the chosen box, or the first when it has gone.
+        XCTAssertEqual(BoxShowing.boxes([black, brown], selected: "brown", all: false).map(\.id), ["brown"])
+        XCTAssertEqual(BoxShowing.boxes([black, brown], selected: "gone", all: false).map(\.id), ["black"])
+    }
+
+    func testTheWordsForEveryBoxAtOnce() {
+        XCTAssertEqual(BoxShowing.tabWord(count: 2), "Both")
+        XCTAssertEqual(BoxShowing.tabWord(count: 3), "All")
+        XCTAssertEqual(BoxShowing.title(count: 2), "Both Boxes")
+        XCTAssertEqual(BoxShowing.title(count: 4), "All Boxes")
+        XCTAssertEqual(BoxShowing.macSubtitle(count: 2, counts: "14 watches, 10 spaces open"), "Both boxes, 14 watches, 10 spaces open")
+        XCTAssertEqual(BoxShowing.macSubtitle(count: 3, counts: "Full"), "All boxes, Full")
+        // The box tabs: the name; on the cover short with the count; short wherever there are four tabs or more.
+        XCTAssertEqual(BoxShowing.tabLabel(black, countsInTabs: false, tabCount: 3), "Black Box")
+        XCTAssertEqual(BoxShowing.tabLabel(black, countsInTabs: true, tabCount: 3), "Black 1")
+        XCTAssertEqual(BoxShowing.tabLabel(grey, countsInTabs: false, tabCount: 4), "Grey")
+        XCTAssertEqual(BoxShare.counts(of: [(watches: 11, onTrial: 0, capacity: 12), (watches: 3, onTrial: 0, capacity: 12)]),
+                       "14 watches, 10 spaces open")
+        XCTAssertEqual(BoxShare.counts(of: [(watches: 11, onTrial: 0, capacity: 12), (watches: 2, onTrial: 1, capacity: 12)]),
+                       "13 watches, 1 on trial, 10 spaces open")
     }
 
     // MARK: What a shared picture says

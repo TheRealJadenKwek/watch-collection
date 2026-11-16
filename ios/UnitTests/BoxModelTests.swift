@@ -176,6 +176,28 @@ final class BoxModelTests: XCTestCase {
         XCTAssertTrue(BoxModel.tray(data).map(\.id).contains("field"))
     }
 
+    /// The Both view's drags, from one box straight into the other.
+    func testAWatchMovesFromTheBlackBoxIntoAnEmptyBrownSpace() throws {
+        var data = BoxFixture.standard
+        try BoxModel.place(watchID: "field", boxID: "brown", slot: 5, in: &data)
+        XCTAssertEqual(slots(data, "black"), [:])
+        XCTAssertEqual(slots(data, "brown"), ["5": "field"])
+        XCTAssertEqual(BoxModel.location(of: "field", in: data), BoxSpace(boxID: "brown", slot: 5))
+        // And back.
+        try BoxModel.place(watchID: "field", boxID: "black", slot: 0, in: &data)
+        XCTAssertEqual(slots(data, "black"), ["0": "field"])
+        XCTAssertEqual(slots(data, "brown"), [:])
+    }
+
+    func testAWatchDroppedOnAnOccupiedSpaceInTheOtherBoxSwapsAcrossTheBoxes() throws {
+        var data = BoxFixture.standard
+        try BoxModel.place(watchID: "diver", boxID: "brown", slot: 5, in: &data)
+        try BoxModel.place(watchID: "field", boxID: "brown", slot: 5, in: &data)
+        XCTAssertEqual(slots(data, "brown"), ["5": "field"])
+        XCTAssertEqual(slots(data, "black"), ["0": "diver"], "the brown box's watch takes the black space it came from")
+        XCTAssertEqual(BoxModel.tray(data).map(\.id), ["dress"], "nothing went to the tray")
+    }
+
     func testPlaceRefusesWhatCannotGoInABox() {
         var data = BoxFixture.standard
         XCTAssertThrowsError(try BoxModel.place(watchID: "sold-one", boxID: "black", slot: 1, in: &data))
