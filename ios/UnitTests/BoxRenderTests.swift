@@ -264,7 +264,8 @@ final class BoxScreenPureTests: XCTestCase {
     }
 }
 
-/// The trial mark and the selection ring beside it (review of 2026-11-16, drawing 5 to 7).
+/// The trial mark, the selection ring beside it, and the product view's frame (review of 2026-11-16, drawing 2 and
+/// 4 to 7).
 @MainActor final class BoxMarkTests: XCTestCase {
     private let box = BoxGeometry(columns: 6, rows: 2)
 
@@ -389,5 +390,47 @@ final class BoxScreenPureTests: XCTestCase {
         }
         // Without a trial the selection ring stays where it was, just inside the walls.
         XCTAssertEqual(BoxPainter.selectionInset(lineWidth: 1.5, overTrial: false), 1.25)
+    }
+
+    // MARK: The product view
+
+    func testTheProductViewFitsEveryRowCount() {
+        // Two rows keep the prototype's frame.
+        XCTAssertEqual(BoxProductPainter.aspect(box), 345 / 262, accuracy: 0.0005)
+        for rows in 1...4 {
+            for columns in 1...8 {
+                let geometry = BoxGeometry(columns: columns, rows: rows)
+                for width: CGFloat in [370, 402, 728] {
+                    let size = CGSize(width: width, height: width / BoxProductPainter.aspect(geometry))
+                    let painter = BoxProductPainter(geometry: geometry, palette: .of(.black), slots: [:], size: size)
+                    XCTAssertGreaterThanOrEqual(painter.top, 4, "\(columns) x \(rows) at \(width): the back rail is cut off")
+                }
+            }
+        }
+        // More rows, a taller picture.
+        let heights = (1...4).map { BoxProductPainter.height(BoxGeometry(columns: 6, rows: $0)) }
+        XCTAssertEqual(heights, heights.sorted())
+    }
+
+    func testTheProductViewMarksATrialWithItsTag() throws {
+        /// Pixels of the trial green (#2FB877) well inside the box the green spans: none for the ring alone (it is
+        /// that box's edge), the capsule of the TRYING tag when there is one.
+        func greenInsideTheRing(trial: Bool) throws -> Int {
+            var content = BoxSlotContent()
+            content.isTrial = trial
+            let view = BoxProductView(geometry: box, finish: .black, slots: [6: content]).frame(width: 370)
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 1
+            let image = try XCTUnwrap(renderer.cgImage)
+            let green = drawn(image).filter { pixel in
+                let c = pixel.rgba
+                return abs(Int(c[0]) - 0x2F) < 30 && abs(Int(c[1]) - 0xB8) < 30 && abs(Int(c[2]) - 0x77) < 30
+            }.map(\.point)
+            guard let first = green.first else { return 0 }
+            let span = green.reduce(CGRect(origin: first, size: .zero)) { $0.union(CGRect(origin: $1, size: .zero)) }
+            return green.filter { span.insetBy(dx: 3, dy: 3).contains($0) }.count
+        }
+        XCTAssertEqual(try greenInsideTheRing(trial: false), 0)
+        XCTAssertGreaterThan(try greenInsideTheRing(trial: true), 100)
     }
 }
