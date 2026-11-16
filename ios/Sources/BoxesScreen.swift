@@ -955,9 +955,9 @@ struct BoxesScreen: View {
 
     private func follow(_ location: CGPoint, start: CGPoint, piece: BoxPiece, origin: Int?, scene: Scene) {
         if drag.lift == nil {
-            // A watch in the box lifts once the finger has moved 4 pt, however long it was held first: a press that
-            // never moves selects the compartment (`held`).
-            if origin != nil, Platform.isMac == false, hypot(location.x - start.x, location.y - start.y) < 4 { return }
+            // A watch in the box or a chip lifts once the finger has moved 4 pt, however long it was held first: a
+            // press that never moves selects the compartment (`held`) or, on a chip, is a tap that arms it.
+            if Platform.isMac == false, hypot(location.x - start.x, location.y - start.y) < 4 { return }
             lift(piece, origin: origin, start: start, scene: scene)
         }
         drag.location = location
