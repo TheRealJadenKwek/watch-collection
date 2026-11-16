@@ -497,15 +497,25 @@ struct WishlistCard: View {
             Hairline().padding(.horizontal, WatchTheme.panelPadding)
 
             // "Try in my box" is a pill where the row has room for it (the Mac, wide windows), otherwise an item in
-            // the ellipsis menu.
+            // the ellipsis menu. Where even that does not fit (large text on a small phone), Edit and the menu move
+            // to a second line.
             ViewThatFits(in: .horizontal) {
                 actionRow(tryPill: true)
                 actionRow(tryPill: false)
+                VStack(alignment: .leading, spacing: 10) {
+                    HStack(spacing: 8) {
+                        statusButtons
+                        Spacer(minLength: 0)
+                    }
+                    HStack(spacing: 8) {
+                        Spacer(minLength: 0)
+                        editButtons(tryPill: false)
+                    }
+                }
             }
             .controlSize(.small)
             .padding(.horizontal, WatchTheme.panelPadding)
             .padding(.vertical, 14)
-            .disabled(store.isOffline)
         }
         .background(WatchTheme.card)
         .opacity(item.status == "passed" ? 0.55 : 1)
@@ -513,6 +523,16 @@ struct WishlistCard: View {
 
     private func actionRow(tryPill: Bool) -> some View {
         HStack(spacing: 8) {
+            statusButtons
+            Spacer(minLength: 0)
+            editButtons(tryPill: tryPill)
+        }
+    }
+
+    /// Bought It and Pass, or the status once decided. They need the hub, so they wait while offline.
+    @ViewBuilder
+    private var statusButtons: some View {
+        Group {
             if item.status == "considering" {
                 Button("Bought It", action: bought)
                     .prominentButton()
@@ -521,32 +541,40 @@ struct WishlistCard: View {
             } else {
                 CapsuleChip(text: item.status.capitalized)
             }
-            Spacer(minLength: 0)
-            if tryPill {
-                Button("Try in my box") { store.openBoxes(.tryOn(item.id)) }
-                    .quietButton()
-                    .fixedSize()
-            }
-            Button("Edit", action: edit)
-                .quietButton()
-            Menu {
-                if !tryPill {
-                    Button { store.openBoxes(.tryOn(item.id)) } label: { Label("Try in my box", systemImage: "square.grid.3x2") }
-                }
-                Button(action: findImage) { Label("Find Image Online", systemImage: "photo.badge.magnifyingglass") }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.body.weight(.bold))
-                    .foregroundStyle(WatchTheme.ink)
-                    .frame(width: 34, height: 34)
-                    .background(WatchTheme.fill, in: Circle())
-                    .contentShape(Circle())
-            }
-            .buttonStyle(.plain)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .accessibilityLabel("More")
         }
+        .disabled(store.isOffline)
+    }
+
+    /// "Try in my box" (a pill, or an item in the menu), Edit and the menu. A trial stays on this device, so trying
+    /// works offline; the rest waits for the hub.
+    @ViewBuilder
+    private func editButtons(tryPill: Bool) -> some View {
+        if tryPill {
+            Button("Try in my box") { store.openBoxes(.tryOn(item.id)) }
+                .quietButton()
+                .fixedSize()
+        }
+        Button("Edit", action: edit)
+            .quietButton()
+            .disabled(store.isOffline)
+        Menu {
+            if !tryPill {
+                Button { store.openBoxes(.tryOn(item.id)) } label: { Label("Try in my box", systemImage: "square.grid.3x2") }
+            }
+            Button(action: findImage) { Label("Find Image Online", systemImage: "photo.badge.magnifyingglass") }
+                .disabled(store.isOffline)
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.body.weight(.bold))
+                .foregroundStyle(WatchTheme.ink)
+                .frame(width: 34, height: 34)
+                .background(WatchTheme.fill, in: Circle())
+                .contentShape(Circle())
+        }
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .accessibilityLabel("More")
     }
 
     /// One compact segment per lens; tap to expand the reasons.
@@ -668,25 +696,31 @@ struct TopPickView: View {
             }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 12) {
-                    Button("Bought It", action: bought)
-                        .prominentButton()
-                    Button("Details", action: edit)
-                        .quietButton()
+                    hubButtons
                     tryInBox
                     Spacer(minLength: 0)
                 }
                 VStack(alignment: .leading, spacing: 12) {
                     HStack(spacing: 12) {
-                        Button("Bought It", action: bought)
-                            .prominentButton()
-                        Button("Details", action: edit)
-                            .quietButton()
+                        hubButtons
                     }
                     tryInBox
                 }
             }
             .padding(.top, 4)
-            .disabled(store.isOffline)
+    }
+
+    /// Bought It and Details need the hub, so they wait while offline; a trial stays on this device, so "Try in my
+    /// box" does not.
+    @ViewBuilder
+    private var hubButtons: some View {
+        Group {
+            Button("Bought It", action: bought)
+                .prominentButton()
+            Button("Details", action: edit)
+                .quietButton()
+        }
+        .disabled(store.isOffline)
     }
 
     private var tryInBox: some View {
