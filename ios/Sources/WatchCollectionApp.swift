@@ -2,6 +2,8 @@ import SwiftUI
 
 @main
 struct WatchCollectionApp: App {
+    /// Lets only a folding iPhone's inner screen turn; everything else stays upright.
+    @UIApplicationDelegateAdaptor(WatchAppDelegate.self) private var appDelegate
     @StateObject private var store = AppStore()
     @Environment(\.scenePhase) private var scenePhase
 
@@ -15,10 +17,14 @@ struct WatchCollectionApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RootView(store: store)
+            // Every view below reads how a folding iPhone is held from `@Environment(\.duo)`.
+            DuoRoot { RootView(store: store) }
                 .tint(WatchTheme.accent)
                 .task { await store.start() }
                 .onChange(of: scenePhase, initial: true) { _, phase in store.sceneChanged(phase) }
+                #if DEBUG
+                .task { await DuoSnapshot.runIfAsked(store: store) }
+                #endif
         }
         .backgroundTask(.appRefresh(AppStore.backgroundSyncID)) {
             await store.start()
@@ -33,6 +39,7 @@ struct RootView: View {
     @AppStorage("selectedTabV4") private var selectedTab = AppTab.collection.rawValue
     @State private var showSettings = false
     @State private var windowWidth: CGFloat = 0
+    @Environment(\.duo) private var duo
 
     var body: some View {
         ZStack {
@@ -58,9 +65,10 @@ struct RootView: View {
                 }
             }
         }
-        // Every screen takes its side margin from the window width: narrower on small phones.
+        // Every screen takes its side margin from the window width: narrower on small phones. A folding
+        // iPhone's cover and inner screen take the Duo gutter instead.
         .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { windowWidth = $0 }
-        .environment(\.pageMargin, WatchTheme.margin(forWidth: windowWidth))
+        .environment(\.pageMargin, duo.pageMargin(phone: WatchTheme.margin(forWidth: windowWidth)))
         #if DEBUG
         .task {
             guard AtelierProbe.opensSettings else { return }

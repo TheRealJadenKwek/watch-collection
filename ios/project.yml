@@ -36,8 +36,11 @@ targets:
           - fetch
         NSLocalNetworkUsageDescription: Sync your watch collection and photos with your Mac.
         UILaunchScreen: {}
+        # Only a folding iPhone's inner screen turns: WatchAppDelegate keeps every other iPhone upright.
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
         UIFileSharingEnabled: true
         LSSupportsOpeningDocumentsInPlace: true
         UTExportedTypeDeclarations:
