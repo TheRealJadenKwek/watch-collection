@@ -1614,8 +1614,8 @@ struct BoxesScreen: View {
     #if DEBUG
     /// Debug builds only, for pictures on a simulator that has no touch input:
     ///   -boxProbe "lid,select:3,arm:<watch-id>,try:<wishlist-id>,trial:<wishlist-id>@<slot>,notrial,wishlist,asis,
-    ///              editor:3,manage,turn,brown,black,scroll:600,lift:2-5,wait:1,
-    ///              card:<name>,product:<name>"
+    ///              editor:3,manage,turn,brown,black,scroll:600,lift:2-5,liftchip:<watch-id>,show:<watch-id>,
+    ///              pickup:3,place:5,wait:1,card:<name>,product:<name>"
     private func runProbe() async {
         guard let probe = UserDefaults.standard.string(forKey: "boxProbe") else { return }
         try? await Task.sleep(for: .seconds(2.5))
@@ -1657,6 +1657,18 @@ struct BoxesScreen: View {
                 }
             case "scroll": fold.position.scrollTo(y: CGFloat(Double(value) ?? 0))
             case "brown", "black": selectedBoxID = parts[0]
+            // The watch page's Box row: show:<watch-id>.
+            case "show": store.openBoxes(.show(value))
+            // VoiceOver's two steps: pickup:<slot> ("Move"), then place:<slot> ("Place here").
+            case "pickup": if let scene = makeScene(), let slot = Int(value), let piece = scene.occupants[slot] { pickUp(piece) }
+            case "place": if let scene = makeScene(), let armed, let slot = Int(value) { place(armed, at: slot, scene) }
+            case "liftchip":
+                // A tray chip held up, as a drag from the tray shows it: liftchip:<watch-id>.
+                if let scene = makeScene(), let watch = scene.watches[value] {
+                    let point = CGPoint(x: frames.tray.midX, y: frames.tray.minY - 80)
+                    lift(BoxPiece(watch: watch), origin: nil, start: point, scene: scene)
+                    drag.location = point
+                }
             #if os(macOS)
             case "appearance": NSApp.appearance = NSAppearance(named: value == "dark" ? .darkAqua : .aqua)
             case "size":
