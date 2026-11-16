@@ -142,10 +142,9 @@ actor CollectionSyncClient {
     }
 
     func exchange(base: CollectionData?, local: CollectionData, resolutions: [String: String], remote: SyncSnapshot) async throws -> SyncSnapshot {
-        let existing = Set(remote.photos)
         var local = local
         var lost: Set<String> = []
-        for asset in PhotoStore.assets(in: local, baseURL: nil) where !existing.contains(asset.directory + "/" + asset.filename) {
+        for asset in Self.uploads(from: local, hub: remote.data, hubFiles: remote.photos) {
             try Task.checkCancellation()
             guard let file = PhotoStore.localURL(for: asset), let bytes = try? Data(contentsOf: file) else {
                 // Gone on both sides (e.g. a partial restore): drop the reference instead of blocking sync forever.
@@ -168,6 +167,27 @@ actor CollectionSyncClient {
             // A photo the Mac can't serve shows as a placeholder; it must not stall the whole sync.
             _ = await PhotoStore.shared.load(asset, allowDownload: true)
         }
+    }
+
+    /// The files an exchange sends: every photo the hub does not list, and the box tiles of items the
+    /// hub's document does not have yet (a candidate bought here moves its tiles to the new watch's
+    /// folder). Tiles of items the hub has are the hub's: a file of theirs it does not list was replaced
+    /// or removed there, so it is not sent back; nor are the empty tiles, which only the hub makes.
+    static func uploads(from local: CollectionData, hub: CollectionData, hubFiles: [String]) -> [PhotoAsset] {
+        let listed = Set(hubFiles)
+        let hubWatches = Set(hub.watches.map(\.id))
+        let hubCandidates = Set(hub.wishlist.map(\.id))
+        let watchFiles = local.watches.flatMap { watch in
+            (watch.photos + (hubWatches.contains(watch.id) ? [] : PhotoStore.tileNames(watch.boxTiles))).compactMap {
+                PhotoStore.asset(itemID: watch.id, filename: $0, wishlist: false, baseURL: nil)
+            }
+        }
+        let candidateFiles = local.wishlist.flatMap { item in
+            (item.photos + (hubCandidates.contains(item.id) ? [] : PhotoStore.tileNames(item.boxTiles))).compactMap {
+                PhotoStore.asset(itemID: item.id, filename: $0, wishlist: true, baseURL: nil)
+            }
+        }
+        return (watchFiles + candidateFiles).filter { !listed.contains($0.directory + "/" + $0.filename) }
     }
 
     /// Drops references to files that are gone on both sides ("dir/file" keys): photos, their framing,

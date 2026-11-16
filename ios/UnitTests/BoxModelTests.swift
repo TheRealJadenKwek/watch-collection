@@ -299,6 +299,28 @@ final class BoxModelTests: XCTestCase {
         XCTAssertNil(result.emptyBoxTiles)
     }
 
+    func testUploadsSendTilesOnlyForItemsTheHubLacks() {
+        var hub = BoxFixture.standard
+        hub.wishlist = [BoxFixture.candidate("nomos")]
+        var local = hub
+        // field: a new photo, and a tile the hub has since replaced (it lists only its current one).
+        local.watches[0].photos = ["new.jpg"]
+        local.watches[0].boxTiles = ["black": "box-black-11111111.jpg", "brown": "box-brown-22222222.jpg"]
+        // A candidate the hub has, holding a tile the hub removed.
+        local.wishlist[0].boxTiles = ["black": "box-black-44444444.jpg"]
+        // A candidate bought here: a watch the hub has never seen, its tiles copied into its own folder.
+        var bought = BoxFixture.watch("nomos-watch", photos: ["n.jpg"])
+        bought.boxTiles = ["black": "box-black-44444444.jpg"]
+        local.watches.append(bought)
+        local.emptyBoxTiles = ["black": "empty-black-33333333.jpg"]
+        let hubFiles = ["field/box-brown-22222222.jpg"]
+        let sent = CollectionSyncClient.uploads(from: local, hub: hub, hubFiles: hubFiles).map { "\($0.directory)/\($0.filename)" }
+        XCTAssertEqual(sent, ["field/new.jpg", "nomos-watch/n.jpg", "nomos-watch/box-black-44444444.jpg"])
+        // Files the hub lists are never sent again, tiles of an item it lacks included.
+        let again = CollectionSyncClient.uploads(from: local, hub: hub, hubFiles: hubFiles + sent)
+        XCTAssertEqual(again, [])
+    }
+
     // MARK: Conflict wording
 
     func testBoxSlotConflictReadsAsBoxAndSpace() throws {

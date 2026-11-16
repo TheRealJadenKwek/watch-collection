@@ -709,6 +709,40 @@ class BoxSyncAPITests(unittest.TestCase):
         self.assertEqual(server.read_data()["boxes"], hub["boxes"])
         self.assertEqual(result["data"]["boxes"], hub["boxes"])
 
+    def test_stale_tile_uploads_are_not_written(self):
+        base = self.seed_boxes()
+        base["wishlist"] = [{"id": "nomos", "name": "Nomos", "brand": "Nomos", "category": "Field", "priceExpected": 2000,
+                             "priceNote": "", "notes": "", "status": "considering", "added": "2026-11",
+                             "dialColor": "Black", "diameter": 38, "lugToLug": None, "material": "Steel", "photos": []}]
+        server.atomic_write_data(base)
+        first = self.publish("field", "black", "first")
+        second = self.publish("field", "black", "second")
+        empty_first = self.publish("_box", "black", "empty first")
+        empty_second = self.publish("_box", "black", "empty second")
+        candidate = self.publish("wl-nomos", "brown", "nomos")
+        self.assertEqual(self.tile("DELETE", "wl-nomos", "brown")[0], 200)
+
+        def upload(folder, name, label):
+            return self.request("POST", f"/api/sync/photos/{folder}/{name}", {"data": base64.b64encode(jpeg(label)).decode()})
+
+        # A device that still holds a replaced or removed tile sends it back: answered, never written.
+        for folder, name, label in (("field", first, "first"), ("_box", empty_first, "empty first"),
+                                    ("wl-nomos", candidate, "nomos"), ("field", "box-brown-0badc0de.jpg", "made up")):
+            status, result = upload(folder, name, label)
+            self.assertEqual((status, result), (200, {"ok": True, "ignored": True}), name)
+            self.assertFalse((server.PHOTOS_DIR / folder / name).exists(), name)
+        # The current tile is the hub's own: a lost file comes back from a device that has it.
+        (server.PHOTOS_DIR / "field" / second).unlink()
+        self.assertEqual(upload("field", second, "second"), (200, {"ok": True}))
+        self.assertTrue((server.PHOTOS_DIR / "field" / second).is_file())
+        self.assertEqual(upload("_box", empty_second, "empty second"), (200, {"ok": True}))
+        # A watch the hub has never seen (bought on a device) takes its tiles; photos are unchanged.
+        bought = tile_name("box", "black", jpeg("bought"))
+        self.assertEqual(upload("nomos-watch", bought, "bought"), (200, {"ok": True}))
+        self.assertTrue((server.PHOTOS_DIR / "nomos-watch" / bought).is_file())
+        self.assertEqual(upload("field", "0123abcd.jpg", "a photo"), (200, {"ok": True}))
+        self.assertTrue((server.PHOTOS_DIR / "field" / "0123abcd.jpg").is_file())
+
 
 if __name__ == "__main__":
     unittest.main()

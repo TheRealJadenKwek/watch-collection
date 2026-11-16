@@ -52,6 +52,8 @@ BOX_TILE_DIRECTORY = "_box"
 BOX_TILE_LIMIT = 3 * 1024 * 1024
 BOX_TILE_NAME = re.compile(r"^box-(black|brown)-[0-9a-f]{8}\.jpg$")
 EMPTY_TILE_NAME = re.compile(r"^empty-(black|brown)-[0-9a-f]{8}\.jpg$")
+# Uploads named like a tile (photos are hex names, never these).
+TILE_PREFIXES = ("box-", "empty-")
 # What this hub's sync understands, sent with every sync snapshot. An app seeds boxes, offers the
 # starting layout and lets a sync result take its boxes away only for a hub that lists "boxes": a hub
 # running code from before boxes drops the key from every document it returns.
@@ -752,6 +754,11 @@ class WatchHandler(BaseHTTPRequestHandler):
         except (KeyError, TypeError, ValueError):
             raise ApiError(HTTPStatus.BAD_REQUEST, "Invalid photo")
         with DATA_LOCK:
+            if self.stale_tile_upload(directory, filename):
+                # A device still holds a tile the hub replaced or removed. Tiles of items the hub has are
+                # the hub's, so the file is not written; the answer is still a success, so no device stalls.
+                self.send_json(HTTPStatus.OK, {"ok": True, "ignored": True})
+                return
             destination = PHOTOS_DIR / directory / filename
             destination.parent.mkdir(parents=True, exist_ok=True)
             if destination.exists():
@@ -765,6 +772,18 @@ class WatchHandler(BaseHTTPRequestHandler):
                     os.fsync(handle.fileno())
                 os.replace(temporary, destination)
         self.send_json(HTTPStatus.OK, {"ok": True})
+
+    def stale_tile_upload(self, directory, filename):
+        """True for a tile-named upload into _box or into the folder of an item the hub has, unless it is
+        that item's current tile. A watch the hub has never seen (bought on a device) takes its tiles."""
+        if not filename.startswith(TILE_PREFIXES):
+            return False
+        data = read_data()
+        owner = self.tile_owner(data, directory)
+        if owner is None:
+            return False
+        key = "emptyBoxTiles" if directory == BOX_TILE_DIRECTORY else "boxTiles"
+        return filename not in tile_names(owner.get(key))
 
     def do_DELETE(self) -> None:
         def dispatch():
