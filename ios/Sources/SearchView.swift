@@ -6,6 +6,8 @@ struct SearchScreen: View {
     @ObservedObject var store: AppStore
     @State private var query = ""
     @State private var editingItem: WishlistItem?
+    /// Where the results are scrolled to, kept when a folding iPhone is opened or shut.
+    @State private var fold = FoldScroll()
     @Environment(\.sectionIsActive) private var sectionIsActive
     @Environment(\.pageMargin) private var margin
     @Environment(\.duo) private var duo
@@ -110,6 +112,8 @@ struct SearchScreen: View {
             .scrollDismissesKeyboard(.immediately)
             .mastheadTitle("Search", showsMasthead: trimmed.isEmpty)
             .atelierProbeScroll("search")
+            .foldScroll($fold)
+            .keepsScrollAcrossFolds($fold)
             .screenBackground()
             .overlay {
                 if !trimmed.isEmpty, foundWatches.isEmpty, foundWishlist.isEmpty {

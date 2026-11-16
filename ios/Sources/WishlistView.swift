@@ -11,6 +11,10 @@ struct WishlistScreen: View {
     @State private var boughtItem: WishlistItem?
     @State private var radarBrand = ""
     @State private var prefilledBrand = ""
+    /// Cards with their score breakdown open, kept here so they stay open when a folding iPhone is opened or shut.
+    @State private var lensesShown: Set<String> = []
+    /// Where the page is scrolled to, kept when a folding iPhone is opened or shut.
+    @State private var fold = FoldScroll()
     @Environment(\.sectionIsActive) private var sectionIsActive
     @Environment(\.pageMargin) private var margin
     @Environment(\.duo) private var duo
@@ -70,7 +74,8 @@ struct WishlistScreen: View {
                                                 edit: { editingItem = item },
                                                 pass: { Task { await store.passWishlist(id: item.id) } },
                                                 bought: { boughtItem = item },
-                                                findImage: { findImage(item.id) }
+                                                findImage: { findImage(item.id) },
+                                                showsLenses: lenses(item.id)
                                             )
                                             .id("wishlist-\(item.id)")
                                         }
@@ -89,6 +94,8 @@ struct WishlistScreen: View {
                     }
                     .mastheadTitle("Wishlist")
                     .atelierProbeScroll("wishlist")
+                    .foldScroll($fold)
+                    .keepsScrollAcrossFolds($fold)
                     .screenBackground()
                 }
             }
@@ -119,8 +126,9 @@ struct WishlistScreen: View {
 
     /// The inner screen. Held like a book: the candidates in two columns, one per page, the masthead heading the left
     /// one, the top pick first and each column as level as it can be, then the suggestions one per page. With the
-    /// crease across, two columns would leave each card about 310 points wide, too narrow for its name and buttons,
-    /// so the candidates and suggestions run full width there, the top pick with its photo beside its reasons.
+    /// crease across the brief asks for two columns; this is a deliberate departure from it, accepted on review: two
+    /// columns would leave each card about 310 points wide and truncate its name and buttons, so the candidates and
+    /// suggestions run full width there, the top pick with its photo beside its reasons.
     private func columns(scrollTo: @escaping (String) -> Void) -> some View {
         let count = duo.isBook ? duo.cardColumns : 1
         let gap = duo.isBook ? DuoLayout.creaseGap(inset: WatchTheme.narrowMargin) : WatchTheme.gridGap
@@ -176,7 +184,8 @@ struct WishlistScreen: View {
                         edit: { editingItem = item },
                         pass: { Task { await store.passWishlist(id: item.id) } },
                         bought: { boughtItem = item },
-                        findImage: { findImage(item.id) }
+                        findImage: { findImage(item.id) },
+                        showsLenses: lenses(item.id)
                     )
                     .id("wishlist-\(item.id)")
                     .cardColumn(restColumns[safe: index] ?? 0, of: count)
@@ -192,6 +201,15 @@ struct WishlistScreen: View {
         }
         .padding(.horizontal, WatchTheme.narrowMargin)
         .padding(.bottom, 24)
+    }
+
+    /// Whether a card's score breakdown is open.
+    private func lenses(_ id: String) -> Binding<Bool> {
+        Binding {
+            lensesShown.contains(id)
+        } set: { shown in
+            if shown { lensesShown.insert(id) } else { lensesShown.remove(id) }
+        }
     }
 
     private var addButton: some View {
@@ -393,7 +411,7 @@ struct WishlistCard: View {
     let pass: () -> Void
     let bought: () -> Void
     let findImage: () -> Void
-    @State private var showsLenses = false
+    @Binding var showsLenses: Bool
 
     /// Width / height of the wishlist thumbnail. The framing editor uses the same ratio.
     static let photoAspect: CGFloat = 96.0 / 120.0

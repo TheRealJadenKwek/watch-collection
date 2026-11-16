@@ -165,18 +165,13 @@ struct PhotoPager<Content: View>: View {
     @Binding var selection: Int
     let count: Int
     var showsDotsForOne = false
-    /// Edges where each photo runs on under the bars. A page-style TabView keeps its pages inside the window's
-    /// safe area even when the pager itself ignores it, so a pager placed under the bars needs this.
-    var pagesIgnoreSafeArea: Edge.Set = []
     @ViewBuilder let content: (Int) -> Content
 
     var body: some View {
         #if os(iOS)
         TabView(selection: $selection) {
             ForEach(0..<count, id: \.self) { index in
-                content(index)
-                    .ignoresSafeArea(.container, edges: pagesIgnoreSafeArea)
-                    .tag(index)
+                content(index).tag(index)
             }
         }
         .tabViewStyle(.page(indexDisplayMode: count > 1 ? .always : .never))

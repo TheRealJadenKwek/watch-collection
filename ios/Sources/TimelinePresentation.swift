@@ -104,7 +104,8 @@ struct TimelinePresentationScreen: View {
                 step(1, in: slides)
             }
         }
-        .navigationTitle("Purchase Timeline")
+        // Held like a book the title would sit on the crease, so the bar shows none.
+        .navigationTitle(duo.isBook ? "" : "Purchase Timeline")
         #if os(iOS)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar(.hidden, for: .tabBar)

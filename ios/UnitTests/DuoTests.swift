@@ -303,6 +303,20 @@ import XCTest
         XCTAssertEqual(WatchAppDelegate.orientations(window: CGSize(width: 469, height: 669), screen: book), .allButUpsideDown)
     }
 
+    /// The rule above only holds if the app hands it to iOS. Without the delegate iOS falls back to Info.plist, which
+    /// lists the landscapes for the inner screen, and an ordinary iPhone would turn. The tests run inside the app, so
+    /// this asks the app's own delegate about the app's own window.
+    func testTheAppDelegateKeepsAnOrdinaryIPhoneUpright() throws {
+        let windows = UIApplication.shared.connectedScenes.compactMap { $0 as? UIWindowScene }.flatMap(\.windows)
+        let window = try XCTUnwrap(windows.first { $0.rootViewController != nil }, "the app has no window")
+        let screen = try XCTUnwrap(window.windowScene?.screen.bounds.size)
+        guard min(screen.width, screen.height) < DuoLayout.innerSide else {
+            throw XCTSkip("running on a screen the size of a folding iPhone's inner one")
+        }
+        let delegate = try XCTUnwrap(UIApplication.shared.delegate, "the app has no delegate")
+        XCTAssertEqual(delegate.application?(UIApplication.shared, supportedInterfaceOrientationsFor: window), .portrait)
+    }
+
     func testInnerScreenIsAQuarterTurnFromThePhone() {
         XCTAssertEqual(DuoMonitor.orientation(device: .portrait, halfOpen: false, windowIsTall: true), .landscapeLeft)
         XCTAssertEqual(DuoMonitor.orientation(device: .landscapeLeft, halfOpen: false, windowIsTall: false), .portrait)

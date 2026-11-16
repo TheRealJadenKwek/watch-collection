@@ -27,6 +27,9 @@ struct StatsScreen: View {
     @State private var leftColumnHeight: CGFloat = 0
     @State private var rightColumnHeight: CGFloat = 0
     @State private var timelineViewport: CGFloat = 0
+    /// Where the page is scrolled to and what each chart has picked, kept when a folding iPhone is opened or shut.
+    @State private var fold = FoldScroll()
+    @State private var highlights = ChartHighlights()
 
     private var everyWatch: [Watch] { store.data?.watches ?? [] }
     /// Every watch bought by the scrubber's month. Insights is built from this, so dragging back in time
@@ -301,8 +304,10 @@ struct StatsScreen: View {
                 }
                 .mastheadTitle("Insights")
                 .atelierProbeScroll("insights")
+                .foldScroll($fold)
                 .screenBackground()
             }
+            .keepsScrollAcrossFolds($fold)
             #if os(macOS)
             .desktopHeader("Insights", leading: {
                 HStack(spacing: 18) {
@@ -532,7 +537,7 @@ struct StatsScreen: View {
                     .foregroundStyle(Color.secondary)
             }
             .frame(maxWidth: .infinity, alignment: .trailing)
-            CostTierChart(bins: bins, headline: headline)
+            CostTierChart(bins: bins, headline: headline, selected: Bindable(highlights).cost)
             if let headline {
                 Text("Mean \(cad(headline.mean)) vs median \(cad(headline.median)), \(skewShape(headline.skewness)) (skew \(headline.skewness.formatted(.number.precision(.fractionLength(3)))))")
                     .font(.caption)
@@ -600,7 +605,7 @@ struct StatsScreen: View {
     private var sizeChart: some View {
         let bins = histogram(scoped, keyPath: \Watch.diameter)
         return SectionCard("Case Size", systemImage: "ruler.fill", color: .purple, detail: "Diameter") {
-            CaseSizeChart(bins: bins, wrist: wrist)
+            CaseSizeChart(bins: bins, wrist: wrist, selected: Bindable(highlights).size)
         }
     }
 
@@ -632,7 +637,8 @@ struct StatsScreen: View {
                 values: values,
                 describe: { "\(Int($0)) \(Int($0) == 1 ? "watch" : "watches")" },
                 yStride: max(1, (ceiling / 4).rounded(.up)),
-                openYear: openYear
+                openYear: openYear,
+                selected: Bindable(highlights).count
             )
         }
     }
@@ -650,7 +656,7 @@ struct StatsScreen: View {
                     .font(.caption2)
                     .foregroundStyle(Color.secondary)
             }
-            YearBarChart(values: values, openYear: openYear)
+            YearBarChart(values: values, openYear: openYear, selected: Bindable(highlights).spend)
 
             if !cumulative.isEmpty {
                 Hairline()
@@ -663,7 +669,7 @@ struct StatsScreen: View {
                         .font(.caption.weight(.semibold).monospacedDigit())
                         .foregroundStyle(WatchTheme.accent)
                 }
-                CumulativeSpendChart(values: cumulative)
+                CumulativeSpendChart(values: cumulative, selected: Bindable(highlights).cumulative)
             }
         }
     }
@@ -1064,13 +1070,21 @@ private struct ChartPointerLayer<ID: Equatable>: View {
     }
 }
 
-// Each chart keeps its own highlight, so moving the mouse across one redraws only that chart
-// rather than the whole Insights screen.
+// Each chart reads only its own highlight, so moving the mouse across one redraws only that chart
+// rather than the whole Insights screen. The screen keeps them, so they outlive the charts: a folding
+// iPhone held like a book moves the charts into two columns, which makes them new.
+@Observable final class ChartHighlights {
+    var cost: String?
+    var size: Double?
+    var spend: String?
+    var count: String?
+    var cumulative: String?
+}
 
 private struct CostTierChart: View {
     let bins: [CostBin]
     let headline: HeadlineStatsPayload?
-    @State private var selected: String?
+    @Binding var selected: String?
 
     var body: some View {
         let medianX = headline.map { costReferencePosition($0.median, maximumPrice: $0.max) }
@@ -1163,7 +1177,7 @@ private struct CostTierChart: View {
 private struct CaseSizeChart: View {
     let bins: [MetricBin]
     let wrist: WristProfile
-    @State private var selected: Double?
+    @Binding var selected: Double?
 
     var body: some View {
         let ceiling = max(1, bins.map(\.count).max() ?? 1)
@@ -1233,7 +1247,7 @@ private struct YearBarChart: View {
     /// Whole-number ticks for counts; nil lets the chart choose.
     var yStride: Double?
     let openYear: (String) -> Void
-    @State private var selected: String?
+    @Binding var selected: String?
 
     var body: some View {
         Chart(values) { point in
@@ -1303,7 +1317,7 @@ private struct YearBarChart: View {
 
 private struct CumulativeSpendChart: View {
     let values: [YearSpend]
-    @State private var selected: String?
+    @Binding var selected: String?
 
     var body: some View {
         Chart(values) { point in
@@ -1516,6 +1530,7 @@ struct YearPurchasesScreen: View {
     @ObservedObject var store: AppStore
     let year: String
     let ownedOnly: Bool
+    @Environment(\.duo) private var duo
 
     private var all: [Watch] { store.data?.watches ?? [] }
 
@@ -1558,7 +1573,8 @@ struct YearPurchasesScreen: View {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .screenBackground()
-        .navigationTitle(year)
+        // Held like a book the title would sit on the crease; the year heads the page.
+        .navigationTitle(duo.isBook ? "" : year)
         .navigationBarTitleDisplayMode(.inline)
     }
 

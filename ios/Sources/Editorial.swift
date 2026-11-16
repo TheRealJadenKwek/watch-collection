@@ -208,6 +208,7 @@ private struct MastheadTitle: ViewModifier {
     let title: String
     let showsMasthead: Bool
     @State private var scrolledPast = false
+    @Environment(\.duo) private var duo
 
     func body(content: Content) -> some View {
         content
@@ -216,7 +217,8 @@ private struct MastheadTitle: ViewModifier {
             } action: { _, past in
                 withAnimation(.easeInOut(duration: 0.2)) { scrolledPast = past }
             }
-            .navigationTitle(scrolledPast || !showsMasthead ? title : "")
+            // Held like a book the title would sit on the crease, so the bar shows none.
+            .navigationTitle((scrolledPast || !showsMasthead) && !duo.isBook ? title : "")
             .navigationBarTitleDisplayMode(.inline)
     }
 }
