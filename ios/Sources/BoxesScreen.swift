@@ -85,23 +85,49 @@ struct LiftPress: UIGestureRecognizerRepresentable {
 /// Frames a drag needs, kept out of view state so scrolling does not redraw the screen.
 final class BoxFrames {
     var stage: CGRect = .zero
+    /// The scroll view's own frame. It already starts below the bar and ends above the tray (or the tab bar where
+    /// there is no tray): its content insets for those bars are not added again.
     var scroll: CGRect = .zero
     var tray: CGRect = .zero
     /// The scroll view's offset from its top, and how far it can go.
     var offset: CGFloat = 0
     var maxOffset: CGFloat = 0
-    var topInset: CGFloat = 0
-    var bottomInset: CGFloat = 0
     /// The box is in the scroll view (a phone or a column); false where it stands in a fixed pane.
     var stageScrolls = true
+
+    /// The top of what the scroll view shows of its content.
+    var visibleTop: CGFloat { scroll.minY }
+    /// The bottom of what the scroll view shows: the docked tray, or the end of its frame.
+    var visibleBottom: CGFloat {
+        let end = scroll.height > 0 ? scroll.maxY : .infinity
+        return tray.height > 0 ? min(tray.minY, end) : end
+    }
 
     /// True where the box is on screen: inside its frame and, when it scrolls, below the bar and above the tray.
     func showsBox(at point: CGPoint) -> Bool {
         guard stage.contains(point) else { return false }
         guard stageScrolls else { return true }
-        if tray.height > 0, point.y >= tray.minY { return false }
-        if scroll.height > 0, point.y < scroll.minY + topInset { return false }
+        if point.y >= visibleBottom { return false }
+        if scroll.height > 0, point.y < visibleTop { return false }
         return true
+    }
+
+    /// While a watch is dragged: -8 (up) in the top 60 pt of what the scroll view shows or up to 40 pt above it, 8
+    /// (down) in the bottom 60 pt above the tray or the tab bar, otherwise 0.
+    func autoScrollStep(at y: CGFloat) -> CGFloat {
+        let top = visibleTop, bottom = visibleBottom
+        if y < top + 60, y > top - 40 { return -8 }
+        if y > bottom - 60, y < bottom { return 8 }
+        return 0
+    }
+
+    /// How far to scroll so `rect` (in the screen's space) shows with 12 pt to spare below the bar and above the tray;
+    /// 0 when it already does.
+    func revealDelta(for rect: CGRect) -> CGFloat {
+        let top = visibleTop + 12, bottom = visibleBottom - 12
+        if rect.maxY > bottom { return rect.maxY - bottom }
+        if rect.minY < top { return rect.minY - top }
+        return 0
     }
 }
 
@@ -489,14 +515,10 @@ struct BoxesScreen: View {
         .scrollDisabled(dragging != nil)
         .onScrollGeometryChange(for: [CGFloat].self) { geometry in
             [geometry.contentOffset.y + geometry.contentInsets.top,
-             max(0, geometry.contentSize.height + geometry.contentInsets.top + geometry.contentInsets.bottom - geometry.containerSize.height),
-             geometry.contentInsets.top,
-             geometry.contentInsets.bottom]
+             max(0, geometry.contentSize.height + geometry.contentInsets.top + geometry.contentInsets.bottom - geometry.containerSize.height)]
         } action: { _, values in
             frames.offset = values[0]
             frames.maxOffset = values[1]
-            frames.topInset = values[2]
-            frames.bottomInset = values[3]
         }
         .onGeometryChange(for: CGRect.self) { $0.frame(in: .named(Self.space)) } action: { frames.scroll = $0 }
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -1017,11 +1039,7 @@ struct BoxesScreen: View {
         autoScroll = Task { @MainActor in
             while !Task.isCancelled, drag.lift != nil {
                 try? await Task.sleep(for: .milliseconds(16))
-                let y = drag.location.y
-                let top = frames.scroll.minY + frames.topInset
-                let bottom = frames.tray.minY > 0 ? frames.tray.minY : frames.scroll.maxY - frames.bottomInset
-                var step: CGFloat = 0
-                if y < top + 60, y > top - 40 { step = -8 } else if y > bottom - 60, y < bottom { step = 8 }
+                let step = frames.autoScrollStep(at: drag.location.y)
                 guard step != 0 else { continue }
                 let next = min(frames.maxOffset, max(0, frames.offset + step))
                 guard next != frames.offset else { continue }
@@ -1524,9 +1542,7 @@ struct BoxesScreen: View {
             guard frames.stageScrolls, let scene = makeScene(), slot < scene.box.capacity,
                   frames.stage.height > 0, frames.scroll.height > 0 else { return }
             let rect = painter(scene).slotRect(slot).offsetBy(dx: frames.stage.minX, dy: frames.stage.minY)
-            let top = frames.scroll.minY + frames.topInset + 12
-            let bottom = (frames.tray.height > 0 ? frames.tray.minY : frames.scroll.maxY) - 12
-            let delta = rect.maxY > bottom ? rect.maxY - bottom : rect.minY < top ? rect.minY - top : 0
+            let delta = frames.revealDelta(for: rect)
             guard delta != 0 else { return }
             let next = min(frames.maxOffset, max(0, frames.offset + delta))
             if reduceMotion {

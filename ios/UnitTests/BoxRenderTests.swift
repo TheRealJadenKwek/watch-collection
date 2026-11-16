@@ -236,15 +236,16 @@ final class BoxSlotContentTests: XCTestCase {
 final class BoxScreenPureTests: XCTestCase {
     func testDropsUnderTheTrayOrTheBarAreOffTheBox() {
         let frames = BoxFrames()
+        // As measured on an iPhone 17 Pro: the scroll view's frame starts below the bar (screen y 116 is y 0 here)
+        // and ends at the tray.
         frames.stage = CGRect(x: 16, y: 300, width: 370, height: 900)
-        frames.scroll = CGRect(x: 0, y: 0, width: 402, height: 874)
-        frames.topInset = 100
-        frames.tray = CGRect(x: 0, y: 690, width: 402, height: 120)
+        frames.scroll = CGRect(x: 0, y: 0, width: 402, height: 545)
+        frames.tray = CGRect(x: 0, y: 545, width: 402, height: 130)
         XCTAssertTrue(frames.showsBox(at: CGPoint(x: 200, y: 400)))
-        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 200, y: 700)), "the box runs on under the tray")
+        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 200, y: 560)), "the box runs on under the tray")
         XCTAssertFalse(frames.showsBox(at: CGPoint(x: 10, y: 400)), "beside the box")
         frames.stage.origin.y = -200
-        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 200, y: 50)), "scrolled under the bar")
+        XCTAssertFalse(frames.showsBox(at: CGPoint(x: 200, y: -10)), "scrolled under the bar")
         XCTAssertTrue(frames.showsBox(at: CGPoint(x: 200, y: 150)))
         // Before the tray and the scroll view have reported a frame, only the stage counts.
         let early = BoxFrames()
