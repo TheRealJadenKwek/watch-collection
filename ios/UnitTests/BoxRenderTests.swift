@@ -369,6 +369,15 @@ final class BoxArtworkTests: XCTestCase {
     }
 }
 
+final class BoxCutoutEditorTests: XCTestCase {
+    func testScrollSizesTheRing() {
+        XCTAssertEqual(BoxCutoutEditor.scrollFactor(0), 1)
+        XCTAssertGreaterThan(BoxCutoutEditor.scrollFactor(10), 1)
+        XCTAssertLessThan(BoxCutoutEditor.scrollFactor(-10), 1)
+        XCTAssertEqual(BoxCutoutEditor.scrollFactor(100) * BoxCutoutEditor.scrollFactor(-100), 1, accuracy: 1e-9, "up then down comes back")
+    }
+}
+
 final class BoxSlotContentTests: XCTestCase {
     private func image(_ side: Int) -> CGImage {
         let context = CGContext(data: nil, width: side, height: side, bitsPerComponent: 8, bytesPerRow: 0,
