@@ -910,7 +910,7 @@ struct BoxesScreen: View {
             target.contextMenu {
                 actions(piece, slot: slot, scene)
             } preview: {
-                BoxChipArt(piece: piece, cutout: art.cutout(piece)?.result)
+                chipArt(piece, cover: piece.cover, maxPixel: DisplayImageCache.thumb)
                     .frame(width: 220, height: 220)
             }
         } else {
@@ -1585,16 +1585,30 @@ struct BoxesScreen: View {
         let chip = BoxChip(itemID: piece.itemID, wishlist: piece.wishlist)
         let isArmed = armed == chip
         let score = piece.wishlist ? store.scores[piece.itemID]?.total : nil
+        let cover = piece.cover
         let label = VStack(spacing: 3) {
-            BoxChipArt(piece: piece, cutout: art.cutout(piece)?.result)
+            // A tray chip is small; a grid chip is as wide as its column.
+            chipArt(piece, cover: cover, maxPixel: side == nil ? DisplayImageCache.tile : DisplayImageCache.icon)
                 .frame(width: side, height: side)
                 .aspectRatio(1, contentMode: .fit)
                 .overlay(alignment: .topTrailing) {
                     if let score {
-                        Text("\(score)")
-                            .font(AtelierType.kicker)
-                            .foregroundStyle(WatchTheme.gold)
-                            .padding(4)
+                        if cover?.isRender == true {
+                            // On a render the number can land on a strap or a bracelet: it gets its own dark ground,
+                            // as a photo's tag does.
+                            Text("\(score)")
+                                .font(AtelierType.kicker)
+                                .foregroundStyle(WatchTheme.goldOnRender)
+                                .padding(.horizontal, 5)
+                                .padding(.vertical, 2)
+                                .background(.black.opacity(0.6), in: Capsule())
+                                .padding(3)
+                        } else {
+                            Text("\(score)")
+                                .font(AtelierType.kicker)
+                                .foregroundStyle(WatchTheme.gold)
+                                .padding(4)
+                        }
                     }
                 }
                 .overlay {
@@ -1623,6 +1637,17 @@ struct BoxesScreen: View {
                 drag.pressing = false
                 endDrag()
             }
+        }
+    }
+
+    /// A chip's picture: the watch's render when it has one on this device, as its card and tile show it; else its
+    /// cutout on the card colour, or the token while that is being made.
+    @ViewBuilder
+    private func chipArt(_ piece: BoxPiece, cover: WatchCover?, maxPixel: Int) -> some View {
+        if let cover, cover.isRender {
+            RemoteWatchImage(cover: cover, allowsRemoteFetch: false, maxPixel: maxPixel)
+        } else {
+            BoxChipArt(piece: piece, cutout: art.cutout(piece)?.result)
         }
     }
 

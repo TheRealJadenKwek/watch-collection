@@ -259,6 +259,11 @@ enum WatchTheme {
     static let separator = Color(light: 0xD4D4D4, dark: 0x333333)
     /// Catalogue numbers only, plus the short rule under the hero figure on Insights.
     static let gold = Color(light: 0xA37E2C, dark: 0xDFAB3A)
+    /// The gold where it sits on a rendered tile: the tile is dark in both modes, so it takes the Dark Mode gold.
+    static let goldOnRender = Color(hex: 0xDFAB3A)
+    /// The ground a rendered tile fades into where it cannot fill its frame: the leather around the pillow, which
+    /// measures 21 to 31 of 255 at the tiles' edges.
+    static let renderGround = Color(hex: 0x1A1A1A)
     static let warning = Color.red
 
     /// Tiles, photos and panels are square.

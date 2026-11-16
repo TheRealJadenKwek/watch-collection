@@ -85,6 +85,9 @@ struct PurchaseDateOverlay: View {
             Text(label)
                 .font(.caption2.weight(.semibold))
                 .foregroundStyle(.white)
+                // A tight shadow under the soft one, so the date also reads where a render puts a steel bracelet
+                // behind it.
+                .shadow(color: .black.opacity(0.7), radius: 1)
                 .shadow(color: .black.opacity(0.6), radius: 3)
                 .padding(8)
         }
@@ -110,10 +113,8 @@ func catalogueLabel(_ number: Int?) -> String {
 /// Full-bleed framed photo at a fixed aspect ratio.
 struct FramedPhoto: View {
     let store: AppStore
-    let itemID: String
-    let filename: String?
-    let focus: PhotoFocus?
-    var wishlist = false
+    /// The watch's or the candidate's cover: its render, or its first photo in its saved framing.
+    let cover: WatchCover?
     var aspect: CGFloat = PhotoShape.plate
     var maxPixel = DisplayImageCache.tile
 
@@ -121,12 +122,7 @@ struct FramedPhoto: View {
         Color.clear
             .aspectRatio(aspect, contentMode: .fit)
             .overlay {
-                RemoteWatchImage(
-                    asset: filename.flatMap { store.photoAsset(itemID: itemID, filename: $0, wishlist: wishlist) },
-                    allowsRemoteFetch: !store.isOffline,
-                    focus: focus,
-                    maxPixel: maxPixel
-                )
+                RemoteWatchImage(cover: cover, allowsRemoteFetch: !store.isOffline, maxPixel: maxPixel)
             }
             .clipped()
             .contentShape(Rectangle())

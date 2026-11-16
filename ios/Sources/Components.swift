@@ -21,6 +21,8 @@ struct RemoteWatchImage: View {
     var focus: PhotoFocus?
     /// Show the whole photo instead of filling the frame (the desktop page's viewer).
     var fitWholePhoto: Bool
+    /// A rendered tile: drawn by `RenderLayout` (the whole watch in any frame) instead of by a focus.
+    var render: Bool
     var maxPixel: Int
     @State private var image: UIImage?
 
@@ -29,15 +31,29 @@ struct RemoteWatchImage: View {
         allowsRemoteFetch: Bool,
         focus: PhotoFocus? = nil,
         fitWholePhoto: Bool = false,
+        render: Bool = false,
         maxPixel: Int = DisplayImageCache.page
     ) {
         self.asset = asset
         self.allowsRemoteFetch = allowsRemoteFetch
         self.focus = focus
         self.fitWholePhoto = fitWholePhoto
+        self.render = render
         self.maxPixel = maxPixel
         // Already decoded? Draw it in this very frame, so scrolling back never flashes a placeholder.
         _image = State(initialValue: asset.flatMap { DisplayImageCache.image(for: $0.key, maxPixel: maxPixel) })
+    }
+
+    /// A watch's or a candidate's cover: its render, or its first photo in its saved framing.
+    init(cover: WatchCover?, allowsRemoteFetch: Bool, fitWholePhoto: Bool = false, maxPixel: Int = DisplayImageCache.page) {
+        self.init(
+            asset: cover?.asset,
+            allowsRemoteFetch: allowsRemoteFetch,
+            focus: cover?.focus,
+            fitWholePhoto: fitWholePhoto,
+            render: cover?.isRender == true,
+            maxPixel: maxPixel
+        )
     }
 
     private var loadID: LoadID {
@@ -49,7 +65,9 @@ struct RemoteWatchImage: View {
             WatchPlaceholder()
             if let image {
                 Group {
-                    if fitWholePhoto {
+                    if render {
+                        RenderImage(image: image)
+                    } else if fitWholePhoto {
                         Image(uiImage: image).resizable().scaledToFit()
                     } else {
                         FocusedImage(image: image, focus: focus)

@@ -38,7 +38,8 @@ struct WatchDossierView: View {
                     Button("Edit") { sheet = .edit }
                         .disabled(store.isOffline)
                     Menu {
-                        if let filename = watch.photos[safe: page] ?? watch.photos.first {
+                        // The render frames itself: on its page there is no photo to frame.
+                        if let filename = pages(watch).photo(page) {
                             Button { sheet = .frame(filename) } label: { Label("Frame this photo", systemImage: "crop") }
                         }
                         Button { sheet = .service } label: { Label("Service log", systemImage: "wrench.and.screwdriver") }
@@ -101,17 +102,13 @@ struct WatchDossierView: View {
         HStack(spacing: 0) {
             ZStack {
                 WatchTheme.card
-                if watch.photos.isEmpty {
+                let pages = pages(watch)
+                if pages.isEmpty {
                     WatchPlaceholder()
                 } else {
-                    PhotoPager(selection: $page, count: watch.photos.count) { index in
-                        RemoteWatchImage(
-                            asset: store.photoAsset(itemID: watch.id, filename: watch.photos[index], wishlist: false),
-                            allowsRemoteFetch: !store.isOffline,
-                            fitWholePhoto: true,
-                            maxPixel: DisplayImageCache.full
-                        )
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    PhotoPager(selection: $page, count: pages.count) { index in
+                        picture(index, of: pages, watch: watch, fitWholePhoto: true, maxPixel: DisplayImageCache.full)
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 }
             }
@@ -272,19 +269,38 @@ struct WatchDossierView: View {
         }
     }
 
-    /// The photos to swipe through, each filling the frame in its saved framing.
+    /// The pictures to swipe through: the render first when the watch has one, then its photos.
+    private func pages(_ watch: Watch) -> CoverPages {
+        CoverPages(cover: watch.cover, photos: watch.photos)
+    }
+
+    /// The render first (so the page opens on the picture its tile showed), then the photos, each filling the frame
+    /// in its saved framing.
     @ViewBuilder
     private func photos(_ watch: Watch) -> some View {
-        if watch.photos.isEmpty {
+        let pages = pages(watch)
+        if pages.isEmpty {
             WatchPlaceholder()
         } else {
-            PhotoPager(selection: $page, count: watch.photos.count) { index in
-                RemoteWatchImage(
-                    asset: store.photoAsset(itemID: watch.id, filename: watch.photos[index], wishlist: false),
-                    allowsRemoteFetch: !store.isOffline,
-                    focus: watch.focus(for: watch.photos[index])
-                )
+            PhotoPager(selection: $page, count: pages.count) { index in
+                picture(index, of: pages, watch: watch, fitWholePhoto: false, maxPixel: DisplayImageCache.page)
             }
+        }
+    }
+
+    /// One page of the pager: the render, or a photo (whole on the desktop, in its saved framing elsewhere).
+    @ViewBuilder
+    private func picture(_ index: Int, of pages: CoverPages, watch: Watch, fitWholePhoto: Bool, maxPixel: Int) -> some View {
+        if pages.isRender(index) {
+            RemoteWatchImage(cover: pages.render, allowsRemoteFetch: !store.isOffline, maxPixel: maxPixel)
+        } else if let filename = pages.photo(index) {
+            RemoteWatchImage(
+                asset: store.photoAsset(itemID: watch.id, filename: filename, wishlist: false),
+                allowsRemoteFetch: !store.isOffline,
+                focus: fitWholePhoto ? nil : watch.focus(for: filename),
+                fitWholePhoto: fitWholePhoto,
+                maxPixel: maxPixel
+            )
         }
     }
 

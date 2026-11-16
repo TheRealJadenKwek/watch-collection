@@ -512,12 +512,7 @@ struct TimelinePresentationScreen: View {
             .aspectRatio(PhotoShape.plate, contentMode: .fit)
             .frame(maxWidth: photoWidth, maxHeight: photoHeight)
             .overlay {
-                RemoteWatchImage(
-                    asset: watch.photos.first.flatMap { store.photoAsset(itemID: watch.id, filename: $0, wishlist: false) },
-                    allowsRemoteFetch: !store.isOffline,
-                    focus: watch.focus(for: watch.photos.first),
-                    maxPixel: DisplayImageCache.page
-                )
+                RemoteWatchImage(cover: watch.cover, allowsRemoteFetch: !store.isOffline, maxPixel: DisplayImageCache.page)
             }
             .clipped()
         .shadow(color: .black.opacity(0.4), radius: 30, y: 18)
@@ -621,12 +616,7 @@ struct TimelinePresentationScreen: View {
         let size = Self.fanTileSize(count: entries.count, preferred: size, maxWidth: maxWidth)
         return HStack(spacing: -size * 0.28) {
             ForEach(Array(entries.enumerated()), id: \.element.id) { index, entry in
-                RemoteWatchImage(
-                    asset: entry.watch.photos.first.flatMap { store.photoAsset(itemID: entry.watch.id, filename: $0, wishlist: false) },
-                    allowsRemoteFetch: !store.isOffline,
-                    focus: entry.watch.focus(for: entry.watch.photos.first),
-                    maxPixel: DisplayImageCache.icon
-                )
+                RemoteWatchImage(cover: entry.watch.cover, allowsRemoteFetch: !store.isOffline, maxPixel: DisplayImageCache.icon)
                 .frame(width: size, height: size)
                 .clipped()
                 .overlay {
