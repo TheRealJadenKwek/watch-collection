@@ -2,6 +2,7 @@
 from copy import deepcopy
 import hashlib
 import json
+import math
 import re
 
 MISSING = object()
@@ -16,17 +17,55 @@ MAX_BOXES = 8
 ORDERED = {"boxes"}
 # A slot key is the compartment index written the one way Swift and Python both read it: "5", never "05" or "+5".
 SLOT_KEY = re.compile(r"0|[1-9][0-9]*")
+# A hand-set cutout ring's radius, as a fraction of the photo's shorter side (BoxCutout.ringRadius).
+RING_RADIUS = (0.05, 0.5)
+
+
+def _finite_number(value):
+    # An int is always finite (and may be too large for a float, so it is not converted to check).
+    if isinstance(value, bool):
+        return False
+    return isinstance(value, int) or (isinstance(value, float) and math.isfinite(value))
+
+
+def clean_cutout(cutout):
+    """The Python twin of BoxCutout.normalized in the app, in place: a ring kept only whole (x, y and r
+    all numbers) and in range, x and y in 0...1 and r in RING_RADIUS; turn in -180...180 and left out
+    at 0; caseOnly and useCutout left out unless true."""
+    if not isinstance(cutout, dict):
+        return
+    if all(_finite_number(cutout.get(key)) for key in ("x", "y", "r")):
+        cutout["x"] = min(1, max(0, cutout["x"]))
+        cutout["y"] = min(1, max(0, cutout["y"]))
+        cutout["r"] = min(RING_RADIUS[1], max(RING_RADIUS[0], cutout["r"]))
+    else:
+        for key in ("x", "y", "r"):
+            cutout.pop(key, None)
+    turn = cutout.get("turn")
+    if _finite_number(turn) and turn != 0:
+        cutout["turn"] = min(180, max(-180, turn))
+    else:
+        cutout.pop("turn", None)
+    for flag in ("caseOnly", "useCutout"):
+        if cutout.get(flag) is not True:
+            cutout.pop(flag, None)
 
 
 def clean_boxes(data):
-    """The Python twin of BoxModel.sanitized in the app: the same four rules in the same order.
+    """The Python twin of BoxModel.sanitized in the app: the same rules in the same order.
 
     1. Drop slot keys that are not a decimal integer in 0..<columns*rows.
     2. Drop slots whose watch id is not a watch with status owned.
     3. A watch id placed more than once keeps its first place (box order, then numeric slot order).
     4. Boxes beyond the eighth are dropped; duplicate box ids keep the first.
+    5. Every watch's and candidate's boxCutout is kept in range (clean_cutout), with or without boxes,
+       so a hand-edited or foreign document never hands the cutout pipeline a value it cannot draw.
     Works in place and returns data.
     """
+    for kind in ("watches", "wishlist"):
+        for item in data.get(kind, []):
+            if isinstance(item, dict):
+                clean_cutout(item.get("boxCutout"))
     boxes = data.get("boxes")
     if not isinstance(boxes, list):
         return data
@@ -168,6 +207,5 @@ def merge(base, local, remote, resolutions=None):
     output = deepcopy(remote)
     output.update({k: v for k, v in result.items() if k != "settings"})
     output.setdefault("settings", {}).update(result.get("settings", {}))
-    if "boxes" in output:
-        clean_boxes(output)
+    clean_boxes(output)
     return output, conflicts

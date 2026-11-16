@@ -14,7 +14,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import server
-from sync import clean_boxes, merge, normalize
+from sync import clean_boxes, clean_cutout, merge, normalize
 
 
 def collection():
@@ -426,6 +426,39 @@ class BoxMergeTests(unittest.TestCase):
             merged, conflicts = merge(None, phone, empty)
             self.assertFalse(conflicts)
             self.assertEqual([b["id"] for b in merged["boxes"]], ["black", "brown", "box-0000cafe"])
+
+    def test_clean_cutout_keeps_values_in_range(self):
+        # The same table as BoxModelTests.testSanitizedRule5KeepsCutoutsInRange in the app, plus a JSON
+        # integer too large for a double, which only the hub can read.
+        cases = [
+            ({"photo": "a.jpg", "x": 0.52, "y": 0.47, "r": 0.21, "turn": -4}, {"photo": "a.jpg", "x": 0.52, "y": 0.47, "r": 0.21, "turn": -4}),
+            ({"photo": "a.jpg", "x": 1e300, "y": -3, "r": 1e300}, {"photo": "a.jpg", "x": 1, "y": 0, "r": 0.5}),
+            ({"photo": "a.jpg", "x": 0.5, "y": 0.5, "r": 0}, {"photo": "a.jpg", "x": 0.5, "y": 0.5, "r": 0.05}),
+            ({"photo": "a.jpg", "x": 0.5, "y": 0.5}, {"photo": "a.jpg"}),
+            ({"photo": "a.jpg", "x": 0.5, "y": None, "r": 0.2}, {"photo": "a.jpg"}),
+            ({"photo": "a.jpg", "x": True, "y": 0.5, "r": 0.2}, {"photo": "a.jpg"}),
+            ({"photo": "a.jpg", "turn": 900}, {"photo": "a.jpg", "turn": 180}),
+            ({"photo": "a.jpg", "x": 10 ** 400, "y": 0.5, "r": 0.2, "turn": -(10 ** 400)}, {"photo": "a.jpg", "x": 1, "y": 0.5, "r": 0.2, "turn": -180}),
+            ({"photo": "a.jpg", "turn": -1e300}, {"photo": "a.jpg", "turn": -180}),
+            ({"photo": "a.jpg", "turn": 0, "caseOnly": False, "useCutout": False}, {"photo": "a.jpg"}),
+            ({"photo": "a.jpg", "caseOnly": True, "useCutout": True}, {"photo": "a.jpg", "caseOnly": True, "useCutout": True}),
+        ]
+        for given, expected in cases:
+            cutout = deepcopy(given)
+            clean_cutout(cutout)
+            self.assertEqual(cutout, expected, given)
+            clean_cutout(cutout)
+            self.assertEqual(cutout, expected, "idempotent")
+        # Rule 5 runs on every merge, with or without boxes, for watches and candidates alike.
+        local = collection()
+        local["watches"][0]["boxCutout"] = {"photo": "a.jpg", "x": 1e300, "y": 0.5, "r": 1e300}
+        local["wishlist"] = [{"id": "nomos", "name": "Nomos", "status": "considering", "photos": [],
+                              "boxCutout": {"photo": "n.jpg", "turn": 400}}]
+        merged, conflicts = merge(None, local, collection())
+        self.assertFalse(conflicts)
+        self.assertNotIn("boxes", merged)
+        self.assertEqual(merged["watches"][0]["boxCutout"], {"photo": "a.jpg", "x": 1, "y": 0.5, "r": 0.5})
+        self.assertEqual(merged["wishlist"][0]["boxCutout"], {"photo": "n.jpg", "turn": 180})
 
     def test_clean_boxes_is_idempotent(self):
         data = boxed()

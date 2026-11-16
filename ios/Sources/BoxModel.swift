@@ -107,8 +107,12 @@ enum BoxModel {
     /// 1. drop slot keys that are not a decimal integer in 0..<columns*rows;
     /// 2. drop slots whose watch id is not a watch with status owned;
     /// 3. a watch placed more than once keeps its first place (box order, then numeric slot order);
-    /// 4. boxes beyond the eighth are dropped; duplicate box ids keep the first.
+    /// 4. boxes beyond the eighth are dropped; duplicate box ids keep the first;
+    /// 5. every watch's and candidate's box cutout is kept in range (`BoxCutout.normalized`), with or
+    ///    without boxes, so a hand-edited or foreign document never hands the cutout pipeline a value it
+    ///    cannot draw.
     static func sanitized(_ data: CollectionData) -> CollectionData {
+        let data = cutoutsInRange(data)
         guard var boxes = data.boxes else { return data }
         let owned = Set(data.watches.lazy.filter { $0.status == "owned" }.map(\.id))
         var placed: Set<String> = []
@@ -130,6 +134,22 @@ enum BoxModel {
         var result = data
         result.boxes = boxes
         return result
+    }
+
+    /// Rule 5 of `sanitized`; the Python twin is `sync.clean_cutout`.
+    private static func cutoutsInRange(_ data: CollectionData) -> CollectionData {
+        var data = data
+        for index in data.watches.indices {
+            if let cutout = data.watches[index].boxCutout, cutout.normalized != cutout {
+                data.watches[index].boxCutout = cutout.normalized
+            }
+        }
+        for index in data.wishlist.indices {
+            if let cutout = data.wishlist[index].boxCutout, cutout.normalized != cutout {
+                data.wishlist[index].boxCutout = cutout.normalized
+            }
+        }
+        return data
     }
 
     /// The collection to install from a sync result. A hub whose snapshot does not list "boxes" in its

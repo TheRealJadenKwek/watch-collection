@@ -98,6 +98,37 @@ final class BoxModelTests: XCTestCase {
         XCTAssertEqual(BoxModel.sanitized(BoxFixture.data([BoxFixture.watch("field")], boxes: [])).boxes, [])
     }
 
+    func testSanitizedRule5KeepsCutoutsInRange() {
+        // The same table as test_clean_cutout_keeps_values_in_range in tests/test_sync.py (the hub's twin).
+        let cases: [(BoxCutout, BoxCutout)] = [
+            (BoxCutout(photo: "a.jpg", x: 0.52, y: 0.47, r: 0.21, turn: -4), BoxCutout(photo: "a.jpg", x: 0.52, y: 0.47, r: 0.21, turn: -4)),
+            (BoxCutout(photo: "a.jpg", x: 1e300, y: -3, r: 1e300), BoxCutout(photo: "a.jpg", x: 1, y: 0, r: 0.5)),
+            (BoxCutout(photo: "a.jpg", x: 0.5, y: 0.5, r: 0), BoxCutout(photo: "a.jpg", x: 0.5, y: 0.5, r: 0.05)),
+            (BoxCutout(photo: "a.jpg", x: 0.5, y: 0.5), BoxCutout(photo: "a.jpg")),
+            (BoxCutout(photo: "a.jpg", x: 0.5, r: 0.2), BoxCutout(photo: "a.jpg")),
+            (BoxCutout(photo: "a.jpg", turn: 900), BoxCutout(photo: "a.jpg", turn: 180)),
+            (BoxCutout(photo: "a.jpg", turn: -1e300), BoxCutout(photo: "a.jpg", turn: -180)),
+            (BoxCutout(photo: "a.jpg", turn: 0, caseOnly: false, useCutout: false), BoxCutout(photo: "a.jpg")),
+            (BoxCutout(photo: "a.jpg", caseOnly: true, useCutout: true), BoxCutout(photo: "a.jpg", caseOnly: true, useCutout: true)),
+        ]
+        for (given, expected) in cases {
+            // With and without boxes, on a watch and on a candidate.
+            for boxes in [nil, BoxFixture.standard.boxes] {
+                var data = BoxFixture.data([BoxFixture.watch("field", photos: ["a.jpg"])], boxes: boxes,
+                                           wishlist: [BoxFixture.candidate("nomos", photos: ["a.jpg"])])
+                data.watches[0].boxCutout = given
+                data.wishlist[0].boxCutout = given
+                let clean = BoxModel.sanitized(data)
+                XCTAssertEqual(clean.watches[0].boxCutout, expected, "\(given)")
+                XCTAssertEqual(clean.wishlist[0].boxCutout, expected, "\(given)")
+                XCTAssertEqual(BoxModel.sanitized(clean).watches[0].boxCutout, expected, "idempotent")
+            }
+        }
+        // A ring far out of range is stored in range, so the pipeline never gets it.
+        let encoded = try? JSONEncoder().encode(BoxCutout(photo: "a.jpg", x: 0.5, y: 0.5, r: 1e300).normalized)
+        XCTAssertEqual(encoded.flatMap { try? JSONDecoder().decode(BoxCutout.self, from: $0) }?.r, 0.5)
+    }
+
     func testSlotKeysAreCanonical() {
         XCTAssertEqual(BoxModel.slotIndex("0"), 0)
         XCTAssertEqual(BoxModel.slotIndex("11"), 11)
