@@ -374,9 +374,14 @@ struct BoxesScreen: View {
             }
             .coordinateSpace(.named(Self.space))
             .screenBackground()
-            .task(id: artRequest(scene)) {
+            // Keyed by whether the section is showing too: on the Mac every section is built at launch, so the art
+            // loads when Boxes is chosen, and leaving it cancels the task and the cutout jobs it queued.
+            .task(id: ArtTask(request: artRequest(scene), active: sectionIsActive)) {
                 guard sectionIsActive, scene.k > 0 else { return }
                 await art.load(artRequest(scene))
+            }
+            .onChange(of: sectionIsActive) { _, active in
+                if !active { Task { await CutoutStore.shared.cancelPending() } }
             }
             .onChange(of: scene.box.id) { _, id in
                 // A box switched to with its own selection (the watch page's Box row) keeps it.
@@ -1477,6 +1482,12 @@ struct BoxesScreen: View {
     }
 
     // MARK: Pictures to load
+
+    /// What the art task runs for: the pictures wanted, and whether the section is the one showing.
+    private struct ArtTask: Hashable {
+        var request: BoxArtwork.Request
+        var active: Bool
+    }
 
     private func artRequest(_ scene: Scene) -> BoxArtwork.Request {
         var seen: Set<String> = []
