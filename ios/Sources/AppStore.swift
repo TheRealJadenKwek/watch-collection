@@ -67,6 +67,8 @@ final class AppStore: ObservableObject {
         set { if status.lastPhoneSync != newValue { status.lastPhoneSync = newValue } }
     }
     @Published private(set) var syncEnabled = UserDefaults.standard.object(forKey: "syncEnabled") as? Bool ?? true
+    /// Wishlist watches being tried in a box, on this device only (never in the document).
+    @Published private(set) var boxTrial = BoxTrial.load()
     @Published private(set) var syncAddress = UserDefaults.standard.string(forKey: "syncAddress")
         ?? LegacyServerConfiguration.migrationURL ?? Platform.defaultSyncAddress
 
@@ -80,6 +82,8 @@ final class AppStore: ObservableObject {
     private var syncedRevision: String?
     private var syncedGeneration = -1
     private var lastSyncAttempt = Date.distantPast
+    /// The iPhone seeds the starting boxes after its first sync of a launch that finds none.
+    private var seedAfterSync = false
 
     private var started = false
 
@@ -99,7 +103,16 @@ final class AppStore: ObservableObject {
 
         // Never replace a populated standalone phone with the old migration snapshot.
         startConnectionMonitor()
-        await syncNow()
+        let synced = await syncNow()
+        if !Platform.isMac {
+            // Only after the hub has had its say: a phone that has not heard from it waits for the
+            // first sync that gets through, so the seed never lands on top of boxes set up elsewhere.
+            if synced || !syncEnabled || syncAddress.isEmpty {
+                await seedBoxesIfNeeded()
+            } else {
+                seedAfterSync = true
+            }
+        }
 
         if let data, data.settings.autoBackup {
             _ = try? LocalBackup.mirrorJSON(from: data)
@@ -217,6 +230,7 @@ final class AppStore: ObservableObject {
                     lastSync = Date()
                     syncMessage = "Up to date"
                     if isOffline { isOffline = false }
+                    seedIfWaiting()
                     return true
                 }
                 syncMessage = "Syncing collection and photos..."
@@ -228,14 +242,14 @@ final class AppStore: ObservableObject {
                 // Do not install a response over edits made while a request was in flight.
                 guard generation == editGeneration else { continue }
                 if !result.conflicts.isEmpty {
-                    syncConflicts = result.conflicts
+                    syncConflicts = result.conflicts.map { $0.labelled(using: [local, result.data]) }
                     syncMessage = "\(result.conflicts.count) changes need your choice in Settings"
                     return false
                 }
                 try await client.downloadPhotos(result.data)
                 try Task.checkCancellation()
                 guard generation == editGeneration, syncAddress == address, syncEnabled else { continue }
-                var merged = result.data
+                var merged = BoxModel.sanitized(result.data)
                 if let local {
                     merged.settings.autoBackup = local.settings.autoBackup
                     merged.settings.backupRemote = local.settings.backupRemote
@@ -254,6 +268,7 @@ final class AppStore: ObservableObject {
                 syncResolutions = [:]
                 syncMessage = "Up to date"
                 if isOffline { isOffline = false }
+                seedIfWaiting()
                 return true
             }
             syncMessage = "New edits are saved locally; sync will retry"
@@ -427,6 +442,9 @@ final class AppStore: ObservableObject {
             )
             watch.photos = PhotoStore.copyPhotos(item.photos, fromWishlist: item.id, toWatch: watch.id)
             watch.photoFocus = item.photoFocus?.filter { watch.photos.contains($0.key) }
+            // Tiles cost money to make: they move with the photos (the hub accepts them for a watch it has never seen).
+            watch.boxTiles = PhotoStore.copyTiles(item.boxTiles, fromWishlist: item.id, toWatch: watch.id)
+            watch.boxCutout = BoxModel.effectiveCutout(item.boxCutout, photos: watch.photos)
             data.watches.append(watch)
             data.wishlist[index].status = "bought"
             self.notice = "Moved into the collection."
@@ -650,11 +668,13 @@ final class AppStore: ObservableObject {
                       data.wishlist[index].photos.contains(filename) else { throw LocalStoreError.itemNotFound }
                 data.wishlist[index].photos.removeAll { $0 == filename }
                 data.wishlist[index].photoFocus = Self.focusMap(data.wishlist[index].photoFocus, setting: nil, for: filename)
+                if data.wishlist[index].boxCutout?.photo == filename { data.wishlist[index].boxCutout = nil }
             } else {
                 guard let index = data.watches.firstIndex(where: { $0.id == itemID }),
                       data.watches[index].photos.contains(filename) else { throw LocalStoreError.itemNotFound }
                 data.watches[index].photos.removeAll { $0 == filename }
                 data.watches[index].photoFocus = Self.focusMap(data.watches[index].photoFocus, setting: nil, for: filename)
+                if data.watches[index].boxCutout?.photo == filename { data.watches[index].boxCutout = nil }
             }
         }
     }
@@ -682,6 +702,169 @@ final class AppStore: ObservableObject {
         var updated = map ?? [:]
         updated[filename] = focus
         return updated.isEmpty ? nil : updated
+    }
+
+    // MARK: Boxes
+
+    /// Moves an owned watch into a compartment (BoxModel.place: empty, swap, or the occupant to the tray).
+    func placeWatch(id: String, boxID: String, slot: Int) async {
+        await mutate { data in try BoxModel.place(watchID: id, boxID: boxID, slot: slot, in: &data) }
+        // Dropping an owned watch on a trial space ends that trial.
+        let space = BoxSpace(boxID: boxID, slot: slot)
+        if let data, BoxModel.location(of: id, in: data) == space, boxTrial.candidate(at: space) != nil {
+            var trial = boxTrial
+            trial.end(at: space)
+            storeTrial(trial)
+        }
+    }
+
+    func takeOut(watchID: String) async {
+        guard let data, BoxModel.location(of: watchID, in: data) != nil else { return }
+        await mutate { data in BoxModel.takeOut(watchID: watchID, in: &data) }
+    }
+
+    /// Adds an empty box at the end; returns its id.
+    @discardableResult
+    func addBox(name: String, finish: String, columns: Int, rows: Int) async -> String? {
+        var addedID: String?
+        await mutate { data in
+            var boxes = data.boxes ?? []
+            guard boxes.count < BoxModel.boxLimit else { throw LocalStoreError.invalidOperation }
+            let box = try Self.checkedBox(WatchBox(
+                id: BoxModel.newBoxID(existing: boxes.map(\.id)),
+                name: name, finish: finish, columns: columns, rows: rows, slots: [:]
+            ))
+            boxes.append(box)
+            data.boxes = boxes
+            addedID = box.id
+            self.notice = "Box added."
+        }
+        guard let addedID, data?.boxes?.contains(where: { $0.id == addedID }) == true else { return nil }
+        return addedID
+    }
+
+    /// Saves a box's name, finish and size. The compartments are taken from the collection as it is
+    /// now, not from the edited copy, so a sync that moved a watch meanwhile is kept; a new size keeps
+    /// each watch's row and column when they still exist and sends the rest to the tray.
+    func updateBox(_ box: WatchBox) async {
+        await mutate { data in
+            guard var boxes = data.boxes, let index = boxes.firstIndex(where: { $0.id == box.id }) else {
+                throw LocalStoreError.itemNotFound
+            }
+            var updated = boxes[index]
+            if updated.columns != box.columns || updated.rows != box.rows {
+                updated = BoxModel.resize(updated, columns: box.columns, rows: box.rows)
+            }
+            updated.name = box.name
+            updated.finish = box.finish
+            boxes[index] = try Self.checkedBox(updated)
+            data.boxes = boxes
+        }
+    }
+
+    /// Removes a box; its watches go to the tray.
+    func deleteBox(id: String) async {
+        await mutate { data in
+            guard data.boxes?.contains(where: { $0.id == id }) == true else { throw LocalStoreError.itemNotFound }
+            data.boxes?.removeAll { $0.id == id }
+            self.notice = "Box deleted."
+        }
+    }
+
+    /// Reorders the boxes (the order of their tabs), as a List's onMove reports it.
+    func moveBox(from source: IndexSet, to destination: Int) async {
+        await mutate { data in
+            guard var boxes = data.boxes, source.allSatisfy(boxes.indices.contains), (0...boxes.count).contains(destination) else {
+                throw LocalStoreError.invalidOperation
+            }
+            boxes.move(fromOffsets: source, toOffset: destination)
+            data.boxes = boxes
+        }
+    }
+
+    /// "Use the starting layout": the same seed the iPhone writes, for a collection with no boxes.
+    func useStartingLayout() async {
+        await mutate { data in
+            guard data.boxes?.isEmpty ?? true else { throw LocalStoreError.invalidOperation }
+            data.boxes = nil
+            if let seeded = BoxModel.seeding(data) { data = seeded }
+        }
+    }
+
+    /// Saves how a watch's or candidate's box cutout is made; nil goes back to fully automatic.
+    func setBoxCutout(itemID: String, wishlist: Bool, cutout: BoxCutout?) async {
+        await mutate { data in
+            let clean = cutout?.normalized
+            if wishlist {
+                guard let index = data.wishlist.firstIndex(where: { $0.id == itemID }),
+                      clean.map({ data.wishlist[index].photos.contains($0.photo) }) ?? true
+                else { throw LocalStoreError.itemNotFound }
+                data.wishlist[index].boxCutout = clean
+            } else {
+                guard let index = data.watches.firstIndex(where: { $0.id == itemID }),
+                      clean.map({ data.watches[index].photos.contains($0.photo) }) ?? true
+                else { throw LocalStoreError.itemNotFound }
+                data.watches[index].boxCutout = clean
+            }
+        }
+    }
+
+    /// Puts a wishlist candidate on trial in a box space, on this device only.
+    func tryOn(wishlistID: String, boxID: String, slot: Int) {
+        guard let data, data.wishlist.contains(where: { $0.id == wishlistID && $0.status != "bought" }),
+              let box = data.boxes?.first(where: { $0.id == boxID }), (0..<box.capacity).contains(slot)
+        else {
+            surface(LocalStoreError.itemNotFound)
+            return
+        }
+        var trial = boxTrial
+        trial.place(wishlistID, at: BoxSpace(boxID: boxID, slot: slot))
+        storeTrial(trial)
+    }
+
+    func endTrial(wishlistID: String) {
+        var trial = boxTrial
+        trial.end(wishlistID)
+        storeTrial(trial)
+    }
+
+    func clearTrial(boxID: String) {
+        var trial = boxTrial
+        trial.clear(boxID: boxID)
+        storeTrial(trial)
+    }
+
+    /// Keeps the trial overlay in step with the collection (gone boxes and candidates drop out) and on disk.
+    private func storeTrial(_ trial: BoxTrial) {
+        let cleaned = data.map { trial.cleaned(for: $0) } ?? trial
+        guard cleaned != boxTrial else { return }
+        boxTrial = cleaned
+        cleaned.save()
+    }
+
+    /// The iPhone writes the starting layout once, the first time it finds a collection that has
+    /// never had boxes. The Mac never does by itself, so a first sync between the two cannot produce
+    /// slot conflicts; it offers "Use the starting layout" instead.
+    private func seedBoxesIfNeeded() async {
+        guard !Platform.isMac, let data, BoxModel.seeding(data) != nil else { return }
+        await mutate { data in
+            if let seeded = BoxModel.seeding(data) { data = seeded }
+        }
+    }
+
+    private func seedIfWaiting() {
+        guard seedAfterSync else { return }
+        seedAfterSync = false
+        Task { await self.seedBoxesIfNeeded() }
+    }
+
+    private nonisolated static func checkedBox(_ box: WatchBox) throws -> WatchBox {
+        guard let name = BoxModel.cleanName(box.name), BoxModel.finishes.contains(box.finish),
+              BoxModel.columnRange.contains(box.columns), BoxModel.rowRange.contains(box.rows)
+        else { throw LocalStoreError.invalidOperation }
+        var checked = box
+        checked.name = name
+        return checked
     }
 
     func photoAsset(itemID: String, filename: String, wishlist: Bool) -> PhotoAsset? {
@@ -725,6 +908,8 @@ final class AppStore: ObservableObject {
     }
 
     private func commit(_ updated: CollectionData) async throws {
+        // Every mutation ends with the box rules: a deleted or sold watch leaves its compartment.
+        let updated = BoxModel.sanitized(updated)
         guard publish(updated, persist: true) else { throw LocalStoreError.saveFailed }
         editGeneration += 1
         if updated.settings.autoBackup { _ = try? LocalBackup.mirrorJSON(from: updated) }
@@ -735,7 +920,7 @@ final class AppStore: ObservableObject {
 
     @discardableResult
     private func publish(_ rawData: CollectionData, persist: Bool) -> Bool {
-        let derived = DecisionEngine.withDerivedStats(rawData)
+        let derived = DecisionEngine.withDerivedStats(BoxModel.sanitized(rawData))
         if persist {
             do {
                 try SyncDisk.save(SyncCheckpoint(data: derived, base: syncBase, server: syncAddress, lastSuccess: lastSync))
@@ -745,6 +930,7 @@ final class AppStore: ObservableObject {
             }
         }
         data = derived
+        storeTrial(boxTrial)
         scores = DecisionEngine.scores(for: derived)
         suggestions = DecisionEngine.suggestions(for: derived)
         if isOffline { isOffline = false }
