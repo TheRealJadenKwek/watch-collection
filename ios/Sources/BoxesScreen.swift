@@ -143,6 +143,8 @@ struct BoxesScreen: View {
     @AppStorage("boxTurnedV1") private var turned = false
     @State private var lidClosed = false
     @State private var selection: Int?
+    /// A box an intent switched to together with its selection, so the switch does not clear what came with it.
+    @State private var carriedBoxID: String?
     @State private var armed: BoxChip?
     @State private var emphasized: Int?
     @State private var trayShowsWishlist = false
@@ -376,7 +378,11 @@ struct BoxesScreen: View {
                 guard sectionIsActive, scene.k > 0 else { return }
                 await art.load(artRequest(scene))
             }
-            .onChange(of: scene.box.id) { _, _ in
+            .onChange(of: scene.box.id) { _, id in
+                // A box switched to with its own selection (the watch page's Box row) keeps it.
+                let carried = carriedBoxID == id
+                carriedBoxID = nil
+                guard !carried else { return }
                 withAnimation(.easeInOut(duration: 0.2)) {
                     selection = nil
                     armed = nil
@@ -1510,6 +1516,7 @@ struct BoxesScreen: View {
             switch intent {
             case .show(let id), .place(let id):
                 if let space = BoxModel.location(of: id, in: data) {
+                    if space.boxID != makeScene()?.box.id { carriedBoxID = space.boxID }
                     selectedBoxID = space.boxID
                     selection = space.slot
                     armed = nil
