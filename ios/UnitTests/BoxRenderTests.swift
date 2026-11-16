@@ -433,4 +433,26 @@ final class BoxScreenPureTests: XCTestCase {
         XCTAssertEqual(try greenInsideTheRing(trial: false), 0)
         XCTAssertGreaterThan(try greenInsideTheRing(trial: true), 100)
     }
+
+    func testABackRowTrialGoesUnderTheFrontRow() throws {
+        /// The rows of the trial green in the picture with a candidate in one space.
+        func greenRows(_ slot: Int) throws -> ClosedRange<CGFloat> {
+            var content = BoxSlotContent()
+            content.isTrial = true
+            let view = BoxProductView(geometry: box, finish: .black, slots: [slot: content]).frame(width: 370)
+            let renderer = ImageRenderer(content: view)
+            renderer.scale = 3
+            let image = try XCTUnwrap(renderer.cgImage)
+            let ys = drawn(image).filter { pixel in
+                let c = pixel.rgba
+                return abs(Int(c[0]) - 0x2F) < 30 && abs(Int(c[1]) - 0xB8) < 30 && abs(Int(c[2]) - 0x77) < 30
+            }.map(\.point.y)
+            let top = try XCTUnwrap(ys.min()), bottom = try XCTUnwrap(ys.max())
+            return top...bottom
+        }
+        // Space 0 is at the back on the left, space 6 in front of it.
+        let back = try greenRows(0), front = try greenRows(6)
+        XCTAssertLessThan(back.lowerBound, front.lowerBound)
+        XCTAssertLessThanOrEqual(back.upperBound, front.lowerBound + 1.5, "the back ring runs over the front row")
+    }
 }

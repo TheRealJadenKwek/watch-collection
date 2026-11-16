@@ -119,6 +119,13 @@ struct BoxProductPainter {
                     if slots[index]?.isTrial == true {
                         // The box's own mark (ring and TRYING tag) over the card, the type not squashed with it.
                         t.drawLayer { mark in
+                            // The row in front stands over this one's feet, so the ring goes under it as the card does.
+                            if row + 1 < geometry.rows {
+                                let next = geometry.slot(index + geometry.columns)
+                                let (nextCentre, nextScale) = project(next.midX, D - next.midY, Self.frontTier)
+                                let cover = nextCentre.y - next.height / 2 * k * nextScale * Self.cardSquash
+                                mark.clip(to: Path(CGRect(x: 0, y: 0, width: size.width, height: max(0, cover))))
+                            }
                             mark.translateBy(x: centre.x, y: centre.y)
                             let card = CGRect(x: rect.minX, y: rect.minY * Self.cardSquash, width: rect.width, height: rect.height * Self.cardSquash)
                             painter.trialMark(&mark, rect: card)
