@@ -15,6 +15,7 @@ struct StatsScreen: View {
     @State private var priceLedgerExpanded = false
     @State private var path = NavigationPath()
     @Environment(\.openPage) private var openPage
+    @Environment(\.pageMargin) private var margin
 
     /// The month the time scrubber is set to; nil means now.
     @State private var asOfIndex: Int?
@@ -181,7 +182,7 @@ struct StatsScreen: View {
                 } label: {
                     Text(Platform.isMac ? mark.year : "\u{2019}" + mark.year.suffix(2))
                         .font(.caption2.monospacedDigit().weight(selected ? .bold : .regular))
-                        .foregroundStyle(selected ? Color.primary : Color.secondary)
+                        .foregroundStyle(selected ? WatchTheme.ink : WatchTheme.muted)
                         .fixedSize()
                         .padding(.horizontal, 3)
                         .padding(.vertical, 1)
@@ -210,9 +211,9 @@ struct StatsScreen: View {
                 } label: {
                     Text(mark.year)
                         .font(.caption.monospacedDigit().weight(selected ? .bold : .regular))
-                        .foregroundStyle(selected ? Color.primary : Color.secondary)
+                        .foregroundStyle(selected ? WatchTheme.ink : WatchTheme.muted)
                         .frame(maxWidth: .infinity, minHeight: 30)
-                        .background(selected ? Color.primary.opacity(0.08) : Color.clear, in: Capsule())
+                        .background(selected ? WatchTheme.fill : Color.clear, in: Capsule())
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -225,15 +226,20 @@ struct StatsScreen: View {
         SectionStack(path: $path) {
             RefreshableScreen(store: store) {
                 ScrollView {
-                    LazyVStack(spacing: 14) {
+                    LazyVStack(spacing: WatchTheme.gridGap) {
                         #if os(iOS)
-                        scopePicker
-                        timeScrubber
-                            .padding(.bottom, 4)
+                        Group {
+                            Masthead(kicker: "Insights", title: scope == "owned" ? "Current" : "All Time")
+                            UnderlineTabs(selection: $scope, options: [(value: "owned", label: "Current"), (value: "all", label: "All Time")])
+                            timeScrubber
+                                .padding(.top, 14)
+                        }
+                        // Panels tile at the grid's 16; the masthead and controls keep the page margin.
+                        .padding(.horizontal, max(margin - WatchTheme.narrowMargin, 0))
                         #endif
                         if Platform.isMac {
-                            HStack(alignment: .top, spacing: 16) {
-                                VStack(spacing: 16) {
+                            HStack(alignment: .top, spacing: WatchTheme.gridGap) {
+                                VStack(spacing: WatchTheme.gridGap) {
                                     headlineTiles
                                     costChart
                                     sizeChart
@@ -246,7 +252,7 @@ struct StatsScreen: View {
                                 }
                                 .frame(maxWidth: .infinity)
                                 .background(HeightReader(key: LeftColumnHeightKey.self))
-                                VStack(spacing: 16) {
+                                VStack(spacing: WatchTheme.gridGap) {
                                     maintenanceDashboard
                                     spendChart
                                     countChart
@@ -261,9 +267,13 @@ struct StatsScreen: View {
                             .onPreferenceChange(RightColumnHeightKey.self) { update(&rightColumnHeight, to: $0) }
                             .onPreferenceChange(TimelineViewportKey.self) { update(&timelineViewport, to: $0) }
                         } else {
+                            // Four groups, in the same order as before: the collection now, its shape and
+                            // history, the buying guide, then the data still to fill in.
                             headlineTiles
+                                .padding(.top, groupGap)
                             maintenanceDashboard
                             costChart
+                                .padding(.top, groupGap)
                             priceLedger
                             sizeChart
                             spendChart
@@ -271,20 +281,24 @@ struct StatsScreen: View {
                             currentCollectionTimeline
                             lugChart
                             categoryCoverage
+                                .padding(.top, groupGap)
                             priceLadder
                             brandBreadth
                             varietyPanel(title: "Dials", symbol: "circle.lefthalf.filled", color: .cyan, field: \Watch.dialColor, values: store.data?.dialColors ?? [])
                             varietyPanel(title: "Materials", symbol: "cube.fill", color: .brown, field: \Watch.material, values: store.data?.materials ?? [])
                             completeData
+                                .padding(.top, groupGap)
                         }
                     }
-                    .padding(.horizontal, Platform.isMac ? 24 : 16)
-                    .padding(.top, 4)
+                    .padding(.horizontal, Platform.isMac ? 24 : WatchTheme.narrowMargin)
+                    .padding(.top, Platform.isMac ? 4 : 0)
                     .padding(.bottom, 24)
                     // Charts morph between Current and All Time: bars grow, shrink, appear and leave.
                     .animation(.smooth(duration: 0.5), value: scope)
                     .animation(.easeOut(duration: 0.2), value: asOfIndex)
                 }
+                .mastheadTitle("Insights")
+                .atelierProbeScroll("insights")
                 .screenBackground()
             }
             #if os(macOS)
@@ -295,7 +309,6 @@ struct StatsScreen: View {
                 }
             })
             #else
-            .navigationTitle("Insights")
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
             }
@@ -317,9 +330,19 @@ struct StatsScreen: View {
             .onChange(of: scope) { _, _ in
                 priceLedgerExpanded = false
             }
+            #if DEBUG && os(iOS)
+            .task {
+                guard AtelierProbe.opensTimeline, path.isEmpty else { return }
+                try? await Task.sleep(for: .seconds(3))
+                path.append(TimelineRoute(ownedOnly: false))
+            }
+            #endif
         }
         .pageAppear()
     }
+
+    /// Space between groups of panels, on top of the panel gap.
+    private var groupGap: CGFloat { WatchTheme.sectionGap - WatchTheme.gridGap }
 
     private var scopePicker: some View {
         Picker("Scope", selection: $scope) {
@@ -347,67 +370,75 @@ struct StatsScreen: View {
             ("Highest", cadWhole(stats?.max ?? 0)),
             ("Middle 50%", "\(cadWhole(stats?.q1 ?? 0))–\(cadWhole(stats?.q3 ?? 0))"),
         ]
-        return VStack(alignment: .leading, spacing: 18) {
+        return VStack(alignment: .leading, spacing: 22) {
             VStack(alignment: .leading, spacing: 4) {
-                Label("Total Spent", systemImage: "dollarsign.circle.fill")
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.green)
+                Eyebrow("Total spent")
                 Text(cadWhole(stats?.total ?? 0))
                     .font(.figure(.largeTitle))
+                    .foregroundStyle(WatchTheme.ink)
                     .minimumScaleFactor(0.7)
                     .lineLimit(1)
                     .padding(.top, 6)
+                Rectangle()
+                    .fill(WatchTheme.gold)
+                    .frame(width: 36, height: 2)
+                    .padding(.top, 8)
+                    .padding(.bottom, 10)
+                    .accessibilityHidden(true)
                 Text("across \(count) watch\(count == 1 ? "" : "es")\(asOfKey.map { " bought by \(purchaseMonthLabel($0))\(scope == "owned" ? " that you still own" : "")" } ?? (scope == "owned" ? " you own" : " ever owned"))")
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
+                    .font(AtelierType.detail)
+                    .foregroundStyle(WatchTheme.muted)
                 let sales = salesInView
                 if !sales.isEmpty {
                     let back = sales.reduce(0) { $0 + ($1.salePrice ?? 0) }
                     HStack(alignment: .firstTextBaseline, spacing: 8) {
                         Text("Net cost")
                             .font(.subheadline.weight(.semibold))
-                            .foregroundStyle(.secondary)
+                            .foregroundStyle(WatchTheme.muted)
                         Text(cadWhole((stats?.total ?? 0) - back))
                             .font(.figure(.title2))
+                            .foregroundStyle(WatchTheme.ink)
                             .contentTransition(.numericText())
                     }
-                    .padding(.top, 10)
+                    .padding(.top, 12)
                     Text("after \(cadWhole(back)) back from selling \(sales.count) \(sales.count == 1 ? "watch" : "watches")")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
+                        .font(AtelierType.detail)
+                        .foregroundStyle(WatchTheme.muted)
                 }
             }
 
-            VStack(alignment: .leading, spacing: 7) {
+            VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text("In your \(compactNumber(wrist.sweetSpotMin))–\(compactNumber(wrist.sweetSpotMax)) mm sweet spot")
                         .font(.subheadline)
+                        .foregroundStyle(WatchTheme.ink)
                     Spacer()
                     Text("\(inRange) of \(measured.count)")
                         .font(.subheadline.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(.teal)
+                        .foregroundStyle(WatchTheme.accent)
                 }
                 GeometryReader { geo in
                     ZStack(alignment: .leading) {
-                        Capsule().fill(WatchTheme.fill)
-                        Capsule()
-                            .fill(Color.teal.gradient)
-                            .frame(width: max(8, geo.size.width * fraction))
+                        Rectangle().fill(WatchTheme.raised)
+                        Rectangle()
+                            .fill(WatchTheme.accent)
+                            .frame(width: max(6, geo.size.width * fraction))
                     }
                 }
-                .frame(height: 8)
+                .frame(height: 6)
             }
 
-            Divider()
+            Hairline()
 
-            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 3), alignment: .leading, spacing: 16) {
+            LazyVGrid(columns: Array(repeating: GridItem(.flexible(), alignment: .leading), count: 3), alignment: .leading, spacing: 18) {
                 ForEach(figures, id: \.0) { label, value in
                     VStack(alignment: .leading, spacing: 3) {
                         Text(label)
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
+                            .font(AtelierType.caption)
+                            .foregroundStyle(WatchTheme.muted)
                         Text(value)
                             .font(.figure(.headline, weight: .semibold))
+                            .foregroundStyle(WatchTheme.ink)
                             .minimumScaleFactor(0.6)
                             .lineLimit(1)
                     }
@@ -442,11 +473,11 @@ struct StatsScreen: View {
                         } label: {
                             HStack(alignment: .firstTextBaseline, spacing: 10) {
                                 Image(systemName: item.daysUntilDue < 0 ? "exclamationmark.circle.fill" : "bell")
-                                    .foregroundStyle(item.daysUntilDue < 0 ? Color.red : Color.blue)
+                                    .foregroundStyle(item.daysUntilDue < 0 ? Color.red : WatchTheme.accent)
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(item.watch.name)
                                         .font(.subheadline.weight(.semibold))
-                                        .foregroundStyle(.primary)
+                                        .foregroundStyle(WatchTheme.ink)
                                     Text(item.record.kind)
                                         .font(.caption)
                                         .foregroundStyle(Color.secondary)
@@ -455,7 +486,7 @@ struct StatsScreen: View {
                                 VStack(alignment: .trailing, spacing: 3) {
                                     Text(calendarDayLabel(item.record.nextDue))
                                         .font(.caption.weight(.semibold))
-                                        .foregroundStyle(item.daysUntilDue < 0 ? Color.red : Color.blue)
+                                        .foregroundStyle(item.daysUntilDue < 0 ? Color.red : WatchTheme.accent)
                                     Text(dueDistanceLabel(item.daysUntilDue))
                                         .font(.caption2)
                                         .foregroundStyle(Color.secondary)
@@ -477,8 +508,8 @@ struct StatsScreen: View {
         let headline = headline
         return SectionCard("Price Tiers", systemImage: "chart.bar.fill", color: .green, detail: "Cost histogram") {
             HStack(spacing: 6) {
-                Capsule()
-                    .fill(Color.green.opacity(0.6))
+                Rectangle()
+                    .fill(WatchTheme.muted)
                     .frame(width: 25, height: 2)
                 Text("shape")
                     .font(.caption2)
@@ -487,7 +518,7 @@ struct StatsScreen: View {
             .frame(maxWidth: .infinity, alignment: .trailing)
             CostTierChart(bins: bins, headline: headline)
             if let headline {
-                Text("Mean \(cad(headline.mean)) vs median \(cad(headline.median)) — \(skewShape(headline.skewness)) (skew \(headline.skewness.formatted(.number.precision(.fractionLength(3)))))")
+                Text("Mean \(cad(headline.mean)) vs median \(cad(headline.median)), \(skewShape(headline.skewness)) (skew \(headline.skewness.formatted(.number.precision(.fractionLength(3)))))")
                     .font(.caption)
                     .foregroundStyle(Color.secondary)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -521,17 +552,17 @@ struct StatsScreen: View {
                         .padding(.vertical, 9)
                         .hoverRow()
                         if row.id != rows.last?.id {
-                            Divider()
+                            Hairline()
                         }
                     }
-                    Divider()
+                    Hairline()
                     HStack {
                         Text("Grand total")
                             .font(.headline)
                         Spacer()
                         Text(cad(cents: grandTotal))
                             .font(.headline.monospacedDigit())
-                            .foregroundStyle(.green)
+                            .foregroundStyle(WatchTheme.accent)
                     }
                     .padding(.top, 12)
                 }
@@ -546,7 +577,7 @@ struct StatsScreen: View {
                         .foregroundStyle(Color.secondary)
                 }
             }
-            .tint(.green)
+            .tint(WatchTheme.accent)
         }
     }
 
@@ -583,7 +614,6 @@ struct StatsScreen: View {
             }
             YearBarChart(
                 values: values,
-                color: .teal,
                 describe: { "\(Int($0)) \(Int($0) == 1 ? "watch" : "watches")" },
                 yStride: max(1, (ceiling / 4).rounded(.up)),
                 openYear: openYear
@@ -607,7 +637,7 @@ struct StatsScreen: View {
             YearBarChart(values: values, openYear: openYear)
 
             if !cumulative.isEmpty {
-                Divider()
+                Hairline()
                 HStack {
                     Text("Acquisition basis over time")
                         .font(.caption.weight(.bold))
@@ -615,7 +645,7 @@ struct StatsScreen: View {
                     Spacer()
                     Text(cad(cumulative.last?.total ?? 0))
                         .font(.caption.weight(.semibold).monospacedDigit())
-                        .foregroundStyle(.green)
+                        .foregroundStyle(WatchTheme.accent)
                 }
                 CumulativeSpendChart(values: cumulative)
             }
@@ -684,8 +714,8 @@ struct StatsScreen: View {
                             HStack(alignment: .top, spacing: 12) {
                                 VStack(alignment: .trailing, spacing: 2) {
                                     Text(entry.month.uppercased())
-                                        .font(.caption2.weight(.bold))
-                                        .foregroundStyle(.indigo)
+                                        .font(AtelierType.kicker.weight(.semibold))
+                                        .foregroundStyle(WatchTheme.accent)
                                     Text(entry.year)
                                         .font(.caption.monospacedDigit())
                                         .foregroundStyle(Color.secondary)
@@ -694,12 +724,12 @@ struct StatsScreen: View {
 
                                 VStack(spacing: 0) {
                                     Circle()
-                                        .fill(.indigo)
+                                        .fill(WatchTheme.accent)
                                         .frame(width: 10, height: 10)
-                                        .overlay { Circle().stroke(Color.indigo.opacity(0.25), lineWidth: 5) }
+                                        .overlay { Circle().stroke(WatchTheme.accent.opacity(0.2), lineWidth: 5) }
                                     if index < entries.count - 1 {
                                         Rectangle()
-                                            .fill(Color.indigo.opacity(0.3))
+                                            .fill(WatchTheme.separator)
                                             .frame(width: 1)
                                             .frame(maxHeight: .infinity)
                                     }
@@ -709,11 +739,11 @@ struct StatsScreen: View {
                                 VStack(alignment: .leading, spacing: 5) {
                                     Text(entry.watch.name)
                                         .font(.subheadline.weight(.semibold))
-                                        .foregroundStyle(.primary)
+                                        .foregroundStyle(WatchTheme.ink)
                                         .multilineTextAlignment(.leading)
                                     HStack(spacing: 8) {
                                         Text(cad(entry.watch.price))
-                                            .foregroundStyle(.primary)
+                                            .foregroundStyle(WatchTheme.ink)
                                         if let category = entry.watch.category {
                                             Text(category)
                                                 .foregroundStyle(Color.secondary)
@@ -744,11 +774,11 @@ struct StatsScreen: View {
                         systemImage: "exclamationmark.circle"
                     )
                     .font(.caption)
-                    .foregroundStyle(.indigo)
+                    .foregroundStyle(WatchTheme.muted)
                 }
             }
             if !trades.isEmpty {
-                Divider()
+                Hairline()
                 Text("Acquired by trade")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(Color.secondary)
@@ -817,11 +847,11 @@ struct StatsScreen: View {
                                 .foregroundStyle(Color.secondary)
                         }
                         Spacer()
-                        CapsuleChip(text: row.verdict, color: row.owned == 0 ? .indigo : row.owned >= 3 ? .secondary : .green)
+                        CapsuleChip(text: row.verdict, color: row.owned == 0 ? WatchTheme.accent : WatchTheme.muted)
                     }
                     .padding(.vertical, 9)
                     .hoverRow()
-                    if row.id != rows.last?.id { Divider() }
+                    if row.id != rows.last?.id { Hairline() }
                 }
             }
         }
@@ -844,7 +874,7 @@ struct StatsScreen: View {
                             .font(.caption)
                             .foregroundStyle(Color.secondary)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                        if matches.isEmpty { CapsuleChip(text: "Gap", color: .teal) }
+                        if matches.isEmpty { CapsuleChip(text: "Gap", color: WatchTheme.accent) }
                     }
                     .hoverRow()
                 }
@@ -857,10 +887,10 @@ struct StatsScreen: View {
                     }
                 }
                 .font(.footnote.weight(.semibold))
-                .foregroundStyle(.teal)
-                .padding(12)
+                .foregroundStyle(WatchTheme.accent)
+                .padding(14)
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(Color.teal.opacity(0.12), in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .background(WatchTheme.raised)
             }
         }
     }
@@ -911,7 +941,7 @@ struct StatsScreen: View {
                     .font(.caption.weight(.bold))
                     .foregroundStyle(Color.secondary)
                 ScrollView(.horizontal, showsIndicators: false) {
-                    HStack { ForEach(radar, id: \.brand) { CapsuleChip(text: $0.brand, color: .pink) } }
+                    HStack { ForEach(radar, id: \.brand) { CapsuleChip(text: $0.brand, color: WatchTheme.accent) } }
                 }
             }
         }
@@ -1035,14 +1065,13 @@ private struct CostTierChart: View {
                     y: .value("Watches", bin.count),
                     width: .fixed(24)
                 )
-                .foregroundStyle(Color.green.gradient)
+                .foregroundStyle(selected == bin.id ? AnyShapeStyle(WatchTheme.ink) : AnyShapeStyle(WatchTheme.accent.gradient))
                 .opacity(selected == nil || selected == bin.id ? 1 : 0.42)
-                .cornerRadius(3)
                 .accessibilityLabel(bin.label)
                 .accessibilityValue("\(bin.count) \(bin.count == 1 ? "watch" : "watches")")
                 .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
                     if selected == bin.id {
-                        ChartAnnotationBubble(text: "\(bin.label) — \(bin.count) \(bin.count == 1 ? "watch" : "watches")")
+                        ChartAnnotationBubble(text: "\(bin.label) · \(bin.count) \(bin.count == 1 ? "watch" : "watches")")
                     }
                 }
             }
@@ -1052,28 +1081,28 @@ private struct CostTierChart: View {
                     y: .value("Shape", bin.count)
                 )
                 .interpolationMethod(.monotone)
-                .foregroundStyle(Color.green.opacity(0.6))
+                .foregroundStyle(WatchTheme.muted)
                 .lineStyle(StrokeStyle(lineWidth: 2))
             }
             if let medianX, let headline {
                 RuleMark(x: .value("Median", medianX))
-                    .foregroundStyle(Color.primary)
+                    .foregroundStyle(WatchTheme.ink)
                     .lineStyle(StrokeStyle(lineWidth: 1.4))
                     .annotation(position: .top, alignment: .leading) {
                         Text("median \(cad(headline.median))")
                             .font(.caption2.weight(.bold))
-                            .foregroundStyle(Color.primary)
+                            .foregroundStyle(WatchTheme.ink)
                             .fixedSize()
                     }
             }
             if let meanX, let headline {
                 RuleMark(x: .value("Mean", meanX))
-                    .foregroundStyle(Color.secondary)
+                    .foregroundStyle(WatchTheme.muted)
                     .lineStyle(StrokeStyle(lineWidth: 1.4, dash: [6, 5]))
                     .annotation(position: .top, alignment: .leading) {
                         Text("mean \(cad(headline.mean))")
                             .font(.caption2.weight(.bold))
-                            .foregroundStyle(Color.secondary)
+                            .foregroundStyle(WatchTheme.muted)
                             .fixedSize()
                             .offset(y: 15)
                     }
@@ -1127,23 +1156,23 @@ private struct CaseSizeChart: View {
                 yStart: .value("Floor", 0),
                 yEnd: .value("Ceiling", ceiling)
             )
-            .foregroundStyle(Color.purple.opacity(0.1))
+            .foregroundStyle(WatchTheme.accent.opacity(0.1))
             ForEach(bins) { bin in
                 BarMark(
                     x: .value("Diameter", bin.midpoint),
                     y: .value("Watches", bin.count),
                     width: .fixed(13)
                 )
-                .foregroundStyle(Color.purple.gradient)
+                .foregroundStyle(hoveredBin?.lower == bin.lower ? AnyShapeStyle(WatchTheme.ink) : AnyShapeStyle(WatchTheme.accent.gradient))
                 .opacity(hoveredBin == nil || hoveredBin?.lower == bin.lower ? 1 : 0.42)
                 .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
                     if hoveredBin?.lower == bin.lower {
-                        ChartAnnotationBubble(text: "\(bin.label) — \(bin.count) \(bin.count == 1 ? "watch" : "watches")")
+                        ChartAnnotationBubble(text: "\(bin.label) · \(bin.count) \(bin.count == 1 ? "watch" : "watches")")
                     }
                 }
             }
             RuleMark(x: .value("Perfect", wrist.perfect))
-                .foregroundStyle(Color.secondary)
+                .foregroundStyle(WatchTheme.muted)
                 .lineStyle(StrokeStyle(lineWidth: 1.5, dash: [4]))
         }
         .frame(height: 190)
@@ -1178,7 +1207,7 @@ private struct CaseSizeChart: View {
 /// Bars by year that open that year's purchases: money spent, or how many watches were bought.
 private struct YearBarChart: View {
     let values: [YearSpend]
-    var color: Color = .green
+    var color: Color = WatchTheme.accent
     var describe: (Double) -> String = { cad($0) }
     /// Whole-number ticks for counts; nil lets the chart choose.
     var yStride: Double?
@@ -1188,12 +1217,11 @@ private struct YearBarChart: View {
     var body: some View {
         Chart(values) { point in
             BarMark(x: .value("Year", point.year), y: .value("Value", point.total))
-                .foregroundStyle(color.gradient)
+                .foregroundStyle(selected == point.year ? AnyShapeStyle(WatchTheme.ink) : AnyShapeStyle(color.gradient))
                 .opacity(selected == nil || selected == point.year ? 1 : 0.42)
-                .cornerRadius(4)
                 .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
                     if selected == point.year {
-                        ChartAnnotationBubble(text: "\(point.year) — \(describe(point.total))")
+                        ChartAnnotationBubble(text: "\(point.year) · \(describe(point.total))")
                     }
                 }
         }
@@ -1262,22 +1290,22 @@ private struct CumulativeSpendChart: View {
                 x: .value("Year", point.year),
                 y: .value("Cumulative CAD", point.total)
             )
-            .foregroundStyle(Color.green.opacity(0.15).gradient)
+            .foregroundStyle(WatchTheme.accent.opacity(0.15).gradient)
             LineMark(
                 x: .value("Year", point.year),
                 y: .value("Cumulative CAD", point.total)
             )
-            .foregroundStyle(Color.green)
+            .foregroundStyle(WatchTheme.accent)
             .lineStyle(StrokeStyle(lineWidth: 2.2))
             PointMark(
                 x: .value("Year", point.year),
                 y: .value("Cumulative CAD", point.total)
             )
-            .foregroundStyle(Color.green)
+            .foregroundStyle(selected == point.year ? WatchTheme.ink : WatchTheme.accent)
             .symbolSize(selected == point.year ? 90 : 30)
             .annotation(position: .top, overflowResolution: .init(x: .fit(to: .chart), y: .fit(to: .chart))) {
                 if selected == point.year {
-                    ChartAnnotationBubble(text: "\(point.year) — \(cad(point.total))")
+                    ChartAnnotationBubble(text: "\(point.year) · \(cad(point.total))")
                 }
             }
         }
@@ -1322,8 +1350,9 @@ private struct LugToLugChart: View {
     }
 
     private func fit(_ value: Double) -> (color: Color, label: String) {
-        if value <= wrist.lugMax - 1 { return (.purple, "fits") }
-        if value <= wrist.lugMax { return (.orange, "at the limit") }
+        if value <= wrist.lugMax - 1 { return (WatchTheme.accent, "fits") }
+        // A warm warning level, the same yellow the fit chips use for "at the limit".
+        if value <= wrist.lugMax { return (.yellow, "at the limit") }
         return (.red, "over")
     }
 
@@ -1334,13 +1363,13 @@ private struct LugToLugChart: View {
         let limit = rows.filter { $0.value > wrist.lugMax - 1 && $0.value <= wrist.lugMax }.count
         VStack(alignment: .leading, spacing: 10) {
             HStack(spacing: 14) {
-                legend(.purple, "\(rows.count - over - limit) fit")
-                if limit > 0 { legend(.orange, "\(limit) at the limit") }
+                legend(WatchTheme.accent, "\(rows.count - over - limit) fit")
+                if limit > 0 { legend(.yellow, "\(limit) at the limit") }
                 legend(.red, "\(over) over \(compactNumber(wrist.lugMax)) mm")
                 Spacer(minLength: 0)
             }
             .font(.caption)
-            .foregroundStyle(Color.secondary)
+            .foregroundStyle(WatchTheme.muted)
 
             VStack(spacing: 0) {
                 VStack(spacing: 0) {
@@ -1395,10 +1424,10 @@ private struct LugToLugChart: View {
                     return CGFloat((min(max(value, domain.lowerBound), domain.upperBound) - domain.lowerBound) / span) * geo.size.width
                 }
                 ZStack(alignment: .leading) {
-                    Capsule()
-                        .fill(Color.primary.opacity(0.07))
+                    Rectangle()
+                        .fill(WatchTheme.raised)
                         .frame(height: 4)
-                    Capsule()
+                    Rectangle()
                         .fill(style.color.opacity(0.35))
                         .frame(width: x(row.value), height: 4)
                     Rectangle()
@@ -1414,7 +1443,7 @@ private struct LugToLugChart: View {
             }
             Text("\(compactNumber(row.value))")
                 .font(.caption.monospacedDigit().weight(.semibold))
-                .foregroundStyle(row.value > wrist.lugMax ? Color.red : Color.primary)
+                .foregroundStyle(row.value > wrist.lugMax ? Color.red : WatchTheme.ink)
                 .frame(width: valueWidth, alignment: .trailing)
         }
         .frame(minHeight: 28)
@@ -1482,6 +1511,7 @@ struct YearPurchasesScreen: View {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(year)
                         .font(.figure(.largeTitle))
+                        .foregroundStyle(WatchTheme.ink)
                     Text("\(cad(total)) across \(entries.count) \(entries.count == 1 ? "purchase" : "purchases")")
                         .font(.headline)
                     Text(ownedOnly
@@ -1496,7 +1526,7 @@ struct YearPurchasesScreen: View {
                     VStack(spacing: 0) {
                         ForEach(entries) { entry in
                             row(entry)
-                            if entry.id != entries.last?.id { Divider() }
+                            if entry.id != entries.last?.id { Hairline() }
                         }
                     }
                     .groupedCard(padding: 12)
@@ -1528,7 +1558,7 @@ struct YearPurchasesScreen: View {
                     maxPixel: DisplayImageCache.icon
                 )
                 .frame(width: 64, height: 64)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .clipped()
                 VStack(alignment: .leading, spacing: 3) {
                     Text(watch.name)
                         .font(.subheadline.weight(.semibold))
@@ -1568,7 +1598,7 @@ private struct HoverRow: ViewModifier {
         #if os(macOS)
         content
             .padding(.horizontal, 8)
-            .background(hovering ? WatchTheme.fill : Color.clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(hovering ? WatchTheme.fill : Color.clear)
             .padding(.horizontal, -8)
             .onHover { hovering = $0 }
             .pointerStyle(clickable ? .link : nil)
@@ -1593,20 +1623,20 @@ private struct ActivityMetricTile: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
             Text(label)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
+                .font(AtelierType.caption)
+                .foregroundStyle(WatchTheme.muted)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
             Text(value)
                 .font(.figure(.title2))
-                .foregroundStyle(warning ? Color.red : Color.primary)
+                .foregroundStyle(warning ? Color.red : WatchTheme.ink)
                 .minimumScaleFactor(0.7)
                 .lineLimit(1)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.vertical, 12)
         .padding(.horizontal, 14)
-        .background(WatchTheme.raised, in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .background(WatchTheme.raised)
     }
 }
 
@@ -1800,10 +1830,11 @@ private struct ChartAnnotationBubble: View {
     var body: some View {
         Text(text)
             .font(.caption.weight(.semibold))
+            .foregroundStyle(WatchTheme.ink)
             .lineLimit(1)
             .padding(.horizontal, 9)
             .padding(.vertical, 6)
-            .background(Color(.systemGray5), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+            .background(WatchTheme.raised)
     }
 }
 

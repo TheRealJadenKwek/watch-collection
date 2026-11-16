@@ -193,24 +193,28 @@ struct TimelinePresentationScreen: View {
         switch slide {
         case let .intro(label, total, from, to, photos):
             VStack(spacing: 22) {
-                Text(ownedOnly ? "The watches you own" : "Every watch you've bought")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                Eyebrow(ownedOnly ? "The watches you own" : "Every watch you've bought")
                 Text("\(from) – \(to)")
-                    .font(.system(size: wide ? 92 : 56, weight: .bold, design: .rounded))
+                    .font(.system(size: wide ? 92 : 56, weight: .bold))
                     .monospacedDigit()
+                    .tracking(-0.6)
+                    .foregroundStyle(WatchTheme.ink)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
                 Text("\(label) · \(cadWhole(total))")
-                    .font(.title2.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .font(.title2.weight(.light))
+                    .foregroundStyle(WatchTheme.muted)
                 photoFan(photos, size: wide ? 92 : 58)
                     .padding(.top, 18)
                 Label(Platform.isMac ? "Scroll, use the arrow keys, or press play" : "Swipe up, or press play", systemImage: "chevron.down")
                     .font(.callout)
-                    .foregroundStyle(.tertiary)
+                    .foregroundStyle(WatchTheme.muted)
                     .padding(.top, 26)
             }
             .multilineTextAlignment(.center)
             .padding(32)
+            // Clear the year rail on both sides so the centred title never runs under it.
+            .padding(.horizontal, wide ? 0 : 16)
             .scrollTransition(.interactive, axis: .vertical) { content, phase in
                 content
                     .opacity(1 - abs(phase.value) * 0.9)
@@ -219,22 +223,27 @@ struct TimelinePresentationScreen: View {
             }
 
         case let .year(year, count, total, photos, sinceStart):
+            // A title card per year, on a square panel.
             VStack(spacing: 14) {
                 Text(year)
-                    .font(.system(size: wide ? 168 : 104, weight: .bold, design: .rounded))
+                    .font(.system(size: wide ? 168 : 104, weight: .bold))
                     .monospacedDigit()
+                    .tracking(-0.6)
+                    .foregroundStyle(WatchTheme.ink)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.5)
                     .scrollTransition(.interactive, axis: .vertical) { content, phase in
                         content
                             .scaleEffect(1 + phase.value * 0.35)
                             .opacity(1 - abs(phase.value))
                     }
                 Text("\(count) \(count == 1 ? "watch" : "watches") · \(cadWhole(total))")
-                    .font(.title2.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .font(.title2.weight(.light))
+                    .foregroundStyle(WatchTheme.muted)
                 if sinceStart > 0 {
                     Text("\(sinceStart) before this")
                         .font(.callout)
-                        .foregroundStyle(.tertiary)
+                        .foregroundStyle(WatchTheme.muted)
                 }
                 photoFan(photos, size: wide ? 84 : 52)
                     .padding(.top, 20)
@@ -244,28 +253,37 @@ struct TimelinePresentationScreen: View {
                             .opacity(1 - abs(phase.value) * 1.4)
                     }
             }
-            .padding(32)
+            .padding(.vertical, wide ? 56 : 40)
+            .padding(.horizontal, 24)
+            .frame(maxWidth: wide ? 720 : .infinity)
+            .background(WatchTheme.card)
+            .padding(.leading, wide ? 72 : 24)
+            .padding(.trailing, Platform.isMac ? 112 : 44)
+            .scrollTransition(.interactive, axis: .vertical) { content, phase in
+                content.opacity(1 - abs(phase.value) * 0.8)
+            }
 
         case let .purchase(entry, number, of, runningTotal, catalogue):
             purchasePage(entry, number: number, of: of, runningTotal: runningTotal, catalogue: catalogue, size: size, wide: wide)
 
         case let .outro(label, total, from, to):
             VStack(spacing: 18) {
-                Text("That's the story so far")
-                    .font(.title3.weight(.semibold))
-                    .foregroundStyle(.secondary)
+                Eyebrow("That's the story so far")
                 Text(label)
-                    .font(.system(size: wide ? 92 : 56, weight: .bold, design: .rounded))
+                    .font(.system(size: wide ? 92 : 56, weight: .bold))
+                    .tracking(-0.6)
+                    .foregroundStyle(WatchTheme.ink)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.6)
                 Text("\(cadWhole(total)) from \(from) to \(to)")
-                    .font(.title2.weight(.medium))
-                    .foregroundStyle(.secondary)
+                    .font(.title2.weight(.light))
+                    .foregroundStyle(WatchTheme.muted)
                 Button {
                     jump(to: "intro")
                 } label: {
                     Label("Back to the start", systemImage: "arrow.up")
                 }
-                .buttonStyle(.bordered)
-                .controlSize(.large)
+                .quietButton()
                 .padding(.top, 12)
             }
             .multilineTextAlignment(.center)
@@ -306,7 +324,7 @@ struct TimelinePresentationScreen: View {
                     maxPixel: DisplayImageCache.page
                 )
             }
-            .clipShape(RoundedRectangle(cornerRadius: 28, style: .continuous))
+            .clipped()
         .shadow(color: .black.opacity(0.4), radius: 30, y: 18)
         .background {
             // A soft glow in the dial's colour, so each page takes on the watch's character. As a
@@ -326,17 +344,20 @@ struct TimelinePresentationScreen: View {
         }
 
         let details = VStack(alignment: wide ? .leading : .center, spacing: 10) {
-            Text("\(catalogueLabel(catalogue)) · \(number) of \(of)")
-                .font(.callout.weight(.semibold).monospacedDigit())
-                .foregroundStyle(.tertiary)
+            Text("\(Text(catalogueLabel(catalogue)).foregroundStyle(WatchTheme.gold))\(Text(verbatim: " · \(number) of \(of)").foregroundStyle(WatchTheme.muted))")
+                .font(AtelierType.kicker)
+                .tracking(1.4)
             Text(purchaseShortLabel(watch, in: all) ?? "\(entry.month) \(entry.year)")
-                .font(.title3.weight(.medium))
-                .foregroundStyle(.secondary)
+                .font(.title3.weight(.light))
+                .foregroundStyle(WatchTheme.muted)
             Text(watch.name)
                 .font(.system(size: wide ? 42 : 30, weight: .bold))
+                .tracking(-0.6)
+                .foregroundStyle(WatchTheme.ink)
                 .fixedSize(horizontal: false, vertical: true)
             Text(watch.price == 0 && watch.costSourceWatchID != nil ? "Part of a lot" : cad(watch.price))
                 .font(.figure(.title))
+                .foregroundStyle(WatchTheme.ink)
             HStack(spacing: 8) {
                 if let category = watch.category { CapsuleChip(text: category) }
                 if watch.original == false { CapsuleChip(text: "Replica") }
@@ -346,18 +367,19 @@ struct TimelinePresentationScreen: View {
             if let source = entry.source {
                 Text("Traded for, carrying over the \(source.name) purchase")
                     .font(.callout)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(WatchTheme.muted)
             }
             let story = watch.story.trimmingCharacters(in: .whitespacesAndNewlines)
             if !story.isEmpty {
                 Text(story)
-                    .font(.body)
-                    .foregroundStyle(.secondary)
+                    .font(AtelierType.body)
+                    .foregroundStyle(WatchTheme.muted)
                     .lineLimit(wide ? 4 : 3)
                     .padding(.top, 4)
             }
             Text("\(number) \(number == 1 ? "watch" : "watches") and \(cadWhole(runningTotal)) so far")
                 .font(.callout.weight(.semibold).monospacedDigit())
+                .foregroundStyle(WatchTheme.ink)
                 .padding(.top, 14)
         }
         .multilineTextAlignment(wide ? .leading : .center)
@@ -399,9 +421,9 @@ struct TimelinePresentationScreen: View {
                     maxPixel: DisplayImageCache.icon
                 )
                 .frame(width: size, height: size)
-                .clipShape(RoundedRectangle(cornerRadius: size * 0.24, style: .continuous))
+                .clipped()
                 .overlay {
-                    RoundedRectangle(cornerRadius: size * 0.24, style: .continuous)
+                    Rectangle()
                         .stroke(WatchTheme.background, lineWidth: 3)
                 }
                 .rotationEffect(.degrees(Double(index - entries.count / 2) * 4))
@@ -441,26 +463,27 @@ struct TimelinePresentationScreen: View {
                 ForEach(Array(entries.enumerated()), id: \.element.id) { offset, entry in
                     let isCurrent = entry.id == state.currentID
                     Circle()
-                        .fill(Color.primary.opacity(isCurrent ? 1 : offset < state.lit ? 0.55 : 0.13))
+                        .fill(isCurrent || offset < state.lit ? WatchTheme.accent : WatchTheme.separator)
                         .frame(width: isCurrent ? 9 : 5, height: isCurrent ? 9 : 5)
-                        .shadow(color: isCurrent ? Color.primary.opacity(0.6) : .clear, radius: 4)
+                        .shadow(color: isCurrent ? WatchTheme.accent.opacity(0.6) : .clear, radius: 4)
                         .position(x: x(months[offset]), y: lineY - 10 - CGFloat(rows[offset]) * step)
                 }
-                Capsule()
-                    .fill(Color.primary.opacity(0.13))
+                Rectangle()
+                    .fill(WatchTheme.separator)
                     .frame(width: width, height: 3)
                     .position(x: width / 2, y: lineY)
-                Capsule()
-                    .fill(Color.primary.opacity(0.7))
+                Rectangle()
+                    .fill(WatchTheme.accent)
                     .frame(width: max(head, 3), height: 3)
                     .position(x: max(head, 3) / 2, y: lineY)
                 Circle()
-                    .fill(Color.primary)
+                    .fill(WatchTheme.ink)
                     .frame(width: 9, height: 9)
                     .position(x: head, y: lineY)
                 if let label = state.label {
                     Text(label)
                         .font(.callout.weight(.semibold).monospacedDigit())
+                        .foregroundStyle(WatchTheme.ink)
                         .fixedSize()
                         .contentTransition(.numericText())
                         .position(x: min(max(head, 36), width - 36), y: lineY + 17)
@@ -521,7 +544,7 @@ struct TimelinePresentationScreen: View {
                 } label: {
                     Text(year)
                         .font((Platform.isMac ? Font.callout : .caption2).monospacedDigit().weight(year == currentYear ? .bold : .regular))
-                        .foregroundStyle(year == currentYear ? Color.primary : Color.secondary.opacity(0.6))
+                        .foregroundStyle(year == currentYear ? WatchTheme.ink : WatchTheme.muted)
                         .scaleEffect(year == currentYear ? 1.15 : 1, anchor: .trailing)
                         .contentShape(Rectangle())
                 }
@@ -534,24 +557,45 @@ struct TimelinePresentationScreen: View {
     }
 
     private func controls(slides: [TimelineSlide], index: Int) -> some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 14) {
             Button { step(-1, in: slides) } label: { Image(systemName: "chevron.up") }
+                .buttonStyle(RoundControlStyle())
                 .disabled(index == 0)
                 .accessibilityLabel("Previous")
             Button { playing.toggle() } label: {
                 Image(systemName: playing ? "pause.fill" : "play.fill")
                     .contentTransition(.symbolEffect(.replace))
             }
+            .buttonStyle(RoundControlStyle(prominent: true))
             .accessibilityLabel(playing ? "Pause" : "Play")
             Button { step(1, in: slides) } label: { Image(systemName: "chevron.down") }
+                .buttonStyle(RoundControlStyle())
                 .disabled(index >= slides.count - 1)
                 .accessibilityLabel("Next")
         }
-        .font(.title3.weight(.semibold))
-        .buttonStyle(.bordered)
-        .buttonBorderShape(.circle)
-        .controlSize(.large)
         .padding(.bottom, Platform.isMac ? 24 : 12)
+    }
+}
+
+/// The presentation's round controls: play in the green gradient, previous and next in the quiet fill.
+private struct RoundControlStyle: ButtonStyle {
+    var prominent = false
+    @Environment(\.isEnabled) private var isEnabled
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .font(.title3.weight(.semibold))
+            .foregroundStyle(prominent ? Color.white : WatchTheme.ink)
+            .frame(width: 52, height: 52)
+            .background {
+                if prominent {
+                    Circle().fill(configuration.isPressed ? AnyShapeStyle(WatchTheme.accentDeep.opacity(0.9)) : AnyShapeStyle(WatchTheme.prominentGradient))
+                } else {
+                    Circle().fill(configuration.isPressed ? WatchTheme.raised : WatchTheme.fill)
+                }
+            }
+            .contentShape(Circle())
+            .opacity(isEnabled ? 1 : 0.4)
     }
 }
 
