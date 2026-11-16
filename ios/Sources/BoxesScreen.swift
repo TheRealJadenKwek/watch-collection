@@ -34,7 +34,53 @@ final class BoxDragModel {
     var location: CGPoint = .zero
     /// A drop has been sent and is waiting for the collection to change.
     @ObservationIgnored var dropping = false
+    /// iPhone: counts presses held long enough to lift, and whether one is down, so a still hold can select its
+    /// compartment once it has lasted half a second (`BoxesScreen.pressBegan`).
+    @ObservationIgnored var press = 0
+    @ObservationIgnored var pressing = false
 }
+
+#if os(iOS)
+/// iPhone: press 0.22 s, then drag, as one UIKit long press. A SwiftUI `LongPressGesture` sequenced before a
+/// `DragGesture` keeps the scroll view from scrolling when a swipe starts on it; this recognizer fails once the finger
+/// moves 10 pt inside the 0.22 s, so a swipe that starts on a watch scrolls the page. Locations are in `space`.
+struct LiftPress: UIGestureRecognizerRepresentable {
+    enum Phase { case began, changed, ended, cancelled }
+
+    var space: String
+    var action: (_ phase: Phase, _ location: CGPoint, _ start: CGPoint) -> Void
+
+    final class Coordinator {
+        var start = CGPoint.zero
+    }
+
+    func makeCoordinator(converter: CoordinateSpaceConverter) -> Coordinator { Coordinator() }
+
+    func makeUIGestureRecognizer(context: Context) -> UILongPressGestureRecognizer {
+        let recognizer = UILongPressGestureRecognizer()
+        recognizer.minimumPressDuration = 0.22
+        recognizer.allowableMovement = 10
+        return recognizer
+    }
+
+    func handleUIGestureRecognizerAction(_ recognizer: UILongPressGestureRecognizer, context: Context) {
+        let location = context.converter.location(in: .named(space))
+        switch recognizer.state {
+        case .began:
+            context.coordinator.start = location
+            action(.began, location, location)
+        case .changed:
+            action(.changed, location, context.coordinator.start)
+        case .ended:
+            action(.ended, location, context.coordinator.start)
+        case .cancelled, .failed:
+            action(.cancelled, location, context.coordinator.start)
+        default:
+            break
+        }
+    }
+}
+#endif
 
 /// Frames a drag needs, kept out of view state so scrolling does not redraw the screen.
 final class BoxFrames {
@@ -77,6 +123,8 @@ struct BoxesScreen: View {
     @State private var arriving: String?
     @State private var settles: [String: Int] = [:]
     @State private var lastDragEnd = Date.distantPast
+    /// The compartment a still press last selected, and when, so the button's own tap at the release does not undo it.
+    @State private var lastHold = (slot: -1, at: Date.distantPast)
     @State private var liftTick = 0
     @State private var dropTick = 0
     @State private var scroll = ScrollPosition(edge: .top)
@@ -219,7 +267,8 @@ struct BoxesScreen: View {
             store.boxIntent = nil
         }
         .onChange(of: gesturing) { _, active in
-            // A drag the system took away (a context menu, a call) ends without a drop: put the watch back.
+            // A drag the system took away (a call, the app going to the background) ends without a drop: put the
+            // watch back.
             if !active, drag.lift != nil, !drag.dropping { endDrag() }
         }
         .onDisappear {
@@ -401,18 +450,15 @@ struct BoxesScreen: View {
         return scene.geometry.slotIndex(at: local, scene.orientation)
     }
 
-    /// One compartment's touch target: tap to select or place, long press and drag to move, a context menu, and
-    /// everything VoiceOver needs.
+    /// One compartment's touch target: tap to select or place, press and drag to move, and everything VoiceOver needs.
+    /// The Mac adds a context menu on a right click. The phone has none: its menu opened on the same press that lifts
+    /// a watch and swallowed the drag, so a held watch never moved. Its actions are on the info panel of the selected
+    /// compartment and in the VoiceOver actions.
     @ViewBuilder
     private func hit(_ slot: Int, _ scene: Scene) -> some View {
         let piece = scene.occupants[slot]
-        let target = Button {
-            tap(slot, scene)
-        } label: {
-            Color.clear.contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .simultaneousGesture(liftGesture(piece: piece, origin: slot, scene: scene), including: piece == nil ? .subviews : .all)
+        let button = tapTarget(Color.clear.contentShape(Rectangle())) { tap(slot, scene) }
+        let target = lifting(button, piece: piece, origin: slot, scene: scene) { tap(slot, scene) }
         .accessibilityLabel(spaceLabel(slot, scene))
         .accessibilityAddTraits(selection == slot ? .isSelected : [])
         .accessibilitySortPriority(Double(1000 - slot))
@@ -424,6 +470,7 @@ struct BoxesScreen: View {
                 actions(piece, slot: slot, scene)
             }
         }
+        #if os(macOS)
         if let piece {
             target.contextMenu {
                 actions(piece, slot: slot, scene)
@@ -434,9 +481,12 @@ struct BoxesScreen: View {
         } else {
             target
         }
+        #else
+        target
+        #endif
     }
 
-    /// The menu for a watch in the box (context menu and VoiceOver actions).
+    /// The menu for a watch in the box (VoiceOver actions, and the Mac's context menu).
     @ViewBuilder
     private func actions(_ piece: BoxPiece, slot: Int, _ scene: Scene) -> some View {
         if piece.wishlist {
@@ -448,12 +498,18 @@ struct BoxesScreen: View {
             Button("Take out") { takeOut(piece.itemID) }
             ForEach(boxes.filter { $0.id != scene.box.id }) { other in
                 if let open = firstOpenSpace(in: other) {
-                    Button("Move to \(other.name)") {
-                        Task { await store.placeWatch(id: piece.itemID, boxID: other.id, slot: open) }
-                    }
+                    Button("Move to \(other.name)") { move(piece.itemID, to: other, slot: open) }
                 }
             }
         }
+    }
+
+    /// Into the first open space of another box. The selection goes with it out of this box.
+    private func move(_ watchID: String, to other: WatchBox, slot: Int) {
+        if let scene = makeScene(), let selected = selection, scene.occupants[selected]?.itemID == watchID {
+            withAnimation(.easeInOut(duration: 0.2)) { selection = nil }
+        }
+        Task { await store.placeWatch(id: watchID, boxID: other.id, slot: slot) }
     }
 
     private func editTarget(_ piece: BoxPiece, _ scene: Scene) -> BoxEditTarget {
@@ -477,6 +533,7 @@ struct BoxesScreen: View {
 
     private func tap(_ slot: Int, _ scene: Scene) {
         guard Date().timeIntervalSince(lastDragEnd) > 0.35 else { return }
+        if lastHold.slot == slot, Date().timeIntervalSince(lastHold.at) < 1.5 { return }
         if let armed {
             place(armed, at: slot, scene)
             return
@@ -484,6 +541,18 @@ struct BoxesScreen: View {
         withAnimation(.easeInOut(duration: 0.2)) {
             selection = selection == slot ? nil : slot
         }
+    }
+
+    /// A press held still (iPhone): selects the compartment, or places an armed chip there, as a tap does, but never
+    /// clears the selection. The selected compartment's info panel carries what a context menu would.
+    private func held(_ slot: Int, _ scene: Scene) {
+        guard drag.lift == nil, Date().timeIntervalSince(lastDragEnd) > 0.35 else { return }
+        lastHold = (slot, Date())
+        if let armed {
+            place(armed, at: slot, scene)
+            return
+        }
+        withAnimation(.easeInOut(duration: 0.2)) { selection = slot }
     }
 
     private func tapChip(_ chip: BoxChip, _ scene: Scene) {
@@ -549,22 +618,83 @@ struct BoxesScreen: View {
 
     // MARK: Dragging
 
-    /// iPhone: a long press of 0.22 s, then drag. Mac: a plain drag. Locations are in the screen's named space, which
-    /// the box, the tray and the preview share.
-    private func liftGesture(piece: BoxPiece?, origin: Int?, scene: Scene) -> some Gesture {
+    /// A compartment's or a chip's tap. On iPhone a `Button` keeps the lift's UIKit recognizer from ever seeing the
+    /// press, so it is a tap gesture with a button's trait and action for VoiceOver; the Mac keeps a plain button.
+    @ViewBuilder
+    private func tapTarget(_ label: some View, action: @escaping () -> Void) -> some View {
         #if os(iOS)
-        LongPressGesture(minimumDuration: 0.22)
-            .sequenced(before: DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.space)))
-            .updating($gesturing) { _, state, _ in state = true }
-            .onChanged { value in
-                guard case .second(true, let moved?) = value, let piece else { return }
-                follow(moved.location, start: moved.startLocation, piece: piece, origin: origin, scene: scene)
-            }
-            .onEnded { value in
-                guard case .second(true, let moved?) = value, drag.lift != nil else { return }
-                drop(at: moved.location, scene: scene)
-            }
+        label
+            .onTapGesture(perform: action)
+            .accessibilityElement(children: .ignore)
+            .accessibilityAddTraits(.isButton)
+            .accessibilityAction(.default, action)
         #else
+        Button(action: action) { label }
+            .buttonStyle(.plain)
+        #endif
+    }
+
+    /// Press and drag to move: a watch in a compartment (`origin`), a chip (`origin` nil), or on iPhone an empty
+    /// compartment, where nothing lifts but a still hold selects it. `tap` is the button's own action, for a press the
+    /// lift has taken from the button and let go without moving. Locations are in the screen's named space, which the
+    /// box, the tray and the preview share.
+    @ViewBuilder
+    private func lifting(_ content: some View, piece: BoxPiece?, origin: Int?, scene: Scene,
+                         tap: @escaping () -> Void) -> some View {
+        #if os(iOS)
+        content.gesture(liftPress(piece: piece, origin: origin, scene: scene, tap: tap))
+        #else
+        content.simultaneousGesture(liftGesture(piece: piece, origin: origin, scene: scene), including: piece == nil ? .subviews : .all)
+        #endif
+    }
+
+    #if os(iOS)
+    /// iPhone: press 0.22 s, then drag; held as long as you like before moving, the watch still lifts. Moving within
+    /// the 0.22 s scrolls the page instead. A compartment held still for half a second is selected while the finger is
+    /// down, where the system menu used to open; let go before that, or a chip at any time, and it is a tap.
+    private func liftPress(piece: BoxPiece?, origin: Int?, scene: Scene, tap: @escaping () -> Void) -> LiftPress {
+        LiftPress(space: Self.space) { phase, location, start in
+            switch phase {
+            case .began:
+                pressBegan(origin, scene)
+            case .changed:
+                guard let piece else { return }
+                follow(location, start: start, piece: piece, origin: origin, scene: scene)
+            case .ended:
+                let held = !drag.pressing
+                drag.pressing = false
+                if drag.lift != nil {
+                    drop(at: location, scene: scene)
+                } else if !held {
+                    // Let go without moving: the recognizer has cancelled the button's own tap by now.
+                    tap()
+                }
+            case .cancelled:
+                drag.pressing = false
+                // A drag the system took away (a call, the app going to the background) ends without a drop: put
+                // the watch back.
+                if drag.lift != nil, !drag.dropping { endDrag() }
+            }
+        }
+    }
+
+    /// A press has lasted 0.22 s. If it is still down and has not lifted anything a further 0.28 s on, it selects its
+    /// compartment (`held`); `pressing` false afterwards tells the release it has been dealt with.
+    private func pressBegan(_ origin: Int?, _ scene: Scene) {
+        drag.press += 1
+        drag.pressing = true
+        guard let origin else { return }
+        let press = drag.press
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(280))
+            guard drag.press == press, drag.pressing, drag.lift == nil else { return }
+            drag.pressing = false
+            held(origin, scene)
+        }
+    }
+    #else
+    /// Mac: a plain drag of 4 pt; a right click opens the context menu.
+    private func liftGesture(piece: BoxPiece?, origin: Int?, scene: Scene) -> some Gesture {
         DragGesture(minimumDistance: 4, coordinateSpace: .named(Self.space))
             .updating($gesturing) { _, state, _ in state = true }
             .onChanged { value in
@@ -575,12 +705,13 @@ struct BoxesScreen: View {
                 guard drag.lift != nil else { return }
                 drop(at: value.location, scene: scene)
             }
-        #endif
     }
+    #endif
 
     private func follow(_ location: CGPoint, start: CGPoint, piece: BoxPiece, origin: Int?, scene: Scene) {
         if drag.lift == nil {
-            // A watch in the box lifts once the finger moves, so holding still still opens its menu.
+            // A watch in the box lifts once the finger has moved 4 pt, however long it was held first: a press that
+            // never moves selects the compartment (`held`).
             if origin != nil, Platform.isMac == false, hypot(location.x - start.x, location.y - start.y) < 4 { return }
             lift(piece, origin: origin, start: start, scene: scene)
         }
@@ -841,6 +972,12 @@ struct BoxesScreen: View {
                 }
                 Button("Take out") { takeOut(piece.itemID) }
                     .quietButton()
+                ForEach(boxes.filter { $0.id != scene.box.id }) { other in
+                    if let open = firstOpenSpace(in: other) {
+                        Button("Move to \(other.name)") { move(piece.itemID, to: other, slot: open) }
+                            .quietButton()
+                    }
+                }
                 if showsTile {
                     Button("Use my photo instead") { setUseCutout(piece, true) }
                         .quietButton()
@@ -978,36 +1115,32 @@ struct BoxesScreen: View {
         let chip = BoxChip(itemID: piece.itemID, wishlist: piece.wishlist)
         let isArmed = armed == chip
         let score = piece.wishlist ? store.scores[piece.itemID]?.total : nil
-        return Button {
-            tapChip(chip, scene)
-        } label: {
-            VStack(spacing: 3) {
-                BoxChipArt(piece: piece, cutout: art.cutout(piece)?.result)
-                    .frame(width: side, height: side)
-                    .overlay(alignment: .topTrailing) {
-                        if let score {
-                            Text("\(score)")
-                                .font(AtelierType.kicker)
-                                .foregroundStyle(WatchTheme.gold)
-                                .padding(4)
-                        }
+        let label = VStack(spacing: 3) {
+            BoxChipArt(piece: piece, cutout: art.cutout(piece)?.result)
+                .frame(width: side, height: side)
+                .overlay(alignment: .topTrailing) {
+                    if let score {
+                        Text("\(score)")
+                            .font(AtelierType.kicker)
+                            .foregroundStyle(WatchTheme.gold)
+                            .padding(4)
                     }
-                    .overlay {
-                        if isArmed {
-                            Rectangle().stroke(WatchTheme.accent, lineWidth: 2)
-                        }
+                }
+                .overlay {
+                    if isArmed {
+                        Rectangle().stroke(WatchTheme.accent, lineWidth: 2)
                     }
-                    .opacity(dragging == piece.id ? 0.35 : 1)
-                Text(piece.name)
-                    .font(AtelierType.caption)
-                    .foregroundStyle(WatchTheme.ink)
-                    .lineLimit(1)
-                    .frame(width: side + 8)
-            }
-            .contentShape(Rectangle())
+                }
+                .opacity(dragging == piece.id ? 0.35 : 1)
+            Text(piece.name)
+                .font(AtelierType.caption)
+                .foregroundStyle(WatchTheme.ink)
+                .lineLimit(1)
+                .frame(width: side + 8)
         }
-        .buttonStyle(.plain)
-        .simultaneousGesture(liftGesture(piece: piece, origin: nil, scene: scene))
+        .contentShape(Rectangle())
+        let button = tapTarget(label) { tapChip(chip, scene) }
+        return lifting(button, piece: piece, origin: nil, scene: scene) { tapChip(chip, scene) }
         .accessibilityLabel("\(piece.name), \(piece.wishlist ? "on the wishlist" : "not in a box")")
         .accessibilityHint("Double tap, then choose a space.")
         .accessibilityAddTraits(isArmed ? .isSelected : [])
