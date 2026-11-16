@@ -226,14 +226,20 @@ enum BoxModel {
         resized.columns = columns
         resized.rows = rows
         resized.slots = [:]
-        guard box.columns > 0 else { return resized }
         for (key, watchID) in box.slots {
-            guard let index = slotIndex(key), index < box.capacity else { continue }
-            let (row, column) = (index / box.columns, index % box.columns)
-            guard row < rows, column < columns else { continue }
-            resized.slots[slotKey(row * columns + column)] = watchID
+            guard let index = slotIndex(key), let target = resizedSlot(index, of: box, columns: columns, rows: rows) else { continue }
+            resized.slots[slotKey(target)] = watchID
         }
         return resized
+    }
+
+    /// Where a compartment goes when its box takes a new size: the same row and column, or nil when
+    /// that no longer exists. Owned watches (`resize`) and candidates on trial (`BoxTrial.resized`) move alike.
+    static func resizedSlot(_ index: Int, of box: WatchBox, columns: Int, rows: Int) -> Int? {
+        guard box.columns > 0, (0..<box.capacity).contains(index) else { return nil }
+        let (row, column) = (index / box.columns, index % box.columns)
+        guard row < rows, column < columns else { return nil }
+        return row * columns + column
     }
 
     /// A trimmed name the hub accepts, or nil.

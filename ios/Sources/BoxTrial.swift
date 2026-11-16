@@ -93,6 +93,21 @@ struct BoxTrial: Hashable, Sendable {
         boxes[boxID] = nil
     }
 
+    /// The trial after `box` takes a new size: each candidate keeps its row and column when they still
+    /// exist, as the owned watches do (`BoxModel.resize`); one whose place is gone leaves the trial.
+    func resized(_ box: WatchBox, columns: Int, rows: Int) -> BoxTrial {
+        guard let slots = boxes[box.id] else { return self }
+        var moved: [String: String] = [:]
+        for (key, wishlistID) in slots {
+            guard let index = BoxModel.slotIndex(key),
+                  let target = BoxModel.resizedSlot(index, of: box, columns: columns, rows: rows) else { continue }
+            moved[BoxModel.slotKey(target)] = wishlistID
+        }
+        var result = boxes
+        result[box.id] = moved
+        return BoxTrial(result)
+    }
+
     /// Drops what no longer applies: boxes that are gone, spaces outside a box's size, candidates
     /// that were removed or bought, and every repeat of a candidate after its first space (box order,
     /// then slot order).

@@ -768,13 +768,17 @@ final class AppStore: ObservableObject {
 
     /// Saves a box's name, finish and size. The compartments are taken from the collection as it is
     /// now, not from the edited copy, so a sync that moved a watch meanwhile is kept; a new size keeps
-    /// each watch's row and column when they still exist and sends the rest to the tray.
+    /// each watch's row and column when they still exist and sends the rest to the tray. Candidates on
+    /// trial in the box move the same way; one whose place is gone leaves the trial.
     func updateBox(_ box: WatchBox) async {
+        let trialBefore = boxTrial
+        var resized = false
         await mutate { data in
             guard var boxes = data.boxes, let index = boxes.firstIndex(where: { $0.id == box.id }) else {
                 throw LocalStoreError.itemNotFound
             }
-            var updated = boxes[index]
+            let previous = boxes[index]
+            var updated = previous
             if updated.columns != box.columns || updated.rows != box.rows {
                 updated = BoxModel.resize(updated, columns: box.columns, rows: box.rows)
             }
@@ -782,6 +786,18 @@ final class AppStore: ObservableObject {
             updated.finish = box.finish
             boxes[index] = try Self.checkedBox(updated)
             data.boxes = boxes
+            if previous.columns != updated.columns || previous.rows != updated.rows {
+                // Moved before the collection is published, whose clean-up would otherwise read the old
+                // indexes against the new size.
+                self.boxTrial = trialBefore.resized(previous, columns: updated.columns, rows: updated.rows)
+                resized = true
+            }
+        }
+        guard resized else { return }
+        if let saved = data?.boxes?.first(where: { $0.id == box.id }), saved.columns == box.columns, saved.rows == box.rows {
+            boxTrial.save()
+        } else {
+            boxTrial = trialBefore  // the new size was not saved
         }
     }
 

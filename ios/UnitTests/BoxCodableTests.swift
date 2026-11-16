@@ -205,6 +205,30 @@ final class BoxTrialTests: XCTestCase {
         XCTAssertTrue(stored.cleaned(for: gone).isEmpty)
     }
 
+    func testResizingMovesCandidatesByRowAndColumn() {
+        // The review's case: 6 by 2, field owned in front row space 1 (slot 6), nomos on trial in back row
+        // space 6 (slot 5), tudor in front row space 5 (slot 10). Resized to 5 by 2.
+        var before = data
+        before.boxes?[0].slots = ["6": "field"]
+        let box = before.boxes![0]
+        let trial = BoxTrial(["black": ["5": "nomos", "10": "tudor"], "brown": ["2": "nomos-elsewhere"]])
+        var after = before
+        after.boxes?[0] = BoxModel.resize(box, columns: 5, rows: 2)
+        XCTAssertEqual(after.boxes?[0].slots, ["5": "field"])
+        let moved = trial.resized(box, columns: 5, rows: 2)
+        // nomos's back row space 6 is gone, so it leaves the trial; tudor keeps front row space 5 (now slot 9).
+        XCTAssertEqual(moved.candidates(in: "black"), [9: "tudor"])
+        XCTAssertNil(moved.candidate(at: BoxSpace(boxID: "black", slot: 5)), "nothing covers field")
+        XCTAssertEqual(moved.steppingOut(of: "black", in: after), [])
+        XCTAssertEqual(moved.candidates(in: "brown"), [2: "nomos-elsewhere"], "other boxes untouched")
+        XCTAssertEqual(moved.cleaned(for: after).candidates(in: "black"), [9: "tudor"])
+        // Growing keeps row and column too: 6 by 2 to 8 by 3 moves slot 10 (front row space 5) to slot 12.
+        XCTAssertEqual(trial.resized(box, columns: 8, rows: 3).candidates(in: "black"), [5: "nomos", 12: "tudor"])
+        // Every candidate gone empties the box's trial; a box with none is left alone.
+        XCTAssertTrue(BoxTrial(["black": ["5": "nomos"]]).resized(box, columns: 5, rows: 2).isEmpty)
+        XCTAssertEqual(trial.resized(BoxFixture.box("grey"), columns: 3, rows: 2), trial)
+    }
+
     func testSavedOnThisDeviceAndNeverInTheDocument() throws {
         var trial = BoxTrial()
         trial.place("nomos", at: BoxSpace(boxID: "black", slot: 0))

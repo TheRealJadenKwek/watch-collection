@@ -186,6 +186,18 @@ final class BoxModelTests: XCTestCase {
         XCTAssertEqual([wider.columns, wider.rows], [8, 3])
     }
 
+    func testResizedSlotIsTheSameRowAndColumn() {
+        let box = BoxFixture.box("black")  // 6 by 2
+        XCTAssertEqual(BoxModel.resizedSlot(6, of: box, columns: 5, rows: 2), 5)
+        XCTAssertEqual(BoxModel.resizedSlot(4, of: box, columns: 5, rows: 2), 4)
+        XCTAssertEqual(BoxModel.resizedSlot(10, of: box, columns: 5, rows: 2), 9)
+        XCTAssertNil(BoxModel.resizedSlot(5, of: box, columns: 5, rows: 2), "column 6 is gone")
+        XCTAssertNil(BoxModel.resizedSlot(6, of: box, columns: 6, rows: 1), "the front row is gone")
+        XCTAssertEqual(BoxModel.resizedSlot(7, of: box, columns: 8, rows: 3), 9)
+        XCTAssertNil(BoxModel.resizedSlot(12, of: box, columns: 8, rows: 3), "not a compartment of the old size")
+        XCTAssertNil(BoxModel.resizedSlot(-1, of: box, columns: 8, rows: 3))
+    }
+
     // MARK: Seeding
 
     func testSeedingOnlyWhenBoxesAreNil() throws {
