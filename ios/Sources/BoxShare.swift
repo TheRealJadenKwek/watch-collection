@@ -9,7 +9,7 @@ import AppKit
 // Each is one view drawn whole by ImageRenderer, on the page background of the current colour scheme.
 
 /// The top-down card: kicker, title, subtitle, the box in the orientation and lid state on screen, and a line
-/// naming what is on trial.
+/// naming what is on trial and what stepped out for it.
 struct BoxShareCard: View {
     var title: String
     var subtitle: String
@@ -20,6 +20,7 @@ struct BoxShareCard: View {
     var slots: [Int: BoxSlotContent]
     var emptyTile: CGImage?
     var onTrial: [String] = []
+    var steppingOut: [String] = []
     var dark = false
 
     private var ink: Color { Color(hex: dark ? 0xF4F4F4 : 0x212121) }
@@ -44,17 +45,9 @@ struct BoxShareCard: View {
             BoxSceneView(geometry: geometry, finish: finish, orientation: orientation, lidClosed: lidClosed, slots: slots,
                          emptyTile: emptyTile, outlined: dark)
                 .padding(.top, 22)
-            if !onTrial.isEmpty {
-                HStack(alignment: .firstTextBaseline, spacing: 8) {
-                    Circle().fill(WatchTheme.Box.trial).frame(width: 8, height: 8)
-                        .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 0.5 }
-                    Text("On trial: " + Self.list(onTrial) + ".")
-                        .font(.system(size: 13, weight: .light))
-                        .foregroundStyle(muted)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(.horizontal, 20)
-                .padding(.top, 26)
+            if let line = BoxShare.trialLine(onTrial: onTrial, steppingOut: steppingOut) {
+                BoxTrialLine(text: line, color: muted)
+                    .padding(.top, 26)
             }
         }
         .padding(.horizontal, 16)
@@ -72,7 +65,26 @@ struct BoxShareCard: View {
     }
 }
 
-/// The product view card: the closed box from the front and above with its drawer.
+/// The line under a picture with a trial in it, after the trial's green.
+struct BoxTrialLine: View {
+    var text: String
+    var color: Color
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Circle().fill(WatchTheme.Box.trial).frame(width: 8, height: 8)
+                .alignmentGuide(.firstTextBaseline) { $0[.bottom] - 0.5 }
+            Text(text)
+                .font(.system(size: 13, weight: .light))
+                .foregroundStyle(color)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.horizontal, 20)
+    }
+}
+
+/// The product view card: the closed box from the front and above with its drawer, and the same trial line as the
+/// top-down card.
 struct BoxProductShareCard: View {
     var title: String
     var subtitle: String
@@ -80,6 +92,8 @@ struct BoxProductShareCard: View {
     var finish: BoxFinish
     var slots: [Int: BoxSlotContent]
     var emptyTile: CGImage?
+    var onTrial: [String] = []
+    var steppingOut: [String] = []
     var dark = false
 
     var body: some View {
@@ -99,6 +113,10 @@ struct BoxProductShareCard: View {
                 .padding(.top, 6)
             BoxProductView(geometry: geometry, finish: finish, slots: slots, emptyTile: emptyTile)
                 .padding(.top, 26)
+            if let line = BoxShare.trialLine(onTrial: onTrial, steppingOut: steppingOut) {
+                BoxTrialLine(text: line, color: Color(hex: dark ? 0xA0A0A0 : 0x767676))
+                    .padding(.top, 26)
+            }
         }
         .padding(.horizontal, 16)
         .padding(.top, 28)
@@ -148,6 +166,35 @@ enum BoxShare {
         guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else { return nil }
         CGImageDestinationAddImage(destination, image, nil)
         return CGImageDestinationFinalize(destination) ? data as Data : nil
+    }
+
+    /// A box's count: "11 watches, 1 space open", "12 spaces open", or "Full". With candidates on trial in the
+    /// picture, it counts what the picture shows: "11 watches, 1 on trial" when that fills it, "10 watches, 1 on
+    /// trial, 1 space open" when not.
+    static func counts(watches: Int, onTrial: Int = 0, capacity: Int) -> String {
+        let open = max(0, capacity - watches - onTrial)
+        let spaces = open == 1 ? "1 space open" : "\(open) spaces open"
+        guard onTrial > 0 else {
+            if open == 0 { return "Full" }
+            if watches == 0 { return spaces }
+            return (watches == 1 ? "1 watch, " : "\(watches) watches, ") + spaces
+        }
+        var parts: [String] = []
+        if watches > 0 { parts.append(watches == 1 ? "1 watch" : "\(watches) watches") }
+        parts.append("\(onTrial) on trial")
+        if open > 0 { parts.append(spaces) }
+        return parts.joined(separator: ", ")
+    }
+
+    /// "On trial: A and B." and, when owned watches made room for them, "C steps out to make room."; nil without a
+    /// trial in the picture.
+    static func trialLine(onTrial: [String], steppingOut: [String]) -> String? {
+        guard !onTrial.isEmpty else { return nil }
+        var line = "On trial: " + BoxShareCard.list(onTrial) + "."
+        if !steppingOut.isEmpty {
+            line += " " + BoxShareCard.list(steppingOut) + (steppingOut.count == 1 ? " steps" : " step") + " out to make room."
+        }
+        return line
     }
 
     /// "Black Box" to "black-box".

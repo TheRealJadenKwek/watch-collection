@@ -204,4 +204,26 @@ import XCTest
         XCTAssertEqual(frames.revealDelta(for: CGRect(x: 20, y: -50, width: 148, height: 85)), -62)
         XCTAssertEqual(frames.revealDelta(for: CGRect(x: 20, y: 40, width: 148, height: 85)), 0)
     }
+
+    // MARK: What a shared picture says
+
+    func testCountsAreWhatThePictureShows() {
+        XCTAssertEqual(BoxShare.counts(watches: 11, capacity: 12), "11 watches, 1 space open")
+        XCTAssertEqual(BoxShare.counts(watches: 0, capacity: 12), "12 spaces open")
+        XCTAssertEqual(BoxShare.counts(watches: 1, capacity: 12), "1 watch, 11 spaces open")
+        XCTAssertEqual(BoxShare.counts(watches: 12, capacity: 12), "Full")
+        // A candidate in the open space fills the picture; one over an owned watch takes that watch's place.
+        XCTAssertEqual(BoxShare.counts(watches: 11, onTrial: 1, capacity: 12), "11 watches, 1 on trial")
+        XCTAssertEqual(BoxShare.counts(watches: 10, onTrial: 1, capacity: 12), "10 watches, 1 on trial, 1 space open")
+        XCTAssertEqual(BoxShare.counts(watches: 0, onTrial: 2, capacity: 12), "2 on trial, 10 spaces open")
+        XCTAssertEqual(BoxShare.counts(watches: 1, onTrial: 1, capacity: 3), "1 watch, 1 on trial, 1 space open")
+    }
+
+    func testTheTrialLineNamesWhatSteppedOut() {
+        XCTAssertNil(BoxShare.trialLine(onTrial: [], steppingOut: ["G-Steel"]))
+        XCTAssertEqual(BoxShare.trialLine(onTrial: ["Commander 1959"], steppingOut: []), "On trial: Commander 1959.")
+        XCTAssertEqual(BoxShare.trialLine(onTrial: ["Commander 1959", "Ricochet"], steppingOut: ["G-Steel"]),
+                       "On trial: Commander 1959 and Ricochet. G-Steel steps out to make room.")
+        XCTAssertEqual(BoxShare.trialLine(onTrial: ["A"], steppingOut: ["B", "C"]), "On trial: A. B and C step out to make room.")
+    }
 }

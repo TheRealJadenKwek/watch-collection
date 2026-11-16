@@ -640,12 +640,7 @@ struct BoxesScreen: View {
 
     /// "11 watches, 1 space open", "12 spaces open", or "Full".
     private func subtitle(_ scene: Scene) -> String {
-        let placed = scene.box.slots.count
-        let open = max(0, scene.box.capacity - placed)
-        if open == 0 { return "Full" }
-        let spaces = open == 1 ? "1 space open" : "\(open) spaces open"
-        if placed == 0 { return spaces }
-        return (placed == 1 ? "1 watch, " : "\(placed) watches, ") + spaces
+        BoxShare.counts(watches: scene.box.slots.count, capacity: scene.box.capacity)
     }
 
     /// One tab per box when there are two or more, and Edit for the manage sheet.
@@ -1496,21 +1491,32 @@ struct BoxesScreen: View {
     // MARK: Share
 
     private func shareCard(_ scene: Scene) -> BoxShareCard {
-        let onTrial = scene.showingTrial ? scene.items.filter { $0.piece.wishlist }.map(\.piece.name) : []
+        let trial = pictureTrial(scene)
         return BoxShareCard(
-            title: scene.box.name, subtitle: subtitle(scene), geometry: scene.geometry, finish: scene.finish,
+            title: scene.box.name, subtitle: trial.subtitle, geometry: scene.geometry, finish: scene.finish,
             orientation: scene.orientation, lidClosed: lidClosed,
             slots: Dictionary(uniqueKeysWithValues: scene.items.map { ($0.slot, $0.content) }),
-            emptyTile: scene.emptyTile, onTrial: onTrial, dark: colorScheme == .dark
+            emptyTile: scene.emptyTile, onTrial: trial.onTrial, steppingOut: trial.steppingOut, dark: colorScheme == .dark
         )
     }
 
     private func productCard(_ scene: Scene) -> BoxProductShareCard {
-        BoxProductShareCard(
-            title: scene.box.name, subtitle: subtitle(scene), geometry: scene.geometry, finish: scene.finish,
+        let trial = pictureTrial(scene)
+        return BoxProductShareCard(
+            title: scene.box.name, subtitle: trial.subtitle, geometry: scene.geometry, finish: scene.finish,
             slots: Dictionary(uniqueKeysWithValues: scene.items.map { ($0.slot, $0.content) }),
-            emptyTile: scene.emptyTile, dark: colorScheme == .dark
+            emptyTile: scene.emptyTile, onTrial: trial.onTrial, steppingOut: trial.steppingOut, dark: colorScheme == .dark
         )
+    }
+
+    /// What a shared picture says about the trial in it: its subtitle counts what the picture shows (candidates on
+    /// trial included), and the line under it names the candidates and the watches that stepped out for them.
+    private func pictureTrial(_ scene: Scene) -> (subtitle: String, onTrial: [String], steppingOut: [String]) {
+        guard scene.showingTrial else { return (subtitle(scene), [], []) }
+        let onTrial = scene.items.filter { $0.piece.wishlist }.map(\.piece.name)
+        let owned = scene.items.count - onTrial.count
+        return (BoxShare.counts(watches: owned, onTrial: onTrial.count, capacity: scene.box.capacity), onTrial,
+                scene.steppingOut.map(\.name))
     }
 
     // MARK: Pictures to load
