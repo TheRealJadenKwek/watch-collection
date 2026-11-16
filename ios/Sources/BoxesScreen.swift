@@ -1263,7 +1263,10 @@ struct BoxesScreen: View {
     }
 
     private func setUseCutout(_ piece: BoxPiece, _ use: Bool) {
-        var cutout = piece.setting ?? piece.photos.first.map { BoxCutout(photo: $0) }
+        // With no setting yet, the photo the cutout comes from now (automatic's pick, brief 6.2), not the cover: the
+        // box then shows the cutout automatic chose.
+        let shown = (art.cutout(piece)?.result?.photo).flatMap { piece.photos.contains($0) ? $0 : nil }
+        var cutout = piece.setting ?? (shown ?? piece.photos.first).map { BoxCutout(photo: $0) }
         guard cutout != nil else { return }
         cutout?.useCutout = use ? true : nil
         let clean = cutout?.normalized
