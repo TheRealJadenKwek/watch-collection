@@ -131,10 +131,13 @@ struct BoxSceneView: View {
     }
 }
 
-/// The two shadows the whole scene casts on the page (brief 5.3 step 10).
+/// The two shadows the whole scene casts on the page (brief 5.3 step 10). Flattened first: the box on screen is a
+/// stack of layers (base, one canvas per watch, marks, glass, guides), and unflattened each layer would cast its own
+/// shadow across the compartments.
 struct BoxSceneShadow: ViewModifier {
     func body(content: Content) -> some View {
         content
+            .compositingGroup()
             .shadow(color: .black.opacity(0.30), radius: 16, x: 6, y: 14)
             .shadow(color: .black.opacity(0.18), radius: 3, x: 1, y: 2)
     }
