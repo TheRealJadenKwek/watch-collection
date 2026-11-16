@@ -9,6 +9,10 @@ struct CollectionScreen: View {
     @AppStorage("collectionSort") private var sort = Sort.value.rawValue
     @AppStorage("collectionLayout") private var layout = Layout.cards.rawValue
     @Namespace private var zoom
+    @Environment(\.pageMargin) private var margin
+    #if DEBUG
+    @State private var probePath = NavigationPath()
+    #endif
 
     enum Scope: String, CaseIterable { case owned = "Owned", archive = "Archive", allTime = "All Time" }
     enum Sort: String, CaseIterable { case value = "Value", newest = "Newest", oldest = "Oldest", name = "Name" }
@@ -58,17 +62,27 @@ struct CollectionScreen: View {
     }
 
     var body: some View {
-        SectionStack {
+        SectionStack(path: stackPath) {
             RefreshableScreen(store: store) {
                 ScrollView {
                     // Lazy, not VStack: a LazyVGrid inside an eager VStack re-measures as rows load,
                     // which bounced the scroll position back and forth on every drag from the top.
-                    LazyVStack(alignment: .leading, spacing: 18) {
+                    LazyVStack(alignment: .leading, spacing: 0) {
                         let shown = watches
                         #if os(iOS)
-                        scopePicker
-                            .padding(.horizontal, 20)
+                        Masthead(kicker: "Watch Collection", title: title, subtitle: subtitle)
+                            .padding(.horizontal, margin)
+                        UnderlineTabs(selection: $scope, options: Scope.allCases.map { (value: $0.rawValue, label: $0.rawValue) })
+                            .padding(.horizontal, margin)
+                            .padding(.bottom, 20)
                         #endif
+
+                        if let featured = featuredWatch(shown) {
+                            featureBlock(featured)
+                                .padding(.bottom, WatchTheme.gridGap)
+                                .id("feature-\(contentKey)")
+                                .transition(.opacity)
+                        }
 
                         Group {
                         if shown.isEmpty {
@@ -88,9 +102,11 @@ struct CollectionScreen: View {
                         .transition(.opacity)
                     }
                     .animation(.easeInOut(duration: 0.2), value: contentKey)
-                    .padding(.top, 4)
+                    .padding(.top, Platform.isMac ? 4 : 0)
                     .padding(.bottom, 24)
                 }
+                .mastheadTitle(title)
+                .atelierProbeScroll("collection")
                 .screenBackground()
             }
             #if os(macOS)
@@ -101,8 +117,6 @@ struct CollectionScreen: View {
                 addButton
             }
             #else
-            .navigationTitle(title)
-            .navigationSubtitle(subtitle)
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
                 ToolbarItemGroup(placement: .topBarTrailing) {
@@ -114,7 +128,7 @@ struct CollectionScreen: View {
             #if os(iOS)
             .navigationDestination(for: WatchRoute.self) { route in
                 WatchDossierView(store: store, watchID: route.id)
-                    .zoomDestination(id: route.id, in: zoom)
+                    .zoomDestination(id: route.zoomSourceID, in: zoom)
             }
             #endif
             .task(id: contentKey) {
@@ -129,11 +143,86 @@ struct CollectionScreen: View {
                 if Sort(rawValue: sort) == nil { sort = Sort.value.rawValue }
                 if Layout(rawValue: layout) == nil { layout = Layout.cards.rawValue }
             }
+            #if DEBUG
+            .task {
+                guard let id = AtelierProbe.dossierID, probePath.isEmpty else { return }
+                try? await Task.sleep(for: .seconds(3))
+                probePath.append(WatchRoute(id: id))
+            }
+            #endif
             .sheet(isPresented: $addingWatch) {
                 WatchDetailScreen(store: store, watch: .newDraft, isNew: true)
             }
         }
         .pageAppear()
+    }
+
+    /// Debug builds can open a watch's page at launch for screenshots; otherwise the stack keeps its own path.
+    private var stackPath: Binding<NavigationPath>? {
+        #if DEBUG
+        AtelierProbe.dossierID == nil ? nil : $probePath
+        #else
+        nil
+        #endif
+    }
+
+    /// The newest dated owned watch with a photo, shown large above the cards. Phone only: on the Mac a
+    /// full-bleed photo at this shape would be taller than the window.
+    private func featuredWatch(_ shown: [Watch]) -> Watch? {
+        guard !Platform.isMac,
+              Scope(rawValue: scope) == .owned,
+              layout == Layout.cards.rawValue,
+              !shown.isEmpty
+        else { return nil }
+        return byPurchaseDate(all.filter { $0.status == "owned" })
+            .last { datedSource($0, in: all).purchased != nil && !$0.photos.isEmpty }
+    }
+
+    /// Edge to edge, the cover in its saved framing, the name set large over a dark fade.
+    /// Its zoom source has its own id, so it never collides with the same watch's tile in the grid.
+    private func featureBlock(_ watch: Watch) -> some View {
+        let zoomID = "feature-\(watch.id)"
+        return NavigationLink(value: WatchRoute(id: watch.id, zoomID: zoomID)) {
+            FramedPhoto(
+                store: store,
+                itemID: watch.id,
+                filename: watch.photos.first,
+                focus: watch.focus(for: watch.photos.first),
+                aspect: PhotoShape.plate,
+                // The size the watch's page decodes, so opening it reuses this image.
+                maxPixel: DisplayImageCache.page
+            )
+            .overlay {
+                LinearGradient(
+                    stops: [.init(color: .black.opacity(0), location: 0.5), .init(color: .black.opacity(0.55), location: 1)],
+                    startPoint: .top,
+                    endPoint: .bottom
+                )
+                .allowsHitTesting(false)
+            }
+            .overlay(alignment: .bottom) {
+                VStack(spacing: 12) {
+                    Eyebrow("Latest arrival", color: .white)
+                    Text(watch.name)
+                        .font(AtelierType.display)
+                        .tracking(-0.6)
+                        .foregroundStyle(.white)
+                        .lineLimit(2)
+                        .minimumScaleFactor(0.7)
+                        .multilineTextAlignment(.center)
+                    AtelierPill(kind: .quietOverPhoto) { Text("View watch") }
+                        .padding(.top, 8)
+                }
+                .padding(.horizontal, 28)
+                .padding(.bottom, 32)
+            }
+            .zoomSource(id: zoomID, in: zoom)
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("Latest arrival, \(watch.name)")
+        .accessibilityHint("Opens the watch")
+        .accessibilityAddTraits(.isButton)
     }
 
     private var scopePicker: some View {
@@ -194,9 +283,9 @@ struct CollectionScreen: View {
 
     private func cards(_ watches: [Watch]) -> some View {
         LazyVGrid(columns: Platform.isMac
-                  ? [GridItem(.adaptive(minimum: 230, maximum: 340), spacing: 20, alignment: .top)]
-                  : Array(repeating: GridItem(.flexible(), spacing: 14, alignment: .top), count: 2),
-                  spacing: Platform.isMac ? 30 : 24) {
+                  ? [GridItem(.adaptive(minimum: 230, maximum: 340), spacing: WatchTheme.gridGap, alignment: .top)]
+                  : Array(repeating: GridItem(.flexible(), spacing: WatchTheme.gridGap, alignment: .top), count: 2),
+                  spacing: WatchTheme.gridGap) {
             ForEach(watches) { watch in
                 NavigationLink(value: WatchRoute(id: watch.id)) {
                     WatchTile(store: store, watch: watch, zoom: zoom)
@@ -204,7 +293,7 @@ struct CollectionScreen: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, 20)
+        .padding(.horizontal, Platform.isMac ? margin : WatchTheme.narrowMargin)
     }
 
     private func grid(_ watches: [Watch]) -> some View {
@@ -239,21 +328,27 @@ func archiveDetail(_ watch: Watch) -> String {
     return "\(cost) · \(statusLabel(watch.status))"
 }
 
-/// Two-up card in the style of Apple's own libraries: rounded photo, name, then price and category.
+/// Two-up tile: a square panel with the photo across the top, then the name, a spec line and the price.
 struct WatchTile: View {
     let store: AppStore
     let watch: Watch
     let zoom: Namespace.ID
 
-    private var detail: String {
-        if watch.status != "owned" { return archiveDetail(watch) }
-        return [cadWhole(watch.price), watch.category].compactMap { $0 }.joined(separator: " · ")
+    /// Category and diameter, as "Dive, 38 mm".
+    private var specLine: String {
+        [watch.category, watch.diameter.map { "\(compactNumber($0)) mm" }]
+            .compactMap { $0 }
+            .joined(separator: ", ")
+    }
+
+    /// What it cost, or for a watch that has moved on, what it cost and where it went.
+    private var priceLine: String {
+        watch.status == "owned" ? cadWhole(watch.price) : archiveDetail(watch)
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: 0) {
             FramedPhoto(store: store, itemID: watch.id, filename: watch.photos.first, focus: watch.focus(for: watch.photos.first))
-                .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
                 .overlay(alignment: .topLeading) {
                     if watch.original == false {
                         PhotoTag(text: "Replica").padding(8)
@@ -261,19 +356,28 @@ struct WatchTile: View {
                 }
                 .overlay(alignment: .bottomLeading) { PurchaseDateOverlay(watch: watch, watches: store.data?.watches ?? []) }
                 .zoomSource(id: watch.id, in: zoom)
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text(watch.name)
-                    .font(.subheadline.weight(.semibold))
-                    .foregroundStyle(.primary)
+                    .font(AtelierType.cardTitle)
+                    .foregroundStyle(WatchTheme.ink)
                     .lineLimit(2, reservesSpace: true)
                     .multilineTextAlignment(.leading)
-                Text(detail)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
+                // A space keeps the line's height when nothing is known, so tiles in a row stay level.
+                Text(specLine.isEmpty ? " " : specLine)
+                    .font(AtelierType.detail)
+                    .foregroundStyle(WatchTheme.muted)
                     .lineLimit(1)
+                Text(priceLine)
+                    .font(.system(.subheadline, weight: .regular))
+                    .foregroundStyle(WatchTheme.ink)
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
             }
-            .padding(.horizontal, 2)
+            .padding(.horizontal, 12)
+            .padding(.top, 12)
+            .padding(.bottom, 14)
         }
+        .background(WatchTheme.card)
         .contentShape(Rectangle())
     }
 }
