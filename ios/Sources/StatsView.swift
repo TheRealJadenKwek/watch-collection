@@ -229,7 +229,7 @@ struct StatsScreen: View {
                     LazyVStack(spacing: WatchTheme.gridGap) {
                         #if os(iOS)
                         Group {
-                            Masthead(kicker: "Insights", title: scope == "owned" ? "Current" : "All Time")
+                            Masthead(kicker: "Watch Collection", title: "Insights")
                             UnderlineTabs(selection: $scope, options: [(value: "owned", label: "Current"), (value: "all", label: "All Time")])
                             timeScrubber
                                 .padding(.top, 14)

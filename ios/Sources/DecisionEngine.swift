@@ -79,7 +79,7 @@ enum DecisionEngine {
             let count = owned.filter { $0.category == category }.count
             let points = count == 0 ? 3 : count == 1 ? 2 : count == 2 ? 1 : 0
             let detail = count == 0 ? "you've never owned one" : "\(count) owned"
-            lenses["category"] = LensScore(score: points, reason: "\(category) — \(detail)")
+            lenses["category"] = LensScore(score: points, reason: "\(category): \(detail)")
         } else {
             lenses["category"] = LensScore(score: 0, reason: "category unset")
         }
@@ -89,13 +89,13 @@ enum DecisionEngine {
         let pastBrands = brandCounts(data.watches.filter { $0.status != "owned" })
         let currentCount = currentBrands[brand, default: 0]
         if currentCount >= 2 {
-            lenses["brand"] = LensScore(score: -1, reason: "\(brand) — \(currentCount) currently owned")
+            lenses["brand"] = LensScore(score: -1, reason: "\(brand): \(currentCount) currently owned")
         } else if currentCount == 1 {
-            lenses["brand"] = LensScore(score: 0, reason: "\(brand) — currently owned")
+            lenses["brand"] = LensScore(score: 0, reason: "\(brand): currently owned")
         } else if pastBrands[brand, default: 0] > 0 {
-            lenses["brand"] = LensScore(score: 1, reason: "\(brand) — explored before, none kept")
+            lenses["brand"] = LensScore(score: 1, reason: "\(brand): explored before, none kept")
         } else {
-            lenses["brand"] = LensScore(score: 2, reason: "\(brand) — new brand")
+            lenses["brand"] = LensScore(score: 2, reason: "\(brand): new brand")
         }
 
         if let tier = priceTier(item.priceExpected) {
@@ -116,7 +116,7 @@ enum DecisionEngine {
             let count = owned.filter { $0.dialColor == dial }.count
             let points = count == 0 ? 2 : count == 1 ? 1 : 0
             let detail = count == 0 ? "not represented" : "\(count) owned"
-            lenses["dial"] = LensScore(score: points, reason: "\(dial) dial — \(detail)")
+            lenses["dial"] = LensScore(score: points, reason: "\(dial) dial: \(detail)")
         } else {
             lenses["dial"] = LensScore(score: 0, reason: "dial colour unset")
         }
@@ -128,7 +128,7 @@ enum DecisionEngine {
             let count = owned.filter { $0.material == material }.count
             let points = count == 0 ? 2 : count == 1 ? 1 : 0
             let detail = count == 0 ? "not represented" : "\(count) owned"
-            lenses["material"] = LensScore(score: points, reason: "\(material) — \(detail)")
+            lenses["material"] = LensScore(score: points, reason: "\(material): \(detail)")
         } else {
             lenses["material"] = LensScore(score: 0, reason: "material unset")
         }
@@ -206,7 +206,7 @@ enum DecisionEngine {
             } else {
                 reasons.append("Only \(currentCount) \(noun) watch is currently owned")
             }
-            reasons.append(contentsOf: dialList.map { "\($0) dial — not represented among current watches" })
+            reasons.append(contentsOf: dialList.map { "\($0) dial: not represented among current watches" })
             if let material { reasons.append("\(material) would be a first material in the current collection") }
             if let priceGap { reasons.append("\(priceGap.label) originals-only tier is empty") }
             let brands = recommendedBrands(category: category, data: data)

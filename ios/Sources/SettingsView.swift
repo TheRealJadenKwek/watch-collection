@@ -160,11 +160,11 @@ struct SettingsView: View {
 
     private var wristSection: some View {
         Section("Wrist profile") {
-            numberField("Wrist size — inches", value: $draftSettings.wrist.inches)
-            numberField("Sweet spot min — mm", value: $draftSettings.wrist.sweetSpotMin)
-            numberField("Sweet spot max — mm", value: $draftSettings.wrist.sweetSpotMax)
-            numberField("Perfect size — mm", value: $draftSettings.wrist.perfect)
-            numberField("Lug-to-lug ceiling — mm", value: $draftSettings.wrist.lugMax)
+            numberField("Wrist size (inches)", value: $draftSettings.wrist.inches)
+            numberField("Sweet spot min (mm)", value: $draftSettings.wrist.sweetSpotMin)
+            numberField("Sweet spot max (mm)", value: $draftSettings.wrist.sweetSpotMax)
+            numberField("Perfect size (mm)", value: $draftSettings.wrist.perfect)
+            numberField("Lug-to-lug ceiling (mm)", value: $draftSettings.wrist.lugMax)
             Text("Fit chips prefer lug-to-lug when known, then fall back to diameter.")
                 .font(.caption)
                 .foregroundStyle(Color.secondary)
