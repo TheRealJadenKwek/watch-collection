@@ -351,6 +351,9 @@ enum CloudSyncCopy {
     /// The Mac with no document and no clean hub pass to make it from (section 6).
     static let needsHubFirst = "iCloud sync starts once this Mac reaches its library."
 
+    /// A joined phone finds no iCloud copy (docs/icloud-fixes.md D10).
+    static let missing = "The iCloud copy is missing. Open Watch Collection on your Mac to start iCloud sync again."
+
     /// The sentence the sync line adds for the iCloud link's state, or nil when there is nothing to say (settled,
     /// or a pause the next tick deals with quietly). The phone's banner says the same for the states it covers.
     static func sentence(_ cloud: CloudDisplay, device: String) -> String? {
