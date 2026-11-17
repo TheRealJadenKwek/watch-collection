@@ -10,7 +10,8 @@ import Foundation
 /// id, settings that are not an object), this twin picks the quiet answer noted at that place instead.
 ///
 /// Fingerprints and conflict ids are this implementation's own. They equal the hub's only for documents
-/// holding no whole floats, which is a property, not a promise anything relies on.
+/// whose numbers both sides spell alike (no whole floats, and no integer a Double cannot hold below 2^63;
+/// see `JSONValue.canonicalData`), which is a property, not a promise anything relies on.
 enum CollectionMerge {
     struct Conflict: Equatable, Sendable {
         var id: String

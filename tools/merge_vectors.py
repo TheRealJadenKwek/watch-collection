@@ -5,17 +5,25 @@ Run from the repo root with the system python3:
 
     python3 tools/merge_vectors.py
 
-It imports this repo's sync.py, runs the hand-written cases below and RANDOM_COUNT seeded random ones,
-and writes ios/UnitTests/Fixtures/merge-vectors.json:
+It imports this repo's sync.py, runs the hand-written cases below, RANDOM_COUNT seeded random ones and
+TWIN_COUNT seeded random ones built from look-alike pools (TwinGen), and writes
+ios/UnitTests/Fixtures/merge-vectors.json:
 
-    {seed, random, vectors: [{name, base, local, remote, resolveByPath, output, conflicts, idsComparable}]}
+    {seed, random, twinSeed, twins, vectors: [{name, base, local, remote, resolveByPath, output,
+     outputCanonical, conflicts, idsComparable}]}
 
 How a vector is made, and how the Swift test replays it: merge once with no resolutions; every conflict
-whose path is listed in resolveByPath gets that choice under the implementation's own conflict id; merge
-again with those resolutions. output and conflicts are that second merge's.
+whose path is listed in resolveByPath (matched code point by code point) gets that choice under the
+implementation's own conflict id; merge again with those resolutions. output and conflicts are that
+second merge's.
 
-Conflict ids are Python's. Swift's equal them only when no input holds a float with a whole value (Swift
-reads 42.0 as 42; Python writes it back as 42.0), which idsComparable says.
+outputCanonical, and each conflict's localCanonical and remoteCanonical, are the bytes the Swift test
+compares against: see `canonical`. A hand-written case that sync.py refuses holds `raises` (the exception's
+name) instead of an output.
+
+Conflict ids are Python's. Swift's equal them only when every number in the inputs is spelled the same by
+both, which idsComparable says: no float with a whole value (Swift reads 42.0 as 42; Python writes it back
+as 42.0) and no integer a Double cannot hold exactly or at or past 2^63.
 """
 import json
 import random
@@ -31,6 +39,8 @@ import sync  # noqa: E402
 OUT = ROOT / "ios" / "UnitTests" / "Fixtures" / "merge-vectors.json"
 SEED = 20261116
 RANDOM_COUNT = 300
+TWIN_SEED = 20261117
+TWIN_COUNT = 200
 
 
 # MARK: Running a vector
@@ -38,30 +48,119 @@ RANDOM_COUNT = 300
 def run(base, local, remote, resolve_by_path):
     """Merge, resolve by path with this implementation's ids, merge again."""
     _, first = sync.merge(deepcopy(base), deepcopy(local), deepcopy(remote), {})
+    # Keyed by json.dumps, which escapes every non-ASCII code point: two paths match only when every
+    # step is spelled with the same code points.
     chosen = {json.dumps(item["path"]): item["choice"] for item in resolve_by_path}
     resolutions = {conflict["id"]: chosen[json.dumps(conflict["path"])]
                    for conflict in first if json.dumps(conflict["path"]) in chosen}
     return sync.merge(deepcopy(base), deepcopy(local), deepcopy(remote), resolutions)
 
 
-def has_whole_float(value):
+def numbers_spelled_alike(value):
+    """True when Swift spells every number in value as Python does: no whole float, and every integer one
+    a Double holds exactly, below 2^63 (JSONValue keeps numbers as Doubles)."""
+    if isinstance(value, bool):
+        return True
     if isinstance(value, float):
-        return value.is_integer()
+        return not value.is_integer()
+    if isinstance(value, int):
+        return abs(value) < 2 ** 63 and float(value) == value
     if isinstance(value, dict):
-        return any(has_whole_float(v) for v in value.values())
+        return all(numbers_spelled_alike(v) for v in value.values())
     if isinstance(value, list):
-        return any(has_whole_float(v) for v in value)
+        return all(numbers_spelled_alike(v) for v in value)
+    return True
+
+
+def swift_numbers(value):
+    """value with each float that has a whole value below 2^63 as an int (-0.0 as 0): how Swift writes it."""
+    if isinstance(value, float) and value.is_integer() and abs(value) < 2 ** 63:
+        return int(value)
+    if isinstance(value, dict):
+        return {k: swift_numbers(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [swift_numbers(v) for v in value]
+    return value
+
+
+def canonical(value):
+    """sync.fingerprint's spelling (keys sorted by code point, no spaces, ASCII with \\u escapes), which
+    JSONValue.canonicalData copies. The one agreed difference is applied first: a float with a whole
+    value is written as an integer, because Swift cannot tell 42.0 from 42. Everything else (keys, strings
+    code point by code point, true against 1, integers past 2^53) is compared as Python wrote it."""
+    return json.dumps(swift_numbers(value), sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def look_alike_keys(*docs):
+    """True when two object keys anywhere in docs are canonically equivalent but spelled differently
+    (Swift's String treats them as one key; Python keeps both)."""
+    keys = set()
+
+    def collect(value):
+        if isinstance(value, dict):
+            keys.update(value)
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+    for d in docs:
+        collect(d)
+    folded = {}
+    for key in keys:
+        folded.setdefault(unicodedata.normalize("NFC", key), set()).add(key)
+    return any(len(spellings) > 1 for spellings in folded.values())
+
+
+def whole_float_box_size(*docs):
+    """True when a box holds columns or rows as a float with a whole value (sync.py refuses it as a size;
+    Swift reads it as the integer)."""
+    for d in docs:
+        boxes = d.get("boxes") if isinstance(d, dict) else None
+        for b in boxes if isinstance(boxes, list) else []:
+            if isinstance(b, dict) and any(isinstance(b.get(k), float) and b[k].is_integer()
+                                           for k in ("columns", "rows")):
+                return True
     return False
 
 
-def vector(name, base, local, remote, resolve=(), check=None):
+def integers_held(value):
+    """True when every integer in value is one a Double holds exactly, below 2^63."""
+    if isinstance(value, int) and not isinstance(value, bool):
+        return abs(value) < 2 ** 63 and float(value) == value
+    if isinstance(value, dict):
+        return all(integers_held(v) for v in value.values())
+    if isinstance(value, list):
+        return all(integers_held(v) for v in value)
+    return True
+
+
+def swift_reads_alike(*docs):
+    """No input the known differences in CollectionMergeTests cover: look-alike keys, whole-float box
+    sizes, integers a Double cannot hold. The random families must stay clear of them."""
+    docs = [d for d in docs if d is not None]
+    return (not look_alike_keys(*docs) and not whole_float_box_size(*docs)
+            and all(integers_held(d) for d in docs))
+
+
+def vector(name, base, local, remote, resolve=(), check=None, raises=None):
     resolve_by_path = [{"path": list(path), "choice": choice} for path, choice in resolve]
-    output, conflicts = run(base, local, remote, resolve_by_path)
-    if check is not None:
-        check(output, conflicts)
-    made = {"name": name, "base": base, "local": local, "remote": remote, "resolveByPath": resolve_by_path,
-            "output": output, "conflicts": conflicts,
-            "idsComparable": not any(has_whole_float(d) for d in (base, local, remote))}
+    made = {"name": name, "base": base, "local": local, "remote": remote, "resolveByPath": resolve_by_path}
+    if raises is not None:
+        try:
+            run(base, local, remote, resolve_by_path)
+        except raises as error:
+            made.update(conflicts=[], idsComparable=False, raises=type(error).__name__)
+        else:
+            raise AssertionError("%s: sync.py was expected to raise %s" % (name, raises.__name__))
+    else:
+        output, conflicts = run(base, local, remote, resolve_by_path)
+        if check is not None:
+            check(output, conflicts)
+        made.update(output=output, outputCanonical=canonical(output),
+                    conflicts=[dict(c, localCanonical=canonical(c["local"]), remoteCanonical=canonical(c["remote"]))
+                               for c in conflicts],
+                    idsComparable=all(numbers_spelled_alike(d) for d in (base, local, remote) if d is not None))
     # Every vector must survive the trip through JSON unchanged, or the Swift side reads something else.
     assert json.loads(json.dumps(made, allow_nan=False)) == made, name
     return made
@@ -405,6 +504,153 @@ def hand_cases():
         doc([watch("w1", boxCutout=dict(raw_cut))]),
         check=lambda out, c: expect(len(c) == 1 and c[0]["path"] == ["watches"]
                                     and c[0]["remote"][0]["boxCutout"] == clean_cut))
+
+    # Look-alike Unicode (review A6, A7). Canonically equivalent spellings are different strings to
+    # Python, so every id, list string and value below stays apart from its twin, and an answer given for
+    # one path never reaches its twin's.
+    e_nfc, e_nfd = "\u00e9", "e\u0301"
+    cafe_nfc, cafe_nfd = "Caf\u00e9", "Cafe\u0301"
+    photo_nfc, photo_nfd = "caf\u00e9.jpg", "cafe\u0301.jpg"
+    kelvin, angstrom, greek_question = "\u212a", "\u212b", "\u037e"
+    hangul, jamo = "\ud55c", "\u1112\u1161\u11ab"
+    for twin, plain in ((e_nfd, e_nfc), (cafe_nfd, cafe_nfc), (photo_nfd, photo_nfc), (kelvin, "K"),
+                        (angstrom, "\u00c5"), (greek_question, ";"), (jamo, hangul)):
+        assert twin != plain and unicodedata.normalize("NFC", twin) == plain, (twin, plain)
+
+    add("Unicode: look-alike watch ids are two watches, each answered by its own path",
+        doc([watch("K", name="a"), watch(kelvin, name="b")]), doc([]),
+        doc([watch("K", name="a2"), watch(kelvin, name="b2")]),
+        resolve=[(["watches", "K"], "local")],
+        check=lambda out, c: expect([w["id"] for w in out["watches"]] == [kelvin]
+                                    and [x["path"] for x in c] == [["watches", kelvin]]))
+    add("Unicode: a look-alike category added on the local side is kept",
+        doc(categories=[cafe_nfc]), doc(categories=[cafe_nfc, cafe_nfd]), doc(categories=[cafe_nfc, "GMT"]),
+        check=lambda out, c: expect(not c and out["categories"] == [cafe_nfc, cafe_nfd, "GMT"]))
+    add("Unicode: every kind of canonical look-alike in a string list",
+        doc(categories=["K", "\u00c5", ";", hangul, cafe_nfc]),
+        doc(categories=["K", kelvin, "\u00c5", ";", hangul, jamo, cafe_nfc]),
+        doc(categories=[kelvin, angstrom, greek_question, jamo, cafe_nfd]),
+        check=lambda out, c: expect(not c and out["categories"] == [kelvin, jamo, angstrom, greek_question, cafe_nfd]))
+    add("Unicode: a look-alike photo added as the cover while the other side removes its twin",
+        doc([watch("w1", photos=[photo_nfc, "a.jpg"])]), doc([watch("w1", photos=[photo_nfd, photo_nfc, "a.jpg"])]),
+        doc([watch("w1", photos=["a.jpg"])]),
+        check=lambda out, c: expect(not c and out["watches"][0]["photos"] == [photo_nfd, "a.jpg"]))
+
+    owners = [watch(e_nfc + "1", name="Owned"), watch(e_nfd + "1", name="Sold", status="sold")]
+    look_alike_boxes = doc(owners, boxes=[box(e_nfc, {"0": e_nfd + "1", "1": e_nfc + "1"}),
+                                          box(e_nfd, {"0": e_nfc + "1"}, finish="brown")])
+    renamed_here, renamed_there = deepcopy(look_alike_boxes), deepcopy(look_alike_boxes)
+    renamed_here["boxes"][1]["name"] = "Renamed here"
+    renamed_there["boxes"][0]["name"] = "Renamed there"
+    add("Unicode: look-alike box ids, slot watch ids and owned ids stay apart", look_alike_boxes, renamed_here,
+        renamed_there,
+        check=lambda out, c: expect(not c and [(b["id"], b["name"], b["slots"]) for b in out["boxes"]]
+                                    == [(e_nfc, "Renamed there", {"1": e_nfc + "1"}), (e_nfd, "Renamed here", {})]))
+    two_boxes = [box(e_nfc, {}), box(e_nfd, {}, finish="brown")]
+    add("Unicode: look-alike box ids moved on the local side keep the local order",
+        doc(owners, boxes=two_boxes), doc(owners, boxes=two_boxes[::-1]),
+        doc(owners, boxes=two_boxes + [box("travel", {}, columns=3, rows=1)]),
+        check=lambda out, c: expect(not c and [b["id"] for b in out["boxes"]] == [e_nfd, e_nfc, "travel"]))
+
+    sessions = [{"id": e_nfc, "date": "2026-01-01", "durationMinutes": 60},
+                {"id": e_nfd, "date": "2026-01-02", "durationMinutes": 30}]
+    brands = [{"brand": "\u00c5ngstr\u00f6m", "notes": "", "added": "2024-01"},
+              {"brand": angstrom + "ngstr\u00f6m", "notes": "", "added": "2024-01"}]
+    sessions_base = doc([watch("w1", wearSessions=sessions)], brandWatchlist=brands)
+    sessions_local, sessions_remote = deepcopy(sessions_base), deepcopy(sessions_base)
+    sessions_local["watches"][0]["wearSessions"][1]["durationMinutes"] = 45
+    sessions_local["brandWatchlist"][0]["notes"] = "here"
+    sessions_remote["watches"][0]["wearSessions"][0]["durationMinutes"] = 90
+    sessions_remote["brandWatchlist"][1]["notes"] = "there"
+    add("Unicode: look-alike wear session ids and brands merge one by one", sessions_base, sessions_local,
+        sessions_remote,
+        check=lambda out, c: expect(not c and [s["durationMinutes"] for s in out["watches"][0]["wearSessions"]]
+                                    == [90, 45] and [b["notes"] for b in out["brandWatchlist"]] == ["here", "there"]))
+
+    add("Unicode: a value respelled with look-alike code points is an edit",
+        doc([watch("w1", name=cafe_nfc, story=cafe_nfd, brand="K")]),
+        doc([watch("w1", name=cafe_nfc, story=cafe_nfc, brand="K")]),
+        doc([watch("w1", name=cafe_nfd, story=cafe_nfd, brand=kelvin)]),
+        check=lambda out, c: expect(not c and out["watches"][0]["name"] == cafe_nfd
+                                    and out["watches"][0]["story"] == cafe_nfc and out["watches"][0]["brand"] == kelvin))
+    add("Unicode: look-alike edits on both sides are a conflict",
+        doc([watch("w1", name="Cafe")]), doc([watch("w1", name=cafe_nfc)]), doc([watch("w1", name=cafe_nfd)]),
+        check=lambda out, c: expect(len(c) == 1 and c[0]["local"] == cafe_nfc and c[0]["remote"] == cafe_nfd))
+    # Compatibility look-alikes (the fi ligature, fullwidth K and 5, superscript 2) are not canonically
+    # equivalent: NFKC would fold them, Python and Swift's String both keep them apart.
+    ligature, fullwidth_k, fullwidth_5, superscript_2 = "\ufb01", "\uff2b", "\uff15", "\u00b2"
+    add("Unicode: compatibility look-alikes are different strings",
+        None,
+        doc([watch("fi", name="fi"), watch(ligature, name=ligature)], categories=["field", fullwidth_k + "2"],
+            boxes=[box("black", {"5": "fi", fullwidth_5: ligature})]),
+        doc([watch("fi", name="fi"), watch(ligature + "x", name="x" + superscript_2)],
+            categories=[ligature + "eld", "K" + superscript_2]),
+        check=lambda out, c: expect(not c and [w["id"] for w in out["watches"]] == ["fi", ligature + "x", ligature]
+                                    and out["categories"] == ["field", fullwidth_k + "2", ligature + "eld",
+                                                              "K" + superscript_2]
+                                    and out["boxes"][0]["slots"] == {"5": "fi"}))
+
+    # Numbers (review A8). Swift keeps every number as a Double, so the canonical bytes write a float with
+    # a whole value as an integer (see `canonical`); everything else is spelled as Python spells it.
+    floats = {"whole": [6.0, 42.0, -0.0, 1.0, 1e16, 2.0 ** 63 - 1024, 2.0 ** 63, 2.0 ** 64, 1e21, 1e300],
+              "fractional": [0.1, 2.5, 6.75, -3.75, 1e-07, 2.5e-05, 5e-324, 123456789012.5]}
+    add("numbers: floats with a whole value and floats without", doc([watch("w1", price=42)]),
+        doc([watch("w1", price=42.0, diameter=40.0)]), doc([watch("w1", price=42, floats=floats)]),
+        check=lambda out, c: expect(not c and out["watches"][0]["floats"] == floats
+                                    and out["watches"][0]["diameter"] == 40.0))
+    add("numbers: a conflict between a whole float and a fraction", doc([watch("w1", price=40)]),
+        doc([watch("w1", price=42.0)]), doc([watch("w1", price=43.5)]),
+        check=lambda out, c: expect(len(c) == 1 and c[0]["local"] == 42.0 and c[0]["remote"] == 43.5))
+    held = [2 ** 53, 2 ** 53 + 2, -(2 ** 53 + 2), 2 ** 60, -(2 ** 62), 2 ** 63 - 1024, 9007199254740991]
+    add("numbers: integers past 2^53 that a Double holds", doc([watch("w1")]),
+        doc([watch("w1", price=2 ** 53 + 2)]), doc([watch("w1", serials=held)]),
+        check=lambda out, c: expect(not c and out["watches"][0]["serials"] == held
+                                    and out["watches"][0]["price"] == 2 ** 53 + 2))
+    add("boxes: a size with a fraction holds nothing",
+        doc(two, boxes=[box("black", {"0": "w1"})]), doc(two, boxes=[box("black", {"0": "w1"})]),
+        doc(two, boxes=[box("black", {"0": "w1"}, columns=6.5),
+                        box("brown", {"0": "w2"}, rows=1.5, finish="brown")]),
+        check=lambda out, c: expect(not c and [b["slots"] for b in out["boxes"]] == [{}, {}]))
+
+    # Known differences: CollectionMergeTests.knownDifferences names each of these with its reason. The
+    # twin parts from sync.py on them by design, on input no app writes.
+    focus = {"x": 0.5, "y": 0.5, "zoom": 1.25}
+    add("look-alike object keys from the two sides",
+        doc([watch("w1", photos=[photo_nfc, photo_nfd], photoFocus={})]),
+        doc([watch("w1", photos=[photo_nfc, photo_nfd], photoFocus={photo_nfc: dict(focus)})]),
+        doc([watch("w1", photos=[photo_nfc, photo_nfd], photoFocus={photo_nfd: dict(focus, x=0.25)})]),
+        check=lambda out, c: expect(not c and len(out["watches"][0]["photoFocus"]) == 2))
+    add("look-alike object keys in one object", doc([watch("w1")]), doc([watch("w1", name="Renamed")]),
+        doc([watch("w1", futureField={"K": 1, kelvin: 2, cafe_nfc: 3, cafe_nfd: 4})]),
+        check=lambda out, c: expect(not c and len(out["watches"][0]["futureField"]) == 4))
+    add("integers past 2^53 that a Double cannot hold", doc([watch("w1")]), doc([watch("w1", name="Renamed")]),
+        doc([watch("w1", serial=12345678901234567)],
+            futureTop={"barcode": 9007199254740993, "debt": -9007199254740993}),
+        check=lambda out, c: expect(not c and out["watches"][0]["serial"] == 12345678901234567
+                                    and out["futureTop"] == {"barcode": 9007199254740993, "debt": -9007199254740993}))
+    add("integers at or past 2^63", doc([watch("w1")]), doc([watch("w1", name="Renamed")]),
+        doc([watch("w1", serials=[2 ** 63, -(2 ** 63), 2 ** 64, 10 ** 20])]),
+        check=lambda out, c: expect(not c and out["watches"][0]["serials"] == [2 ** 63, -(2 ** 63), 2 ** 64, 10 ** 20]))
+    add("integers that differ only past a Double's precision", doc([watch("w1", price=2 ** 53)]),
+        doc([watch("w1", price=2 ** 53 + 1)]), doc([watch("w1", price=2 ** 53 + 3)]),
+        check=lambda out, c: expect(len(c) == 1 and c[0]["path"] == ["watches", "w1", "price"]))
+    add("a box size written as a whole float",
+        doc(two, boxes=[box("black", {"0": "w1"}), box("brown", {"0": "w2"}, finish="brown")]),
+        doc(two, boxes=[box("black", {"0": "w1"}), box("brown", {"0": "w2"}, finish="brown")]),
+        doc(two, boxes=[box("black", {"0": "w1"}, columns=6.0, name="Renamed"),
+                        box("brown", {"0": "w2"}, rows=2.0, finish="brown")]),
+        check=lambda out, c: expect(not c and [b["slots"] for b in out["boxes"]] == [{}, {}]))
+
+    # sync.py refuses these (the hub writes nothing). The twin's quiet answers are pinned in
+    # CollectionMergeTests.testWhereSyncPyRaisesTheTwinAnswersQuietly.
+    add("sync.py raises: a watch with no id", doc([watch("w1"), watch("w2")]),
+        doc([watch("w1"), {"name": "No id", "status": "owned", "photos": []}]),
+        doc([watch("w1"), watch("w2", name="Edited"), watch("w3")]), raises=KeyError)
+    add("sync.py raises: a wishlist entry that is not an object", doc([], [candidate("c1")]),
+        doc([], [candidate("c1", notes="Edited")]), doc([], [candidate("c1"), "not an object"]), raises=TypeError)
+    settings_text = doc()
+    settings_text["settings"] = "not an object"
+    add("sync.py raises: settings that are not an object", doc(), doc(), settings_text, raises=AttributeError)
     return cases
 
 
@@ -434,6 +680,12 @@ ROWS = [2, 2, 2, 1, 4, 0, -2, 1.5, "2", False]
 
 
 class Gen:
+    # The pools, as class attributes so TwinGen can swap them.
+    NAMES, STORIES, STATUSES, NUMBERS, PHOTOS = NAMES, STORIES, STATUSES, NUMBERS, PHOTOS
+    WATCH_IDS, CANDIDATE_IDS, BRANDS, BOX_IDS, SESSION_IDS = WATCH_IDS, CANDIDATE_IDS, BRANDS, BOX_IDS, SESSION_IDS
+    DATES, STRINGS, UNKNOWN_KEYS, SLOT_KEYS = DATES, STRINGS, UNKNOWN_KEYS, SLOT_KEYS
+    CUT_VALUES, TURNS, FLAGS, COLUMNS, ROWS = CUT_VALUES, TURNS, FLAGS, COLUMNS, ROWS
+
     def __init__(self, rng):
         self.rng = rng
 
@@ -444,51 +696,51 @@ class Gen:
         return self.rng.choice(seq)
 
     def scalar(self):
-        return self.pick([self.pick(NAMES), self.pick(NUMBERS), True, False, None])
+        return self.pick([self.pick(self.NAMES), self.pick(self.NUMBERS), True, False, None])
 
     def value(self, depth=0):
         roll = self.rng.random()
         if depth >= 2 or roll < 0.45:
             return self.scalar()
         if roll < 0.6:
-            return self.rng.sample(STRINGS, self.rng.randint(0, 3))
+            return self.rng.sample(self.STRINGS, self.rng.randint(0, 3))
         if roll < 0.7:
-            return [self.pick(NUMBERS) for _ in range(self.rng.randint(1, 3))]
+            return [self.pick(self.NUMBERS) for _ in range(self.rng.randint(1, 3))]
         if roll < 0.9:
-            return {self.pick(UNKNOWN_KEYS + ["x", "y"]): self.value(depth + 1) for _ in range(self.rng.randint(0, 3))}
+            return {self.pick(self.UNKNOWN_KEYS + ["x", "y"]): self.value(depth + 1) for _ in range(self.rng.randint(0, 3))}
         return self.pick([[], {}])
 
     def cutout(self, photos):
         c = {"photo": self.pick(photos or ["a1.jpg"])}
         for key in ("x", "y", "r"):
             if self.chance(0.85):
-                c[key] = self.pick(CUT_VALUES)
+                c[key] = self.pick(self.CUT_VALUES)
         if self.chance(0.5):
-            c["turn"] = self.pick(TURNS)
+            c["turn"] = self.pick(self.TURNS)
         for flag in ("caseOnly", "useCutout"):
             if self.chance(0.4):
-                c[flag] = self.pick(FLAGS)
+                c[flag] = self.pick(self.FLAGS)
         return c
 
     def session(self, sid):
-        return {"id": sid, "date": self.pick(DATES), "durationMinutes": self.pick([15, 30, 60, 90, 0])}
+        return {"id": sid, "date": self.pick(self.DATES), "durationMinutes": self.pick([15, 30, 60, 90, 0])}
 
     def watch(self, wid):
-        w = {"id": wid, "name": self.pick(NAMES), "story": self.pick(STORIES), "purchasedText": "",
-             "price": self.pick(NUMBERS), "status": self.pick(STATUSES), "statusNote": "",
-             "photos": self.rng.sample(PHOTOS, self.rng.randint(0, 4))}
+        w = {"id": wid, "name": self.pick(self.NAMES), "story": self.pick(self.STORIES), "purchasedText": "",
+             "price": self.pick(self.NUMBERS), "status": self.pick(self.STATUSES), "statusNote": "",
+             "photos": self.rng.sample(self.PHOTOS, self.rng.randint(0, 4))}
         if self.chance(0.5):
-            w["brand"] = self.pick(BRANDS)
+            w["brand"] = self.pick(self.BRANDS)
         if self.chance(0.3):
             w["diameter"] = self.pick([38.5, 40, 41.5, 42])
         if self.chance(0.2):
             w["purchased"] = self.pick([None, "2019-04"])
         if self.chance(0.3):
-            w["wearDates"] = self.rng.sample(DATES, self.rng.randint(0, 3))
+            w["wearDates"] = self.rng.sample(self.DATES, self.rng.randint(0, 3))
         if self.chance(0.4):
-            w["wearSessions"] = [self.session(s) for s in self.rng.sample(SESSION_IDS, self.rng.randint(0, 3))]
+            w["wearSessions"] = [self.session(s) for s in self.rng.sample(self.SESSION_IDS, self.rng.randint(0, 3))]
         if self.chance(0.2):
-            w["serviceRecords"] = [{"id": r, "date": self.pick(DATES), "kind": "Service", "notes": ""}
+            w["serviceRecords"] = [{"id": r, "date": self.pick(self.DATES), "kind": "Service", "notes": ""}
                                    for r in self.rng.sample(["r1", "r2", "r3"], self.rng.randint(0, 2))]
         if self.chance(0.35):
             w["boxCutout"] = self.cutout(w["photos"])
@@ -497,21 +749,21 @@ class Gen:
         if self.chance(0.2) and w["photos"]:
             w["photoFocus"] = {w["photos"][0]: {"x": 0.5, "y": 0.25, "zoom": 1.25}}
         if self.chance(0.15):
-            w[self.pick(UNKNOWN_KEYS)] = self.value()
+            w[self.pick(self.UNKNOWN_KEYS)] = self.value()
         if self.chance(0.15):
             w["original"] = self.pick([True, False, 1, 0])
         return w
 
     def candidate(self, cid):
-        c = {"id": cid, "name": self.pick(NAMES), "brand": self.pick(BRANDS), "priceNote": "", "notes": "",
+        c = {"id": cid, "name": self.pick(self.NAMES), "brand": self.pick(self.BRANDS), "priceNote": "", "notes": "",
              "status": self.pick(["considering", "next", "dream"]), "added": "2024-01",
-             "photos": self.rng.sample(PHOTOS, self.rng.randint(0, 3))}
+             "photos": self.rng.sample(self.PHOTOS, self.rng.randint(0, 3))}
         if self.chance(0.5):
-            c["priceExpected"] = self.pick(NUMBERS)
+            c["priceExpected"] = self.pick(self.NUMBERS)
         if self.chance(0.25):
             c["boxCutout"] = self.cutout(c["photos"])
         if self.chance(0.15):
-            c[self.pick(UNKNOWN_KEYS)] = self.value()
+            c[self.pick(self.UNKNOWN_KEYS)] = self.value()
         if self.chance(0.1):
             c["category"] = None
         return c
@@ -519,10 +771,10 @@ class Gen:
     def box(self, bid, watch_ids):
         slots = {}
         for _ in range(self.rng.randint(0, 5)):
-            slots[self.pick(SLOT_KEYS)] = self.pick(watch_ids * 4 + ["ghost", 7, None])
+            slots[self.pick(self.SLOT_KEYS)] = self.pick(watch_ids * 4 + ["ghost", 7, None])
         b = {"id": bid, "name": self.pick(["Black Box", "Brown Box", "Travel", "Ève"]),
-             "finish": self.pick(["black", "brown", "teal"]), "columns": self.pick(COLUMNS),
-             "rows": self.pick(ROWS), "slots": slots}
+             "finish": self.pick(["black", "brown", "teal"]), "columns": self.pick(self.COLUMNS),
+             "rows": self.pick(self.ROWS), "slots": slots}
         if self.chance(0.05):
             b["slots"] = self.pick([None, [], "x"])
         if self.chance(0.03):
@@ -530,21 +782,21 @@ class Gen:
         return b
 
     def document(self):
-        watch_ids = self.rng.sample(WATCH_IDS, self.rng.randint(1, 4))
+        watch_ids = self.rng.sample(self.WATCH_IDS, self.rng.randint(1, 4))
         d = {"settings": {"autoBackup": self.chance(0.5), "backupRemote": "gdrive:WatchCollection",
                           "lastBackup": None, "autoImage": self.chance(0.5),
-                          "suggestExclude": self.rng.sample(STRINGS, self.rng.randint(0, 3)),
+                          "suggestExclude": self.rng.sample(self.STRINGS, self.rng.randint(0, 3)),
                           "wrist": {"inches": 6.75, "perfect": 39, "lugMax": 49}},
              "watches": [self.watch(w) for w in watch_ids],
-             "categories": self.rng.sample(STRINGS, self.rng.randint(0, 4)),
-             "wishlist": [self.candidate(c) for c in self.rng.sample(CANDIDATE_IDS, self.rng.randint(0, 2))],
+             "categories": self.rng.sample(self.STRINGS, self.rng.randint(0, 4)),
+             "wishlist": [self.candidate(c) for c in self.rng.sample(self.CANDIDATE_IDS, self.rng.randint(0, 2))],
              "brandWatchlist": [{"brand": b, "notes": "", "added": "2024-01"}
-                                for b in self.rng.sample(BRANDS, self.rng.randint(0, 3))],
+                                for b in self.rng.sample(self.BRANDS, self.rng.randint(0, 3))],
              "dialColors": self.rng.sample(["Black", "Blue", "White", "Green"], self.rng.randint(0, 3)),
              "materials": self.rng.sample(["Steel", "Titanium", "Gold"], self.rng.randint(0, 2))}
         if self.chance(0.8):
             count = self.rng.randint(9, 11) if self.chance(0.06) else self.rng.randint(0, 3)
-            d["boxes"] = [self.box(b, watch_ids) for b in BOX_IDS[:count]]
+            d["boxes"] = [self.box(b, watch_ids) for b in self.BOX_IDS[:count]]
             if d["boxes"] and self.chance(0.06):
                 twin = deepcopy(self.pick(d["boxes"]))
                 twin["name"] = "Twin"
@@ -554,7 +806,7 @@ class Gen:
         if self.chance(0.2):
             d["headlineStats"] = {"owned": {"count": 3, "total": 1200.5}}
         if self.chance(0.15):
-            d[self.pick(UNKNOWN_KEYS)] = self.value()
+            d[self.pick(self.UNKNOWN_KEYS)] = self.value()
         if self.chance(0.1):
             d["settings"]["ownerName"] = None
         return d
@@ -576,10 +828,10 @@ class Gen:
         if item is None:
             return
         key = self.pick(["name", "story", "price", "status", "statusNote", "brand", "notes", "diameter",
-                         "priceExpected"] + UNKNOWN_KEYS)
+                         "priceExpected"] + self.UNKNOWN_KEYS)
         if self.chance(0.75):
-            item[key] = self.pick(NAMES) if key in ("name", "story", "brand", "notes", "statusNote") else (
-                self.pick(STATUSES) if key == "status" else self.pick(NUMBERS))
+            item[key] = self.pick(self.NAMES) if key in ("name", "story", "brand", "notes", "statusNote") else (
+                self.pick(self.STATUSES) if key == "status" else self.pick(self.NUMBERS))
         else:
             item[key] = self.value()
 
@@ -602,12 +854,12 @@ class Gen:
             return
         if kind == "brandWatchlist":
             taken = {i.get("brand") for i in items}
-            free = [b for b in BRANDS if b not in taken]
+            free = [b for b in self.BRANDS if b not in taken]
             if free:
-                items.insert(self.rng.randint(0, len(items)), {"brand": self.pick(free), "notes": self.pick(NAMES),
+                items.insert(self.rng.randint(0, len(items)), {"brand": self.pick(free), "notes": self.pick(self.NAMES),
                                                                "added": "2026-11"})
             return
-        pool = WATCH_IDS if kind == "watches" else CANDIDATE_IDS
+        pool = self.WATCH_IDS if kind == "watches" else self.CANDIDATE_IDS
         taken = {i.get("id") for i in items}
         free = [i for i in pool if i not in taken]
         if free:
@@ -633,7 +885,7 @@ class Gen:
         photos = item["photos"]
         roll = self.rng.random()
         if roll < 0.3:
-            free = [p for p in PHOTOS if p not in photos]
+            free = [p for p in self.PHOTOS if p not in photos]
             if free:
                 photos.insert(self.rng.randint(0, len(photos)), self.pick(free))
         elif roll < 0.55 and photos:
@@ -654,7 +906,7 @@ class Gen:
         roll = self.rng.random()
         if roll < 0.35:
             taken = {s.get("id") for s in sessions}
-            free = [s for s in SESSION_IDS if s not in taken]
+            free = [s for s in self.SESSION_IDS if s not in taken]
             if free:
                 sessions.append(self.session(self.pick(free)))
         elif roll < 0.55 and sessions:
@@ -664,7 +916,7 @@ class Gen:
         elif roll < 0.9:
             w["wearSessions"] = []
         else:
-            w["wearDates"] = self.rng.sample(DATES, self.rng.randint(0, 2))
+            w["wearDates"] = self.rng.sample(self.DATES, self.rng.randint(0, 2))
 
     def m_settings(self, d):
         s = d.get("settings")
@@ -674,7 +926,7 @@ class Gen:
         if roll < 0.2:
             s["autoImage"] = self.pick([True, False, 1, 0])
         elif roll < 0.4:
-            s["suggestExclude"] = self.rng.sample(STRINGS, self.rng.randint(0, 3))
+            s["suggestExclude"] = self.rng.sample(self.STRINGS, self.rng.randint(0, 3))
         elif roll < 0.6 and isinstance(s.get("wrist"), dict):
             s["wrist"][self.pick(["inches", "perfect", "lugMax"])] = self.pick([6.5, 7.25, 40, 48])
         elif roll < 0.75:
@@ -683,7 +935,7 @@ class Gen:
         elif roll < 0.85:
             s.pop(self.pick(["wrist", "suggestExclude", "autoImage", "autoBackup"]), None)
         elif roll < 0.97:
-            s[self.pick(UNKNOWN_KEYS)] = self.value()
+            s[self.pick(self.UNKNOWN_KEYS)] = self.value()
         else:
             d.pop("settings")
 
@@ -692,9 +944,9 @@ class Gen:
         values = d.get(kind)
         roll = self.rng.random()
         if not isinstance(values, list) or roll < 0.05:
-            d[kind] = self.rng.sample(STRINGS, self.rng.randint(0, 3))
+            d[kind] = self.rng.sample(self.STRINGS, self.rng.randint(0, 3))
         elif roll < 0.35:
-            free = [v for v in STRINGS if v not in values]
+            free = [v for v in self.STRINGS if v not in values]
             if free:
                 values.insert(self.rng.randint(0, len(values)), self.pick(free))
         elif roll < 0.6 and values:
@@ -704,7 +956,7 @@ class Gen:
         elif roll < 0.88:
             d[kind] = []
         elif roll < 0.94:
-            d[kind] = [self.pick(NUMBERS)]
+            d[kind] = [self.pick(self.NUMBERS)]
         else:
             d.pop(kind)
 
@@ -714,28 +966,28 @@ class Gen:
         roll = self.rng.random()
         if not isinstance(boxes, list):
             if roll < 0.5:
-                d["boxes"] = [self.box(b, watch_ids) for b in BOX_IDS[:self.rng.randint(0, 2)]]
+                d["boxes"] = [self.box(b, watch_ids) for b in self.BOX_IDS[:self.rng.randint(0, 2)]]
             return
         good = [b for b in boxes if isinstance(b, dict) and isinstance(b.get("slots"), dict)]
         if roll < 0.35 and good:
             b = self.pick(good)
             if b["slots"] and self.chance(0.5):
                 key = self.pick(list(b["slots"]))
-                b["slots"][self.pick(SLOT_KEYS)] = b["slots"].pop(key)
+                b["slots"][self.pick(self.SLOT_KEYS)] = b["slots"].pop(key)
             else:
-                b["slots"][self.pick(SLOT_KEYS)] = self.pick(watch_ids + ["ghost"])
+                b["slots"][self.pick(self.SLOT_KEYS)] = self.pick(watch_ids + ["ghost"])
         elif roll < 0.5 and good:
             b = self.pick(good)
             if b["slots"]:
                 b["slots"].pop(self.pick(list(b["slots"])))
         elif roll < 0.6 and good:
             b = self.pick(good)
-            b[self.pick(["columns", "rows"])] = self.pick(COLUMNS + ROWS)
+            b[self.pick(["columns", "rows"])] = self.pick(self.COLUMNS + self.ROWS)
         elif roll < 0.7 and good:
-            self.pick(good)["name"] = self.pick(NAMES)
+            self.pick(good)["name"] = self.pick(self.NAMES)
         elif roll < 0.8:
             taken = {b.get("id") for b in boxes if isinstance(b, dict)}
-            free = [b for b in BOX_IDS if b not in taken]
+            free = [b for b in self.BOX_IDS if b not in taken]
             if free:
                 boxes.insert(self.rng.randint(0, len(boxes)), self.box(self.pick(free), watch_ids))
         elif roll < 0.9 and boxes:
@@ -756,7 +1008,7 @@ class Gen:
             item.pop("boxCutout")
         else:
             key = self.pick(["x", "y", "r", "turn", "caseOnly", "useCutout"])
-            c[key] = self.pick(TURNS if key == "turn" else FLAGS if key in ("caseOnly", "useCutout") else CUT_VALUES)
+            c[key] = self.pick(self.TURNS if key == "turn" else self.FLAGS if key in ("caseOnly", "useCutout") else self.CUT_VALUES)
 
     def m_status(self, d):
         watches = [w for w in self.items(d, "watches") if isinstance(w, dict)]
@@ -774,16 +1026,16 @@ class Gen:
     def m_top(self, d):
         roll = self.rng.random()
         if roll < 0.4:
-            d[self.pick(UNKNOWN_KEYS)] = self.value()
+            d[self.pick(self.UNKNOWN_KEYS)] = self.value()
         elif roll < 0.6:
             d["emptyBoxTiles"] = self.pick([{"black": "empty-black-9f8e7d6c.jpg"},
                                             {"black": "empty-black-1a2b3c4d.jpg", "brown": "empty-brown-1.jpg"}])
         elif roll < 0.7:
             d.pop("emptyBoxTiles", None)
         elif roll < 0.85:
-            d["headlineStats"] = {"owned": {"count": self.pick(NUMBERS)}}
+            d["headlineStats"] = {"owned": {"count": self.pick(self.NUMBERS)}}
         else:
-            for key in UNKNOWN_KEYS:
+            for key in self.UNKNOWN_KEYS:
                 d.pop(key, None)
 
     def m_nested(self, d):
@@ -793,7 +1045,7 @@ class Gen:
         if self.chance(0.5):
             photos = item.get("photos") if isinstance(item.get("photos"), list) else []
             focus = item.get("photoFocus") if isinstance(item.get("photoFocus"), dict) else {}
-            focus[self.pick(photos or PHOTOS)] = {"x": self.pick([0.5, 0.25]), "y": 0.5, "zoom": self.pick([1, 1.5])}
+            focus[self.pick(photos or self.PHOTOS)] = {"x": self.pick([0.5, 0.25]), "y": 0.5, "zoom": self.pick([1, 1.5])}
             item["photoFocus"] = focus
         else:
             item["boxTiles"] = self.pick([{"black": "box-black-aaaa1111.jpg"},
@@ -832,14 +1084,14 @@ class Gen:
         if isinstance(current, bool):
             return self.pick([True, False, 1, 0])
         if isinstance(current, (int, float)):
-            return self.pick(NUMBERS)
+            return self.pick(self.NUMBERS)
         if isinstance(current, str):
-            return self.pick(NAMES + STATUSES + WATCH_IDS)
+            return self.pick(self.NAMES + self.STATUSES + self.WATCH_IDS)
         if isinstance(current, list):
-            return self.rng.sample(STRINGS, self.rng.randint(0, 3))
+            return self.rng.sample(self.STRINGS, self.rng.randint(0, 3))
         if isinstance(current, dict):
             changed = dict(current)
-            changed[self.pick(list(current) + UNKNOWN_KEYS) if current else self.pick(UNKNOWN_KEYS)] = self.scalar()
+            changed[self.pick(list(current) + self.UNKNOWN_KEYS) if current else self.pick(self.UNKNOWN_KEYS)] = self.scalar()
             return changed
         return self.scalar()
 
@@ -868,8 +1120,51 @@ class Gen:
                 parent[last] = self.rival(parent[last])
 
 
-def random_case(rng, index):
-    gen = Gen(rng)
+class TwinGen(Gen):
+    """Gen with look-alike pools (review A6, A8): ids, list strings, brands and photo names in pairs that
+    are canonically equivalent but spelled with other code points (NFC and NFD, K and KELVIN SIGN, A-ring
+    and ANGSTROM SIGN, ";" and GREEK QUESTION MARK, a Hangul syllable and its jamo), which Python keeps
+    apart; compatibility look-alikes nothing may fold (the fi ligature, fullwidth letters and digits);
+    floats with a whole value; integers past 2^53 that a Double holds. A case that would hand the merge
+    look-alike object keys or a whole-float box size is skipped (swift_reads_alike): those are known
+    differences, each pinned by a hand-written case."""
+    NAMES = Gen.NAMES + ["Caf\u00e9", "\u212a\u00e9", "\uff2b2"]
+    NUMBERS = Gen.NUMBERS + [42.0, 1.0, -0.0, 6.0, 1e16, 2 ** 53 + 2, -(2 ** 53 + 2), 2 ** 60]
+    PHOTOS = ["a1.jpg", "caf\u00e9.jpg", "cafe\u0301.jpg", "K.jpg", "\u212a.jpg", "\uff2b.jpg"]
+    WATCH_IDS = ["w1", "w2", "\u00e91", "e\u03011", "K", "\u212a", "\u00c5", "\u212b", "\ufb01", "fi"]
+    CANDIDATE_IDS = ["c1", "c2", "\u00e7", "c\u0327", ";", "\u037e"]
+    BRANDS = ["Omega", "Tudor", "\u00c9lan", "E\u0301lan", "\u00c5ngstr\u00f6m", "\u212bngstr\u00f6m"]
+    BOX_IDS = ["black", "\u00e9", "e\u0301", "brown", "\u00c5", "\u212b", "b7", "b8", "b9", "b10", "b11"]
+    SESSION_IDS = ["s1", "\u00e9", "e\u0301", "K", "\u212a"]
+    STRINGS = ["Dive", "GMT", "Caf\u00e9", "Cafe\u0301", "\u00c5", "\u212b", ";", "\u037e", "\ud55c",
+               "\u1112\u1161\u11ab", "\ufb01eld", "field"]
+    SLOT_KEYS = Gen.SLOT_KEYS + ["\uff15"]
+
+
+def look_alike_strings(*docs):
+    """True when two string values anywhere in docs are canonically equivalent but spelled differently."""
+    strings = set()
+
+    def collect(value):
+        if isinstance(value, str):
+            strings.add(value)
+        elif isinstance(value, dict):
+            for child in value.values():
+                collect(child)
+        elif isinstance(value, list):
+            for child in value:
+                collect(child)
+    for d in docs:
+        collect(d)
+    folded = {}
+    for s in strings:
+        folded.setdefault(unicodedata.normalize("NFC", s), set()).add(s)
+    return any(len(spellings) > 1 for spellings in folded.values())
+
+
+def random_case(rng, name, gen_class=Gen):
+    """One random vector, or None when its inputs reach a known difference (swift_reads_alike)."""
+    gen = gen_class(rng)
     seed_doc = gen.document()
     mode = rng.random()
     if mode < 0.12:
@@ -883,14 +1178,16 @@ def random_case(rng, index):
     if rng.random() < 0.35:
         shared = rng.random()
         count = rng.randint(1, 3)
-        Gen(random.Random(shared)).mutate(local, count)
-        Gen(random.Random(shared)).mutate(remote, count)
+        gen_class(random.Random(shared)).mutate(local, count)
+        gen_class(random.Random(shared)).mutate(remote, count)
     for _ in range(rng.choice([0, 0, 1, 1, 2, 3])):
         gen.contest(local, remote)
     gen.mutate(local, rng.randint(0, 4))
     gen.mutate(remote, rng.randint(0, 4))
     if rng.random() < 0.03:
         remote = gen.document()  # an unrelated document
+    if not swift_reads_alike(base, local, remote):
+        return None
     _, first = sync.merge(deepcopy(base), deepcopy(local), deepcopy(remote), {})
     resolve = []
     for conflict in first:
@@ -901,36 +1198,54 @@ def random_case(rng, index):
             resolve.append((conflict["path"], "remote"))
         elif roll < 0.7:
             resolve.append((conflict["path"], "both"))
-    return vector("random %03d" % index, base, local, remote, resolve)
+    return vector(name, base, local, remote, resolve)
+
+
+def family(seed, count, gen_class, prefix):
+    """count random vectors named "<prefix> 000" on, and how many inputs sync.py raised on or were skipped."""
+    rng = random.Random(seed)
+    made, raised, skipped = [], 0, 0
+    while len(made) < count:
+        try:
+            made_vector = random_case(rng, "%s %03d" % (prefix, len(made)), gen_class)
+        except (KeyError, TypeError, AttributeError, IndexError):
+            raised += 1  # sync.py itself raises on this input; not a vector
+            continue
+        if made_vector is None:
+            skipped += 1
+        else:
+            made.append(made_vector)
+    return made, raised, skipped
 
 
 def main():
     vectors = hand_cases()
     hand = len(vectors)
-    rng = random.Random(SEED)
-    raised = 0
-    while len(vectors) < hand + RANDOM_COUNT:
-        try:
-            vectors.append(random_case(rng, len(vectors) - hand))
-        except (KeyError, TypeError, AttributeError, IndexError):
-            raised += 1  # sync.py itself raises on this input; not a vector
+    randoms, raised, skipped = family(SEED, RANDOM_COUNT, Gen, "random")
+    assert skipped == 0, "the plain pools reached a known difference"
+    twins, twins_raised, twins_skipped = family(TWIN_SEED, TWIN_COUNT, TwinGen, "twins")
+    vectors += randoms + twins
     names = [v["name"] for v in vectors]
     assert len(names) == len(set(names)), "vector names must be unique"
     OUT.parent.mkdir(parents=True, exist_ok=True)
     with OUT.open("w", encoding="utf-8") as handle:
-        handle.write('{"seed": %d, "random": %d, "vectors": [\n' % (SEED, RANDOM_COUNT))
+        handle.write('{"seed": %d, "random": %d, "twinSeed": %d, "twins": %d, "vectors": [\n'
+                     % (SEED, RANDOM_COUNT, TWIN_SEED, TWIN_COUNT))
         handle.write(",\n".join(json.dumps(v, ensure_ascii=False, allow_nan=False, separators=(",", ":"))
                                 for v in vectors))
         handle.write("\n]}\n")
-    randoms = vectors[hand:]
     print("wrote %s" % OUT.relative_to(ROOT))
-    print("vectors: %d (%d hand-written, %d random; %d random inputs skipped because sync.py raised)"
-          % (len(vectors), hand, len(randoms), raised))
-    print("random: %d with no base, %d with conflicts left, %d with resolutions, %d with boxes in the output, "
-          "%d ids not comparable"
-          % (sum(v["base"] is None for v in randoms), sum(bool(v["conflicts"]) for v in randoms),
-             sum(bool(v["resolveByPath"]) for v in randoms), sum("boxes" in v["output"] for v in randoms),
-             sum(not v["idsComparable"] for v in vectors)))
+    print("vectors: %d (%d hand-written, %d of them refused by sync.py; %d random, %d inputs skipped because "
+          "sync.py raised; %d twins, %d raised, %d skipped as known differences)"
+          % (len(vectors), hand, sum("raises" in v for v in vectors[:hand]), len(randoms), raised, len(twins),
+             twins_raised, twins_skipped))
+    for label, made in (("random", randoms), ("twins", twins)):
+        print("%s: %d with no base, %d with conflicts left, %d with resolutions, %d with boxes in the output, "
+              "%d with look-alike strings, %d ids not comparable"
+              % (label, sum(v["base"] is None for v in made), sum(bool(v["conflicts"]) for v in made),
+                 sum(bool(v["resolveByPath"]) for v in made), sum("boxes" in v["output"] for v in made),
+                 sum(look_alike_strings(v["base"], v["local"], v["remote"]) for v in made),
+                 sum(not v["idsComparable"] for v in made)))
 
 
 if __name__ == "__main__":

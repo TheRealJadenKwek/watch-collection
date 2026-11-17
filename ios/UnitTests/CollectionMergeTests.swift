@@ -3,8 +3,14 @@ import XCTest
 
 /// `CollectionMerge` against the hub's `sync.py`. The vectors in Fixtures/merge-vectors.json are written by
 /// `python3 tools/merge_vectors.py` (from the repo root) straight from `sync.merge`: hand-written cases, each
-/// named, and 300 seeded random ones. The named tests below replay a hand-written case, check it against
-/// Python, then state what it proves; the inputs live in the script, under the same name.
+/// named, 300 seeded random ones, and 200 seeded random ones built from look-alike Unicode and number pools.
+/// The named tests below replay a hand-written case, check it against Python, then state what it proves; the
+/// inputs live in the script, under the same name.
+///
+/// The check is strict: the output and each conflict's sides are compared as bytes against the script's
+/// canonical spelling (sync.fingerprint's, with a whole float written as an integer, the one agreed
+/// difference), and conflict paths and answers are matched code point by code point. Swift's own `==` on
+/// `String` and `JSONValue` treats canonically equivalent strings as one, so it is never the judge here.
 final class CollectionMergeTests: XCTestCase {
     typealias Result = (output: JSONValue, conflicts: [CollectionMerge.Conflict])
 
@@ -19,10 +25,11 @@ final class CollectionMergeTests: XCTestCase {
         struct PythonConflict: Decodable {
             let id: String
             let path: [String]
-            let local: JSONValue?
-            let remote: JSONValue?
             let localDeleted: Bool
             let remoteDeleted: Bool
+            /// The sides in the script's canonical spelling ("null" for a deleted side).
+            let localCanonical: String
+            let remoteCanonical: String
         }
 
         let name: String
@@ -30,16 +37,52 @@ final class CollectionMergeTests: XCTestCase {
         let local: JSONValue
         let remote: JSONValue
         let resolveByPath: [Choice]
-        let output: JSONValue
+        /// sync.py's output in the script's canonical spelling; nil when sync.py raised.
+        let outputCanonical: String?
         let conflicts: [PythonConflict]
-        /// No input holds a whole float, so Python's conflict ids are spelled from the same bytes as ours.
+        /// Every number in the inputs is spelled by Swift as Python spells it (no whole float, no integer a
+        /// Double cannot hold), so Python's conflict ids are hashed from the same bytes as ours.
         let idsComparable: Bool
+        /// The exception sync.py raised on this input (it writes nothing then); nil when it merged.
+        let raises: String?
     }
 
     private struct Fixture: Decodable {
         let seed: Int
         let random: Int
+        let twinSeed: Int
+        let twins: Int
         let vectors: [Vector]
+    }
+
+    /// Vectors where this twin parts from sync.py on purpose, each on input no app writes: base and local
+    /// are encoded from `CollectionData`, and the iCloud body is only ever written by `canonicalData`.
+    /// `testEveryVectorMatchesPython` requires each of these to still differ, so the list cannot go stale.
+    private static let knownDifferences: [String: String] = [
+        "look-alike object keys from the two sides":
+            "dictionary keys are Swift Strings, which merge canonical twins; app keys are ASCII or UUID photo names",
+        "look-alike object keys in one object":
+            "the decoder's [String: JSONValue] keeps one of two canonically equal keys; no app writes such keys",
+        "integers past 2^53 that a Double cannot hold":
+            "JSONValue keeps every number as a Double, so they are rounded; the apps hold numbers as Doubles too",
+        "integers at or past 2^63":
+            "a Double at or past 2^63 is written in exponent form; the apps hold numbers as Doubles too",
+        "integers that differ only past a Double's precision":
+            "both read as one Double, so the conflict is missed; the apps hold numbers as Doubles too",
+        "a box size written as a whole float":
+            "a Double cannot tell 6.0 from 6, so the slots are kept where sync.py drops them; the apps write 6",
+    ]
+
+    private static func bytes(_ text: String) -> Data { Data(text.utf8) }
+
+    /// Two paths that are the same code point by code point (Swift's `==` would also match a canonical twin).
+    private static func samePath(_ a: [String], _ b: [String]) -> Bool {
+        a.count == b.count && zip(a, b).allSatisfy { $0.utf8.elementsEqual($1.utf8) }
+    }
+
+    /// A path with every non-ASCII code point escaped, so twins read differently in a failure message.
+    private static func spelled(_ path: [String]) -> String {
+        JSONValue.array(path.map(JSONValue.string)).text
     }
 
     private static let fixture = Swift.Result<Fixture, Error> {
@@ -57,34 +100,40 @@ final class CollectionMergeTests: XCTestCase {
     }
 
     /// Merge with no answers, answer by path with our own conflict ids, merge again: how the script made it.
+    /// A path matches only when it is spelled with the same code points, as the script's `json.dumps` keys do.
     private static func replay(_ vector: Vector) -> Result {
         let first = CollectionMerge.merge(base: vector.base, local: vector.local, remote: vector.remote, resolutions: [:])
         var resolutions: [String: String] = [:]
         for conflict in first.conflicts {
-            if let choice = vector.resolveByPath.first(where: { $0.path == conflict.path }) {
+            if let choice = vector.resolveByPath.first(where: { samePath($0.path, conflict.path) }) {
                 resolutions[conflict.id] = choice.choice
             }
         }
         return CollectionMerge.merge(base: vector.base, local: vector.local, remote: vector.remote, resolutions: resolutions)
     }
 
-    /// What differs from Python, or nil: the output, then each conflict's path, sides and deleted flags, in order.
+    /// What differs from Python, or nil: the output's bytes, then each conflict's path (code point by code
+    /// point), sides (as bytes) and deleted flags, in order.
     private static func difference(_ vector: Vector, _ result: Result) -> String? {
-        if result.output != vector.output {
-            return "\(vector.name): output\n swift  \(result.output.text)\n python \(vector.output.text)"
+        guard let output = vector.outputCanonical else {
+            return "\(vector.name): sync.py raised \(vector.raises ?? "?"), so there is nothing to compare"
+        }
+        if result.output.canonicalData != bytes(output) {
+            return "\(vector.name): output\n swift  \(result.output.text)\n python \(output)"
         }
         guard result.conflicts.count == vector.conflicts.count else {
             return "\(vector.name): \(result.conflicts.count) conflicts, Python \(vector.conflicts.count)\n"
-                + " swift  \(result.conflicts.map(\.path))\n python \(vector.conflicts.map(\.path))"
+                + " swift  \(result.conflicts.map { spelled($0.path) })\n python \(vector.conflicts.map { spelled($0.path) })"
         }
         for (index, (swift, python)) in zip(result.conflicts, vector.conflicts).enumerated() {
-            let same = swift.path == python.path
-                && (swift.local ?? .null) == (python.local ?? .null) && (swift.remote ?? .null) == (python.remote ?? .null)
+            let local = (swift.local ?? .null).canonicalData, remote = (swift.remote ?? .null).canonicalData
+            let same = samePath(swift.path, python.path)
+                && local == bytes(python.localCanonical) && remote == bytes(python.remoteCanonical)
                 && swift.localDeleted == python.localDeleted && swift.remoteDeleted == python.remoteDeleted
             if !same {
-                return "\(vector.name): conflict \(index)\n swift  \(swift.path) \((swift.local ?? .null).text) | "
-                    + "\((swift.remote ?? .null).text) \(swift.localDeleted) \(swift.remoteDeleted)\n python \(python.path) "
-                    + "\((python.local ?? .null).text) | \((python.remote ?? .null).text) \(python.localDeleted) \(python.remoteDeleted)"
+                return "\(vector.name): conflict \(index)\n swift  \(spelled(swift.path)) \((swift.local ?? .null).text) | "
+                    + "\((swift.remote ?? .null).text) \(swift.localDeleted) \(swift.remoteDeleted)\n python \(spelled(python.path)) "
+                    + "\(python.localCanonical) | \(python.remoteCanonical) \(python.localDeleted) \(python.remoteDeleted)"
             }
         }
         return nil
@@ -109,29 +158,49 @@ final class CollectionMergeTests: XCTestCase {
     func testEveryVectorMatchesPython() throws {
         let fixture = try Self.fixture.get()
         let randomCount = fixture.vectors.filter { $0.name.hasPrefix("random ") }.count
+        let twinCount = fixture.vectors.filter { $0.name.hasPrefix("twins ") }.count
         XCTAssertEqual(randomCount, 300)
         XCTAssertEqual(fixture.random, 300)
+        XCTAssertEqual(twinCount, 200)
+        XCTAssertEqual(fixture.twins, 200)
+        let names = Set(fixture.vectors.map(\.name))
+        XCTAssertEqual(Set(Self.knownDifferences.keys).subtracting(names), [], "a known difference names no vector")
         var failures: [String] = []
+        var matched = 0, known = 0, raised = 0
         for vector in fixture.vectors {
-            if let difference = Self.difference(vector, Self.replay(vector)) { failures.append(difference) }
+            if vector.raises != nil {
+                raised += 1  // testWhereSyncPyRaisesTheTwinAnswersQuietly
+                continue
+            }
+            let difference = Self.difference(vector, Self.replay(vector))
+            if let reason = Self.knownDifferences[vector.name] {
+                known += 1
+                if difference == nil { failures.append("\(vector.name): matches sync.py now, so drop it from knownDifferences (\(reason))") }
+            } else if let difference {
+                failures.append(difference)
+            } else {
+                matched += 1
+            }
         }
-        print("CollectionMerge: \(fixture.vectors.count - failures.count) of \(fixture.vectors.count) vectors match sync.py "
-              + "(\(fixture.vectors.count - randomCount) hand-written, \(randomCount) random, seed \(fixture.seed))")
+        print("CollectionMerge: \(matched) of \(fixture.vectors.count - known - raised) vectors match sync.py byte for byte "
+              + "(\(fixture.vectors.count - randomCount - twinCount) hand-written, \(randomCount) random, seed \(fixture.seed), "
+              + "\(twinCount) look-alike, seed \(fixture.twinSeed)); \(known) known differences, \(raised) that sync.py refuses")
         XCTAssertEqual(failures, [], failures.prefix(5).joined(separator: "\n\n"))
     }
 
     /// Not required (ids are each side's own), but the canonical spelling is Python's, so they agree.
     func testConflictIDsMatchPythonWhereComparable() throws {
         var compared = 0
-        for vector in try Self.fixture.get().vectors where vector.idsComparable {
+        for vector in try Self.fixture.get().vectors
+        where vector.idsComparable && vector.raises == nil && Self.knownDifferences[vector.name] == nil {
             let result = Self.replay(vector)
             guard result.conflicts.count == vector.conflicts.count else { continue }  // testEveryVectorMatchesPython says why
             for (swift, python) in zip(result.conflicts, vector.conflicts) {
-                XCTAssertEqual(swift.id, python.id, "\(vector.name) \(swift.path)")
+                XCTAssertEqual(swift.id, python.id, "\(vector.name) \(Self.spelled(swift.path))")
                 compared += 1
             }
         }
-        XCTAssertGreaterThan(compared, 100)
+        XCTAssertGreaterThan(compared, 140)
     }
 
     // MARK: The named cases
@@ -341,6 +410,95 @@ final class CollectionMergeTests: XCTestCase {
         XCTAssertEqual(boxes?.entry("b1")?["slots"], json(#"{"11":"w1"}"#))
         let cutout = try merged("cutouts kept in range").output["watches"]?.entry("w1")?["boxCutout"]
         XCTAssertEqual(cutout, json(#"{"photo":"a.jpg","x":0,"y":1,"r":0.05,"turn":180,"useCutout":true}"#))
+    }
+
+    // MARK: Look-alike Unicode and numbers (review A6 to A8)
+
+    /// Canonically equivalent spellings are different strings to Python (and to `Exact`), so none of them
+    /// may be merged into its twin: ids, list strings, owned ids, box ids and plain values. Compared by
+    /// `text`, which escapes every non-ASCII code point, because `JSONValue ==` would call the twins equal.
+    func testLookAlikeUnicodeStaysApart() throws {
+        let answered = try merged("Unicode: look-alike watch ids are two watches, each answered by its own path")
+        XCTAssertEqual(answered.output["watches"]?.ids.map { JSONValue.string($0).text }, [#""\u212a""#])
+        XCTAssertEqual(answered.conflicts.map { Self.spelled($0.path) }, [#"["watches","\u212a"]"#])
+        XCTAssertEqual(try merged("Unicode: a look-alike category added on the local side is kept").output["categories"]?.text,
+                       #"["Caf\u00e9","Cafe\u0301","GMT"]"#)
+        XCTAssertEqual(try merged("Unicode: every kind of canonical look-alike in a string list").output["categories"]?.text,
+                       #"["\u212a","\u1112\u1161\u11ab","\u212b","\u037e","Cafe\u0301"]"#)
+        XCTAssertEqual(try merged("Unicode: a look-alike photo added as the cover while the other side removes its twin")
+            .output["watches"]?.arrayValue?.first?["photos"]?.text, #"["cafe\u0301.jpg","a.jpg"]"#)
+        let boxes = try merged("Unicode: look-alike box ids, slot watch ids and owned ids stay apart").output["boxes"]?.arrayValue
+        XCTAssertEqual(boxes?.map { $0["id"]?.text }, [#""\u00e9""#, #""e\u0301""#])
+        XCTAssertEqual(boxes?.map { $0["slots"]?.text }, [#"{"1":"\u00e91"}"#, "{}"])
+        XCTAssertEqual(try merged("Unicode: look-alike box ids moved on the local side keep the local order")
+            .output["boxes"]?.arrayValue?.map { $0["id"]?.text }, [#""e\u0301""#, #""\u00e9""#, #""travel""#])
+        _ = try merged("Unicode: look-alike wear session ids and brands merge one by one")
+        let respelled = try merged("Unicode: a value respelled with look-alike code points is an edit")
+        XCTAssertEqual(respelled.output["watches"]?.arrayValue?.first?["name"]?.text, #""Cafe\u0301""#)
+        XCTAssertEqual(respelled.output["watches"]?.arrayValue?.first?["brand"]?.text, #""\u212a""#)
+        XCTAssertEqual(try merged("Unicode: look-alike edits on both sides are a conflict").conflicts.count, 1)
+        XCTAssertEqual(try merged("Unicode: compatibility look-alikes are different strings").output["boxes"]?
+            .arrayValue?.first?["slots"]?.text, #"{"5":"fi"}"#)
+    }
+
+    func testNumbersAreSpelledAsPythonSpellsThem() throws {
+        // Whole floats come back as integers (the agreed difference); the rest as Python's repr.
+        let floats = try merged("numbers: floats with a whole value and floats without")
+            .output["watches"]?.arrayValue?.first?["floats"]
+        XCTAssertEqual(floats?.text, #"{"fractional":[0.1,2.5,6.75,-3.75,1e-07,2.5e-05,5e-324,123456789012.5],"#
+            + #""whole":[6,42,0,1,10000000000000000,9223372036854774784,9.223372036854776e+18,1.8446744073709552e+19,1e+21,1e+300]}"#)
+        _ = try merged("numbers: a conflict between a whole float and a fraction")
+        XCTAssertEqual(try merged("numbers: integers past 2^53 that a Double holds").output["watches"]?.arrayValue?.first?["serials"]?.text,
+                       "[9007199254740992,9007199254740994,-9007199254740994,1152921504606846976,-4611686018427387904,"
+                       + "9223372036854774784,9007199254740991]")
+        _ = try merged("boxes: a size with a fraction holds nothing")
+    }
+
+    /// The known differences, and which way each goes. None is reachable from what the apps write.
+    func testKnownDifferencesGoTheDocumentedWay() throws {
+        func swift(_ name: String) throws -> Result { Self.replay(try vector(name)) }
+        // Two canonically equal keys become one: Swift keeps one spelling and reports a conflict on it.
+        let keys = try swift("look-alike object keys from the two sides")
+        XCTAssertEqual(keys.output["watches"]?.arrayValue?.first?["photoFocus"]?.objectValue?.count, 1)
+        XCTAssertEqual(try swift("look-alike object keys in one object").output["watches"]?.arrayValue?.first?["futureField"]?
+            .objectValue?.count, 2)
+        // Integers a Double cannot hold come back rounded, and one past 2^63 in exponent form.
+        XCTAssertEqual(try swift("integers past 2^53 that a Double cannot hold").output["futureTop"]?.text,
+                       #"{"barcode":9007199254740992,"debt":-9007199254740992}"#)
+        XCTAssertEqual(try swift("integers at or past 2^63").output["watches"]?.arrayValue?.first?["serials"]?.text,
+                       "[9.223372036854776e+18,-9.223372036854776e+18,1.8446744073709552e+19,1e+20]")
+        XCTAssertEqual(try swift("integers that differ only past a Double's precision").conflicts, [])
+        // A whole-float box size counts as a size, so the slots stay where sync.py would empty them.
+        XCTAssertEqual(try swift("a box size written as a whole float").output["boxes"]?.arrayValue?.map { $0["slots"]?.text },
+                       [#"{"0":"w1"}"#, #"{"0":"w2"}"#])
+    }
+
+    /// Where sync.py raises (and so the hub writes nothing), the twin answers quietly, as CollectionMerge
+    /// says at each place. None of these reaches it through CloudSync: local is encoded from
+    /// `CollectionData`, and a remote must decode as one to be installed, so every id is a string and
+    /// settings are an object. (Review A5: answering the whole-list conflict "local" keeps the local list
+    /// whole and drops the remote's edits; unreachable for the same reason.)
+    func testWhereSyncPyRaisesTheTwinAnswersQuietly() throws {
+        let raising = try Self.fixture.get().vectors.filter { $0.raises != nil }
+        XCTAssertEqual(Dictionary(uniqueKeysWithValues: raising.map { ($0.name, $0.raises ?? "") }), [
+            "sync.py raises: a watch with no id": "KeyError",
+            "sync.py raises: a wishlist entry that is not an object": "TypeError",
+            "sync.py raises: settings that are not an object": "AttributeError",
+        ])
+        // An identity list with an entry that has no string id is one conflict on the whole list, and the
+        // remote's list stands until it is answered.
+        for (name, list) in [("sync.py raises: a watch with no id", "watches"),
+                             ("sync.py raises: a wishlist entry that is not an object", "wishlist")] {
+            let vector = try vector(name)
+            let result = Self.replay(vector)
+            XCTAssertEqual(result.conflicts.map(\.path), [[list]], name)
+            XCTAssertEqual(result.conflicts.first?.local?.text, vector.local[list]?.text, name)
+            XCTAssertEqual(result.output[list]?.text, vector.remote[list]?.text, name)
+        }
+        // Settings that are not an object count as empty.
+        let settings = Self.replay(try vector("sync.py raises: settings that are not an object"))
+        XCTAssertEqual(settings.conflicts, [])
+        XCTAssertEqual(settings.output["settings"], json("{}"))
     }
 
     // MARK: JSONValue
