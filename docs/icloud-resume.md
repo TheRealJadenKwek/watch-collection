@@ -19,24 +19,19 @@
   in ~/watch-collection-icloud, uncommitted. It was asked to write docs/p2-progress.md before stopping.
   Its brief: docs/icloud-p2-brief.md.
 
-## Checkpoint state
-- The worktree is on branch `icloud-p2-wip` (local only), commit a43c861 = P2 files written, NOT yet compiled.
-  `icloud-sync` stays at a0c3fdf (pushed). Squash the WIP into one P2 commit on icloud-sync when green.
-- Open P3 gap found by the P2 builder: after an erase (`.purged`), `uploadPhoto`/`writeStatus` keep throwing
-  `.purged` and only `write(over: nil)` re-saves the zone, after the photos. The Mac's "Sync through iCloud again"
-  must re-create the zone first: add a `CloudStore.prepareZone()` (save the zone; never called on its own after an
-  erase, only from the button's restart path), use it in `CloudLink.restartAfterErase`, and drop the fake's
-  stand-in. P2's test 20 covers it.
+## State (2026-11-16 ~11:15 PM, after the account switch)
+- icloud-sync = dec6286: P3+P6, P1, P2 (809243d, 274 tests green, erase-restart gap closed with
+  `CloudStore.prepareZone()` called only by `CloudLink.restartAfterErase`), P7 merged.
+- Known residual risk for the P8 review: `CloudKitStore.write(over: nil)` saves the zone itself; if he erases the zone
+  between a pass's head fetch and its create, and the Mac had no photos to send, the create re-makes the zone.
+- Test 10b was changed to match the plan: a same-name, other-bytes photo is only detected when the upload is refused.
 
 ## Exact next step
-1. Read docs/p2-progress.md. Start a fresh builder (opus xhigh) in ~/watch-collection-icloud on icloud-p2-wip to
-   compile, fix and get P2 green, and to close the P3 gap above. It must not redo P1/P3. Baseline before P2: 246
-   tests green.
-2. When P2 is green: lead reads the diff (or reviewer on opus xhigh if large), commit on icloud-sync, then
-   `git merge icloud-p7` into icloud-sync, rerun tests (sim builds with the entitlements), push.
-3. P4 (app wiring; plan section 11 P4, sections 4, 6, 7, 9), then P5 (bridge + LaunchAgent), then rehearsal
-   (section 13 B, throwaway hub via scratchpad hub/run_hub.py, now pointing at this worktree), P8 review on opus
-   xhigh, P9 rollout (backups first, section 9; fastlane AppStore profile must be regenerated).
+1. P4 builder (opus xhigh) from docs/icloud-p4-brief.md, in this worktree.
+2. Lead commits P4; then P5 (bridge + LaunchAgent; plan section 11 P5).
+3. Rehearsal (section 13 B, throwaway hub via scratchpad hub/run_hub.py pointing at this worktree, Development
+   environment, data roots under the Mac app's container), P8 review on opus xhigh over the whole diff in three
+   sittings, P9 rollout (backups first, section 9; fastlane AppStore profile must be regenerated).
 
 ## Rules that bind this work
 No git add while agents run. Never commit data/ or exports/. Test builds never hit the real hub :8931. Throwaway sims
