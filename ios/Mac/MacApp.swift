@@ -53,6 +53,10 @@ struct WatchCollectionMacApp: App {
                     await store.start()
                 }
                 .onChange(of: scenePhase, initial: true) { _, phase in store.sceneChanged(phase) }
+                #if WC_PERF_BENCH
+                // Bench builds only: records the frames of the first seconds, while the sections are built.
+                .background { PerfLaunchProbe().frame(width: 1, height: 1) }
+                #endif
         }
         .defaultSize(width: 1360, height: 880)
         .commands {

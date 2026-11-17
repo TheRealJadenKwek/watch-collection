@@ -19,6 +19,13 @@ struct WishlistScreen: View {
     @Environment(\.pageMargin) private var margin
     @Environment(\.duo) private var duo
     @AppStorage("wishlistSort") private var sort = Sort.fit.rawValue
+    #if os(macOS)
+    /// The candidate a card last asked to delete, and whether its confirmation is up. On the Mac the screen holds the
+    /// one "Delete ...?" for every card: with every card built, a confirmation on each card cost time on every frame
+    /// of a scroll. Kept after the dialog closes, so its title does not change while it goes.
+    @State private var deleting: WishlistItem?
+    @State private var confirmsDelete = false
+    #endif
 
     enum Sort: String, CaseIterable { case fit = "Best Fit", lowest = "Lowest Price", highest = "Highest Price" }
 
@@ -93,7 +100,7 @@ struct WishlistScreen: View {
                                 withAnimation { proxy.scrollTo("wishlist-\(id)", anchor: .top) }
                             }
                         } else {
-                            LazyVStack(spacing: WatchTheme.gridGap) {
+                            PageStack {
                                 #if os(iOS)
                                 Masthead(kicker: "Wishlist", title: "Next Watch", subtitle: subtitle)
                                     .padding(.horizontal, max(margin - WatchTheme.narrowMargin, 0))
@@ -120,23 +127,20 @@ struct WishlistScreen: View {
                                         .padding(.bottom, WatchTheme.sectionGap - WatchTheme.gridGap)
                                     }
                                     // One column on the phone; as many as fit on the desktop.
-                                    LazyVGrid(columns: Platform.isMac
-                                              ? [GridItem(.adaptive(minimum: 380), spacing: WatchTheme.gridGap, alignment: .top)]
-                                              : [GridItem(.flexible(), alignment: .top)], spacing: WatchTheme.gridGap) {
-                                        ForEach(cards) { item in
-                                            WishlistCard(
-                                                store: store,
-                                                item: item,
-                                                score: store.scores[item.id],
-                                                edit: { editingItem = item },
-                                                pass: { Task { await store.passWishlist(id: item.id) } },
-                                                bought: { boughtItem = item },
-                                                findImage: { findImage(item.id) },
-                                                delete: { Task { await store.deleteWishlist(id: item.id) } },
-                                                showsLenses: lenses(item.id)
-                                            )
-                                            .id("wishlist-\(item.id)")
-                                        }
+                                    CandidateGrid(items: cards) { item in
+                                        WishlistCard(
+                                            store: store,
+                                            item: item,
+                                            score: store.scores[item.id],
+                                            edit: { editingItem = item },
+                                            pass: { Task { await store.passWishlist(id: item.id) } },
+                                            bought: { boughtItem = item },
+                                            findImage: { findImage(item.id) },
+                                            delete: { Task { await store.deleteWishlist(id: item.id) } },
+                                            showsLenses: lenses(item.id),
+                                            askDelete: askDelete(item)
+                                        )
+                                        .id("wishlist-\(item.id)")
                                     }
                                 }
                                 nextMoveSection { id in
@@ -148,6 +152,10 @@ struct WishlistScreen: View {
                             .padding(.horizontal, Platform.isMac ? 24 : WatchTheme.narrowMargin)
                             .padding(.top, Platform.isMac ? 4 : 0)
                             .padding(.bottom, 24)
+                            #if WC_PERF_BENCH && os(macOS)
+                            // Bench builds only: hands this scroll view to the scroll driver.
+                            .background(alignment: .topLeading) { PerfBenchProbe(store: store).frame(width: 1, height: 1) }
+                            #endif
                         }
                     }
                     .mastheadTitle("Wishlist")
@@ -182,6 +190,18 @@ struct WishlistScreen: View {
             .sheet(item: $boughtItem) { item in
                 BoughtSheet(store: store, item: item)
             }
+            #if os(macOS)
+            .confirmationDialog("Delete \(deleting?.name ?? "")?", isPresented: $confirmsDelete, titleVisibility: .visible, presenting: deleting) { item in
+                Button("Delete", role: .destructive) { Task { await store.deleteWishlist(id: item.id) } }
+                Button("Cancel", role: .cancel) {}
+            } message: { _ in
+                Text("The wishlist record and its photos will be removed permanently.")
+            }
+            // A candidate a sync removed while its confirmation was up takes the confirmation with it, as its card did.
+            .onChange(of: store.data?.wishlist.map(\.id) ?? []) { _, ids in
+                if confirmsDelete, let id = deleting?.id, !ids.contains(id) { confirmsDelete = false }
+            }
+            #endif
         }
         .pageAppear()
     }
@@ -283,6 +303,19 @@ struct WishlistScreen: View {
         }
         .padding(.horizontal, WatchTheme.narrowMargin)
         .padding(.bottom, 24)
+    }
+
+    /// How a card asks before deleting its candidate: on the Mac through the screen's one confirmation (`deleting`),
+    /// on the phone with its own, which comes from the card.
+    private func askDelete(_ item: WishlistItem) -> (() -> Void)? {
+        #if os(macOS)
+        return {
+            deleting = item
+            confirmsDelete = true
+        }
+        #else
+        return nil
+        #endif
     }
 
     /// Whether a card's score breakdown is open.
@@ -508,6 +541,104 @@ struct NextMoveSuggestionCard: View {
     }
 }
 
+/// The wishlist page's stack. Lazy on the phone, where it builds what scrolls into view. On the Mac every part of the
+/// page is built once instead: there a lazy stack built each row of cards as it scrolled in, about 25 ms a card, and
+/// missed frames all the way down the page.
+private struct PageStack<Content: View>: View {
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        #if os(macOS)
+        VStack(spacing: WatchTheme.gridGap) { content }
+        #else
+        LazyVStack(spacing: WatchTheme.gridGap) { content }
+        #endif
+    }
+}
+
+/// The cards under the top pick: one column on the phone, in a lazy grid; as many as fit on the desktop, every card
+/// built once (`AdaptiveCardGrid`, laid out as the lazy grid with an adaptive column of 380 laid them out).
+private struct CandidateGrid<Card: View>: View {
+    let items: [WishlistItem]
+    @ViewBuilder let card: (WishlistItem) -> Card
+    #if os(macOS)
+    /// How many cards are built yet. Built in one go, the cards stalled the window for over a second (36 of them)
+    /// when the page was first made, so the first rows come at once and the rest a row at a time.
+    @State private var built = 4
+    #endif
+
+    var body: some View {
+        #if os(macOS)
+        AdaptiveCardGrid(minimum: 380, spacing: WatchTheme.gridGap) {
+            ForEach(items.prefix(built)) { card($0) }
+        }
+        // A scroll moves the grid as one piece. Without the group every card in it was moved on every frame, which
+        // with every card built took most of a frame.
+        .geometryGroup()
+        // Cards not built yet come a row at a time, also when a sync or a restore brings many at once after the page
+        // was made. A count that changes restarts this from where it got to.
+        .task(id: items.count) {
+            while built < items.count {
+                // A frame or so between rows, so each row is its own short update.
+                guard (try? await Task.sleep(for: .milliseconds(16))) != nil else { return }
+                built += 2
+            }
+        }
+        #else
+        LazyVGrid(columns: [GridItem(.flexible(), alignment: .top)], spacing: WatchTheme.gridGap) {
+            ForEach(items) { card($0) }
+        }
+        #endif
+    }
+}
+
+/// A grid laid out as `LazyVGrid` lays out one `GridItem(.adaptive(minimum:), spacing:, alignment: .top)`, with every
+/// card built at once: as many equal columns at least `minimum` wide as fit, `spacing` between columns and between
+/// rows, each row as tall as its tallest card, and each card at the top of its cell, centred across it.
+struct AdaptiveCardGrid: SwiftUI.Layout {
+    var minimum: CGFloat
+    var spacing: CGFloat
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        // An unlimited width (a scroll view along it) is laid out at one column, as the lazy grid did, not at infinity.
+        let width = proposal.width.flatMap { $0.isFinite ? $0 : nil } ?? minimum
+        return CGSize(width: width, height: grid(width: width, subviews: subviews).height)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let grid = grid(width: bounds.width, subviews: subviews)
+        // Each card is offered its column's width, as it was when it was measured.
+        let cell = ProposedViewSize(width: grid.column, height: nil)
+        for (subview, frame) in zip(subviews, grid.frames) {
+            subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY), proposal: cell)
+        }
+    }
+
+    /// The columns that fit across `width`: one, and one more for each further `minimum` and `spacing`.
+    func columns(in width: CGFloat) -> Int {
+        guard width.isFinite, width > 0 else { return 1 }
+        return max(1, Int(((width + spacing) / (minimum + spacing)).rounded(.down)))
+    }
+
+    /// Each card's frame, the width of a column, and the height of the whole grid.
+    func grid(width: CGFloat, subviews: Subviews) -> (frames: [CGRect], column: CGFloat, height: CGFloat) {
+        let count = columns(in: width)
+        let column = max(0, (width - spacing * CGFloat(count - 1)) / CGFloat(count))
+        let sizes = subviews.map { $0.sizeThatFits(ProposedViewSize(width: column, height: nil)) }
+        var frames: [CGRect] = []
+        var top: CGFloat = 0
+        for start in stride(from: 0, to: sizes.count, by: count) {
+            let row = sizes[start..<min(start + count, sizes.count)]
+            for (index, size) in row.enumerated() {
+                let left = CGFloat(index) * (column + spacing) + (column - size.width) / 2
+                frames.append(CGRect(x: left, y: top, width: size.width, height: size.height))
+            }
+            top += (row.map(\.height).max() ?? 0) + spacing
+        }
+        return (frames, column, max(0, top - spacing))
+    }
+}
+
 struct WishlistCard: View {
     @ObservedObject var store: AppStore
     let item: WishlistItem
@@ -518,6 +649,9 @@ struct WishlistCard: View {
     let findImage: () -> Void
     let delete: () -> Void
     @Binding var showsLenses: Bool
+    /// Asks the screen to confirm deleting this candidate, where the screen holds the confirmation (the Mac). Without
+    /// it the card asks itself, and calls `delete` once confirmed.
+    var askDelete: (() -> Void)? = nil
     @State private var confirmDelete = false
 
     /// Width / height of the wishlist thumbnail: the tile's own shape, like every other card picture, so a render
@@ -626,16 +760,15 @@ struct WishlistCard: View {
             Divider()
             deleteButton
         }
-        .confirmationDialog("Delete \(item.name)?", isPresented: $confirmDelete, titleVisibility: .visible) {
-            Button("Delete", role: .destructive, action: delete)
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("The wishlist record and its photos will be removed permanently.")
-        }
+        .modifier(CardDeleteConfirmation(name: item.name, isPresented: $confirmDelete, delete: delete, attached: askDelete == nil))
     }
 
     private var deleteButton: some View {
-        Button(role: .destructive) { confirmDelete = true } label: { Label("Delete from Wishlist", systemImage: "trash") }
+        Button(role: .destructive) {
+            if let askDelete { askDelete() } else { confirmDelete = true }
+        } label: {
+            Label("Delete from Wishlist", systemImage: "trash")
+        }
     }
 
     private func actionRow(tryPill: Bool) -> some View {
@@ -725,6 +858,28 @@ struct WishlistCard: View {
         }
         .buttonStyle(.plain)
         .accessibilityLabel(showsLenses ? "Hide score breakdown" : "Show score breakdown")
+    }
+}
+
+/// A card's own "Delete ...?" confirmation, where the screen does not hold one for every card
+/// (`WishlistCard.askDelete`).
+private struct CardDeleteConfirmation: ViewModifier {
+    let name: String
+    @Binding var isPresented: Bool
+    let delete: () -> Void
+    let attached: Bool
+
+    func body(content: Content) -> some View {
+        if attached {
+            content.confirmationDialog("Delete \(name)?", isPresented: $isPresented, titleVisibility: .visible) {
+                Button("Delete", role: .destructive, action: delete)
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("The wishlist record and its photos will be removed permanently.")
+            }
+        } else {
+            content
+        }
     }
 }
 

@@ -185,6 +185,10 @@ final class AppStore: ObservableObject {
 
     /// The hub address: in DEBUG `-WCHub` stands in for the saved one for this run (only with `-WCDataRoot`).
     static var initialSyncAddress: String {
+        #if WC_PERF_BENCH
+        // Bench builds only: always the throwaway hub, never a saved address or the real one.
+        return "http://127.0.0.1:8957"
+        #endif
         #if DEBUG
         let hub = AppPaths.hub
         let ownData = AppPaths.dataRoot != nil
