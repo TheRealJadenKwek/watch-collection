@@ -65,3 +65,17 @@ WATCH_BOX_KEY_FILE. Personal project: review on opus xhigh, not Fable.
   the merge, as at v5.0), Mac Release signed (Production) installed, P6 check in Production, 13 C, LaunchAgent via
   tools/bridge/install.sh, fastlane beta (LC_ALL=en_US.UTF-8; sigh regenerates the AppStore profile), 13 D needs him
   to open the TestFlight build once (ask-jaden).
+
+## ROLLED OUT 2026-11-17 ~2:25 AM CST (main 1ad2f74)
+- Backups: ~/Offload/watch-collection/backups/pre-icloud-20261117-0209/ (hub watches.json, sync-history, photos; Mac
+  container Application Support and prefs; manifest.sha).
+- P6 check in Production: roundTrip, conflictSeen, environment Production.
+- Mac Release 5.1 (2), Production, installed at /Applications; copy in releases/v5.1-mac-icloud-20261117-0211.
+  First open created the Production document: 266/266 photos, epoch 14C5D619, revision fae23061 = hub projection =
+  Mac data. LaunchAgent com.jaden.watch-collection-bridge installed (tools/bridge/install.sh). Test wishlist item
+  through the hub reached iCloud in 4 s via the bridge; removed in 4 s; fingerprints back to fae23061.
+- TestFlight 5.1 (32) VALID. 13 D waits on him opening the phone app once (ask-jaden Q186, sends 8 AM): then check
+  status-iphone in the Mac's cloud-status.json (at fresh, revision equal) and a hub wishlist add reaching the phone.
+- Rollback: `tools/bridge/install.sh remove`; Mac app from releases/mac-before-v5.1-icloud-20261117-0211; TestFlight
+  build 31. Hub untouched. Cloud data can stay.
+- Later items: docs/icloud-polish.md 8 to 17.
