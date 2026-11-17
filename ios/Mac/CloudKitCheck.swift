@@ -17,8 +17,43 @@ import UniformTypeIdentifiers
 /// sandboxed, so the folder sits in its own container. In Development the run also creates the schema: every field
 /// of all three types is saved at least once.
 enum CloudKitCheck {
+    /// `Entry` reads this before anything else, so `-WCCloudKitResetZone 1` is answered here and ends the process.
     static var folder: URL? {
-        UserDefaults.standard.string(forKey: "WCCloudKitCheck").map { URL(filePath: $0, directoryHint: .isDirectory) }
+        if UserDefaults.standard.bool(forKey: "WCCloudKitResetZone") { resetZoneAndExit() }
+        return UserDefaults.standard.string(forKey: "WCCloudKitCheck").map { URL(filePath: $0, directoryHint: .isDirectory) }
+    }
+
+    /// `-WCCloudKitResetZone 1`: deletes the `Collection` zone (the document and every photo in it), so a rehearsal's
+    /// Mac creates the document again, and exits: 0 when the zone is gone, 1 on an error or after 60 s, 2 refused.
+    /// It refuses unless the signed environment entitlement is Development, so it never reaches Production.
+    static func resetZoneAndExit() -> Never {
+        let environment = entitlement("com.apple.developer.icloud-container-environment") as? String
+        guard environment == "Development" else {
+            endReset(2, "refused: the signed iCloud environment is \(environment ?? "not set"), not Development")
+        }
+        guard CloudKitStore.hasContainerEntitlement() else {
+            endReset(2, "refused: this build is not signed with \(CloudKitStore.containerID)")
+        }
+        DispatchQueue.global().asyncAfter(deadline: .now() + timeout) { endReset(1, "timed out after \(Int(timeout)) s") }
+        Task {
+            let zone = CloudKitStore.zoneID
+            do {
+                let database = CKContainer(identifier: CloudKitStore.containerID).privateCloudDatabase
+                let deleted = try await database.modifyRecordZones(saving: [], deleting: [zone]).deleteResults
+                if case .failure(let error)? = deleted[zone] { throw error }
+                endReset(0, "deleted the \(zone.zoneName) zone in Development")
+            } catch let error as CKError where error.code == .zoneNotFound {
+                endReset(0, "no \(zone.zoneName) zone in Development, nothing to delete")
+            } catch {
+                endReset(1, "the \(zone.zoneName) zone was not deleted: \(describe(error))")
+            }
+        }
+        dispatchMain()
+    }
+
+    private static func endReset(_ code: Int32, _ text: String) -> Never {
+        FileHandle.standardError.write(Data("CloudKit reset: \(text)\n".utf8))
+        exit(code)
     }
 
     static let zoneID = CKRecordZone.ID(zoneName: "CollectionCheck", ownerName: CKCurrentUserDefaultName)

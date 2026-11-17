@@ -146,8 +146,8 @@ final class SyncLockTests: XCTestCase {
         XCTAssertLessThan(Date().timeIntervalSince(start), 0.5, "the window is not held up")
         let hold = HoldBox()
         Task { hold.value = await app.whenReady() }
-        // Many retries pass (the old code gave up waiting after its patience here and opened the library anyway).
-        Thread.sleep(forTimeInterval: 1)
+        // Past the old 5 s patience, after which the old code opened the library anyway.
+        Thread.sleep(forTimeInterval: 6)
         XCTAssertNil(hold.value, "the library stays closed while the tick has the lock")
         XCTAssertFalse(app.isHeld)
         XCTAssertTrue(bridge.isWanted, "still asking: a tick that starts now leaves at once")

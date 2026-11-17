@@ -52,6 +52,10 @@ has_bridge() {
 }
 
 if [[ "${1:-}" == "remove" ]]; then
+    if [[ "$DRY_RUN" == 1 ]]; then
+        echo "Would unload $DOMAIN/$LABEL and delete $TARGET. Nothing was changed."
+        exit 0
+    fi
     unload
     rm -f "$TARGET"
     echo "Removed $LABEL."
@@ -60,6 +64,13 @@ fi
 
 BINARY="${1:-$DEFAULT_BINARY}"
 if [[ $# -gt 0 ]]; then shift; fi
+for argument in "$@"; do
+    case "$argument" in
+        --dry-run|--label|--watch)
+            echo "$argument must come before the binary; after it, it would be passed to the bridge. Nothing was written or loaded." >&2
+            exit 1 ;;
+    esac
+done
 if [[ ! -x "$BINARY" ]]; then
     echo "No executable at $BINARY" >&2
     exit 1

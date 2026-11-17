@@ -1053,6 +1053,8 @@ final class AppStore: ObservableObject {
         // Settings can be open while the app still waits for the library lock; a restore writes the library, so it
         // waits too (a bridge tick steps aside within a second).
         _ = await Entry.library.whenReady()
+        // And for the app's own load: before `start()` the hub base is not read yet, so a save here would lose it.
+        await start()
         #endif
         do {
             try await PhotoStore.shared.restore(imported.photos)
