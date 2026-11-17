@@ -71,7 +71,13 @@ struct SyncFailureLog: Equatable {
     /// would otherwise land as if it were this visit's). One cut short says nothing about the Mac and changes
     /// nothing either.
     mutating func failed(_ error: Error, in attemptSession: Int) {
-        guard attemptSession == session, let cause = SyncFailure.classify(error) else { return }
+        guard let cause = SyncFailure.classify(error) else { return }
+        failed(cause, in: attemptSession)
+    }
+
+    /// The same for a cause already worked out (the iCloud link reports its own).
+    mutating func failed(_ cause: SyncFailure, in attemptSession: Int) {
+        guard attemptSession == session else { return }
         failure = cause
     }
 }
@@ -87,6 +93,17 @@ enum SyncHealth: Equatable {
     case conflicts(Int)
     /// The last attempt failed and the last good sync is old enough to matter (or there has never been one).
     case stale(SyncFailure, since: Date?)
+    // The phone syncs through iCloud (docs/icloud-plan.md section 7):
+    /// No iCloud account on this device, or it could not be read.
+    case cloudSignedOut
+    /// iCloud storage is full: changes stay here until there is room.
+    case cloudFull
+    /// The other device's choices still waiting (from its `Status` record).
+    case choiceOnOtherDevice(Int)
+    /// The iCloud copy was written by a newer build.
+    case cloudNewerFormat
+    /// He erased the app's iCloud data; the Mac starts it again.
+    case cloudErased
 
     /// How long after a good sync a failed attempt stays quiet. The phone tries when it opens and then every
     /// 60 seconds, so three minutes is three missed attempts in a row while it is open: a real outage, not a
@@ -96,6 +113,8 @@ enum SyncHealth: Equatable {
     /// - Parameters:
     ///   - conflicts: the changes the Mac found made on both devices.
     ///   - resolutions: the choices made so far, by conflict id.
+    ///   - cloud: the iCloud link, when this device has one. Only when its screens speak for iCloud (a phone that
+    ///     has joined) does it change anything: then the address does not matter, and iCloud's own states speak.
     static func evaluate(
         enabled: Bool,
         address: String,
@@ -103,9 +122,25 @@ enum SyncHealth: Equatable {
         resolutions: [String: String],
         failure: SyncFailure?,
         lastSync: Date?,
-        now: Date
+        now: Date,
+        cloud: CloudDisplay? = nil
     ) -> SyncHealth {
         guard enabled else { return .off }
+        if let cloud, cloud.active == .cloud {
+            let waiting = conflicts.filter { resolutions[$0.id] == nil }.count
+            if waiting > 0 { return .conflicts(waiting) }
+            switch cloud.wait {
+            case .erased?: return .cloudErased
+            case .newerFormat?: return .cloudNewerFormat
+            case .noAccount?: return .cloudSignedOut
+            case .full?: return .cloudFull
+            default: break
+            }
+            if cloud.otherConflicts > 0 { return .choiceOnOtherDevice(cloud.otherConflicts) }
+            guard let failure else { return .healthy }
+            if let lastSync, now.timeIntervalSince(lastSync) < staleAfter { return .healthy }
+            return .stale(failure, since: lastSync)
+        }
         guard !address.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return .noAddress }
         // No later attempt can succeed with this address, so it does not wait out the three minutes.
         if failure == .invalidAddress { return .badAddress }
@@ -157,7 +192,8 @@ struct SyncNotice: Equatable {
     var headline: String
     /// When it last synced and what to do, as one or two plain sentences.
     var message: String
-    var action: Action
+    /// nil when there is nothing to do on this device (the panel then has no pill).
+    var action: Action?
     var actionLabel: String
     /// Needs attention (red dot): what is on screen may be out of date. Otherwise a setting he chose (grey dot).
     var urgent: Bool
@@ -229,6 +265,36 @@ extension SyncHealth {
                 message: "\(last) \(fix)",
                 action: .retry, actionLabel: "Try again", urgent: true
             )
+        case .cloudSignedOut:
+            return SyncNotice(
+                headline: "Signed out of iCloud",
+                message: CloudSyncCopy.signedOut(device: device),
+                action: .retry, actionLabel: "Try again", urgent: true
+            )
+        case .cloudFull:
+            return SyncNotice(
+                headline: "iCloud is full",
+                message: CloudSyncCopy.full(device: device),
+                action: nil, actionLabel: "", urgent: true
+            )
+        case let .choiceOnOtherDevice(count):
+            return SyncNotice(
+                headline: "Choice waiting",
+                message: CloudSyncCopy.choiceWaiting(count, device: device),
+                action: nil, actionLabel: "", urgent: true
+            )
+        case .cloudNewerFormat:
+            return SyncNotice(
+                headline: "Update needed",
+                message: CloudSyncCopy.newerFormat(device: device),
+                action: nil, actionLabel: "", urgent: true
+            )
+        case .cloudErased:
+            return SyncNotice(
+                headline: "iCloud copy erased",
+                message: CloudSyncCopy.erased(device: device),
+                action: nil, actionLabel: "", urgent: true
+            )
         }
     }
 
@@ -249,5 +315,93 @@ extension SyncHealth {
         day.calendar = calendar
         day.timeZone = calendar.timeZone
         return "Last synced on \(date.formatted(day))."
+    }
+}
+
+/// The words for the iCloud link, from docs/icloud-plan.md section 7, for this device ("iPhone" or "Mac").
+enum CloudSyncCopy {
+    /// The device on the other side of iCloud.
+    static func other(_ device: String) -> String { device == "Mac" ? "iPhone" : "Mac" }
+
+    /// The phone's sync line once iCloud carries it.
+    static func carrier(device: String) -> String { "Syncs with your \(other(device)) through iCloud." }
+
+    static func signedOut(device: String) -> String { "Sign in to iCloud to sync with your \(other(device))." }
+
+    static func full(device: String) -> String { "iCloud storage is full, so changes stay on this \(device)." }
+
+    static func choiceWaiting(_ count: Int, device: String) -> String {
+        count == 1
+            ? "1 change needs your choice on your \(other(device))."
+            : "\(count) changes need your choice on your \(other(device))."
+    }
+
+    static func newerFormat(device: String) -> String { "Update Watch Collection on this \(device) to keep syncing." }
+
+    /// On the Mac it comes with the one button, "Sync through iCloud again"; the phone can only point at the Mac.
+    static func erased(device: String) -> String {
+        let base = "The iCloud copy was erased. Nothing on this \(device) was removed."
+        return device == "Mac" ? base : "\(base) Open Watch Collection on your Mac to start iCloud sync again."
+    }
+
+    static let restartButton = "Sync through iCloud again"
+
+    static func sending(_ done: Int, of total: Int) -> String { "Sending \(done) of \(total) photos to iCloud." }
+
+    /// The Mac with no document and no clean hub pass to make it from (section 6).
+    static let needsHubFirst = "iCloud sync starts once this Mac reaches its library."
+
+    /// The sentence the sync line adds for the iCloud link's state, or nil when there is nothing to say (settled,
+    /// or a pause the next tick deals with quietly). The phone's banner says the same for the states it covers.
+    static func sentence(_ cloud: CloudDisplay, device: String) -> String? {
+        switch cloud.wait {
+        case .noAccount?: return signedOut(device: device)
+        case .full?: return full(device: device)
+        case .newerFormat?: return newerFormat(device: device)
+        case .erased?: return erased(device: device)
+        case let .sendingPhotos(done, total)?: return sending(done, of: total)
+        case .needsHubFirst?: return needsHubFirst
+        case .noDocument?, .offline?, .busy?, .failed?, nil: break
+        }
+        return cloud.otherConflicts > 0 ? choiceWaiting(cloud.otherConflicts, device: device) : nil
+    }
+
+    /// "Last synced 2 min ago".
+    static func lastSynced(_ date: Date?, now: Date) -> String? {
+        date.map { "Last synced \(ago($0, now: now))" }
+    }
+
+    /// "Mac's library checked in 9:41 PM": when the Mac last reached the hub (`status-mac.hubAt`). Information only;
+    /// the MacBook sleeping overnight is normal.
+    static func macCheckedIn(_ date: Date?, now: Date, calendar: Calendar = .current, locale: Locale = .current) -> String? {
+        guard let date else { return nil }
+        var time = Date.FormatStyle(date: .omitted, time: .shortened)
+        time.locale = locale
+        time.calendar = calendar
+        time.timeZone = calendar.timeZone
+        if calendar.isDate(date, inSameDayAs: now) { return "Mac's library checked in \(date.formatted(time))" }
+        if let dayBefore = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: dayBefore) {
+            return "Mac's library checked in yesterday at \(date.formatted(time))"
+        }
+        var day = Date.FormatStyle().month(.abbreviated).day()
+        day.locale = locale
+        day.calendar = calendar
+        day.timeZone = calendar.timeZone
+        return "Mac's library checked in on \(date.formatted(day))"
+    }
+
+    /// The Mac's line for the phone: "iPhone, 2 min ago".
+    static func phoneSeen(_ date: Date, now: Date) -> String { "iPhone, \(ago(date, now: now))" }
+
+    /// "just now", "2 min ago", "3 hr ago", "2 days ago". A clock set back reads as just now.
+    static func ago(_ date: Date, now: Date) -> String {
+        let seconds = max(0, now.timeIntervalSince(date))
+        if seconds < 60 { return "just now" }
+        let minutes = Int(seconds / 60)
+        if minutes < 60 { return "\(minutes) min ago" }
+        let hours = minutes / 60
+        if hours < 24 { return "\(hours) hr ago" }
+        let days = hours / 24
+        return days == 1 ? "1 day ago" : "\(days) days ago"
     }
 }

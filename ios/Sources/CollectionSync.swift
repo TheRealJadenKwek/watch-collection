@@ -11,8 +11,7 @@ struct SyncCheckpoint: Codable {
 
 enum SyncDisk {
     static var url: URL {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("WatchCollection/sync.json")
+        AppPaths.collectionFolder.appendingPathComponent("sync.json")
     }
     static func load() -> SyncCheckpoint? {
         guard let bytes = try? Data(contentsOf: url) else { return nil }
@@ -31,6 +30,8 @@ struct SyncConflict: Decodable, Identifiable {
     let remote: SyncValue?
     let localDeleted: Bool
     let remoteDeleted: Bool
+    /// The link that asked, so the choice goes back to that link's `resolutions`. Not in the hub's JSON.
+    private(set) var link: SyncLinkKind = .hub
     /// Wording worked out from the collection, so a box space reads "Black Box, space 6".
     private var label: Label? = nil
 
@@ -42,6 +43,23 @@ struct SyncConflict: Decodable, Identifiable {
 
     private enum CodingKeys: String, CodingKey {
         case id, path, local, remote, localDeleted, remoteDeleted
+    }
+
+    /// A conflict from this device's own merge with iCloud: "local" is this device, "remote" is iCloud.
+    init(_ conflict: CollectionMerge.Conflict) {
+        id = conflict.id
+        path = conflict.path
+        local = conflict.local.map(SyncValue.init)
+        remote = conflict.remote.map(SyncValue.init)
+        localDeleted = conflict.localDeleted
+        remoteDeleted = conflict.remoteDeleted
+        link = .cloud
+    }
+
+    func tagged(_ link: SyncLinkKind) -> SyncConflict {
+        var tagged = self
+        tagged.link = link
+        return tagged
     }
 
     var title: String { label?.title ?? path.joined(separator: " / ") }
@@ -76,6 +94,16 @@ indirect enum SyncValue: Decodable {
         else if let v = try? c.decode(String.self) { self = .string(v) }
         else if let v = try? c.decode([SyncValue].self) { self = .array(v) }
         else { self = .object(try c.decode([String: SyncValue].self)) }
+    }
+    init(_ value: JSONValue) {
+        switch value {
+        case .null: self = .null
+        case let .bool(v): self = .bool(v)
+        case let .number(v): self = .number(v)
+        case let .string(v): self = .string(v)
+        case let .array(v): self = .array(v.map(SyncValue.init))
+        case let .object(v): self = .object(v.mapValues(SyncValue.init))
+        }
     }
     var description: String {
         switch self {
@@ -141,14 +169,26 @@ actor CollectionSyncClient {
         try JSONDecoder().decode(SyncSnapshot.self, from: await request("api/sync"))
     }
 
-    func exchange(base: CollectionData?, local: CollectionData, resolutions: [String: String], remote: SyncSnapshot) async throws -> SyncSnapshot {
+    /// - Parameter dropping: which references to files gone on this device and the hub may be dropped. nil drops
+    ///   them all, as before iCloud; on a Mac with the cloud link on it is the names iCloud has said it does not
+    ///   have, and any other such file skips this exchange (nil is returned) until the cloud link has fetched it or
+    ///   heard it is not there (docs/icloud-plan.md section 5).
+    func exchange(base: CollectionData?, local: CollectionData, resolutions: [String: String], remote: SyncSnapshot,
+                  dropping: Set<String>? = nil) async throws -> SyncSnapshot? {
         var local = local
+        let assets = Self.uploads(from: local, hub: remote.data, hubFiles: remote.photos)
+        let gone = Set(assets.filter { asset in
+            PhotoStore.localURL(for: asset).map { !FileManager.default.fileExists(atPath: $0.path) } ?? true
+        }.map { $0.directory + "/" + $0.filename })
+        if let dropping, !gone.isSubset(of: dropping) { return nil }
         var lost: Set<String> = []
-        for asset in Self.uploads(from: local, hub: remote.data, hubFiles: remote.photos) {
+        for asset in assets {
             try Task.checkCancellation()
             guard let file = PhotoStore.localURL(for: asset), let bytes = try? Data(contentsOf: file) else {
                 // Gone on both sides (e.g. a partial restore): drop the reference instead of blocking sync forever.
-                lost.insert(asset.directory + "/" + asset.filename)
+                let key = asset.directory + "/" + asset.filename
+                if let dropping, !dropping.contains(key) { return nil }
+                lost.insert(key)
                 continue
             }
             let body = try JSONEncoder().encode(["data": bytes.base64EncodedString()])

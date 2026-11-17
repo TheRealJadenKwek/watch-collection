@@ -104,36 +104,60 @@ struct SettingsView: View {
         Section("Storage") {
             LabeledContent("Collection", value: "On this \(Platform.deviceName)")
             LabeledContent("Connection required", value: "No")
-            Text(Platform.isMac ? "Your collection and photos are kept on this Mac and work offline. Sync shares changes with your iPhone through this Mac's sync service." : "Your collection and photos stay on this iPhone and work offline. Sync shares changes when your Mac is reachable through Tailscale.")
+            Text(Platform.isMac ? "Your collection and photos are kept on this Mac and work offline. Sync shares changes with your iPhone through this Mac's sync service." : cloudCarries ? "Your collection and photos stay on this iPhone and work offline. Sync shares changes with your Mac through iCloud." : "Your collection and photos stay on this iPhone and work offline. Sync shares changes when your Mac is reachable through Tailscale.")
                 .font(.caption)
                 .foregroundStyle(Color.secondary)
         }
     }
 
+    /// iCloud carries this phone's sync: the address is not used, and the lines speak for iCloud.
+    private var cloudCarries: Bool { status.cloud?.carriesPhone == true }
+
     private var syncSection: some View {
         Section("Automatic sync") {
             Toggle("Sync with my Mac", isOn: $syncEnabled)
                 .tint(.green)
-            TextField("http://your-mac:8931", text: $syncAddress)
-                .textInputAutocapitalization(.never)
-                .autocorrectionDisabled()
-                .keyboardType(.URL)
-                .accessibilityLabel("Mac sync address")
+            if !cloudCarries {
+                TextField("http://your-mac:8931", text: $syncAddress)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .keyboardType(.URL)
+                    .accessibilityLabel("Mac sync address")
+            }
             Button("Apply sync settings") {
                 Task { await store.configureSync(enabled: syncEnabled, address: syncAddress) }
             }
             .disabled(store.isSyncing)
-            LabeledContent("Status", value: store.syncMessage)
-                .font(.caption)
-            if let date = store.lastSync {
-                LabeledContent("Last synced", value: date.formatted(date: .abbreviated, time: .shortened))
+            if cloudCarries {
+                cloudLines
+            } else {
+                LabeledContent("Status", value: store.syncMessage)
                     .font(.caption)
+                if let date = store.lastSync {
+                    LabeledContent("Last synced", value: date.formatted(date: .abbreviated, time: .shortened))
+                        .font(.caption)
+                }
+                if Platform.isMac, status.cloud != nil, let phone = status.lastPhoneSync {
+                    Text(CloudSyncCopy.phoneSeen(phone, now: Date()))
+                        .font(.caption)
+                        .foregroundStyle(Color.secondary)
+                }
+            }
+            if let cloud = status.cloud, let sentence = CloudSyncCopy.sentence(cloud, device: Platform.deviceName) {
+                Text(sentence)
+                    .font(.caption)
+                if Platform.isMac, cloud.wait == .erased {
+                    Button(CloudSyncCopy.restartButton) {
+                        Task { await store.restartCloudAfterErase() }
+                    }
+                    .disabled(store.isSyncing)
+                }
             }
             Button(store.isSyncing ? "Syncing..." : "Sync now") {
                 Task { await store.syncNow() }
             }
             .disabled(store.isSyncing || !store.syncEnabled)
-            Text(Platform.isMac ? "Sync runs every 15 seconds while this app is open, and right after every edit. The iPhone picks up changes when it opens or refreshes, as long as Tailscale is connected." : "Sync runs when you open the app, after edits, and when a connection returns. iOS chooses when background refresh runs. Keep your Mac awake and Tailscale connected on both devices.")
+            Text(syncExplanation)
                 .font(.caption)
                 .foregroundStyle(Color.secondary)
             ForEach(store.syncConflicts) { conflict in
@@ -150,7 +174,46 @@ struct SettingsView: View {
                     if resolvedConflicts.contains(conflict.id) { Text("Choice saved").font(.caption) }
                 }
             }
+            // The phone's one iCloud switch, at the bottom: it only flips which link runs (section 6).
+            if !Platform.isMac, let cloud = status.cloud {
+                Toggle("Sync directly with the Mac instead", isOn: Binding(
+                    get: { cloud.preferHub },
+                    set: { on in Task { await store.setPreferHub(on) } }
+                ))
+                .tint(.green)
+                .disabled(store.isSyncing)
+            }
         }
+    }
+
+    /// The phone's sync line once iCloud carries it: "Syncs with your Mac through iCloud.", when it last synced,
+    /// and when the Mac's library last checked in (plain information: the MacBook asleep overnight is normal).
+    @ViewBuilder
+    private var cloudLines: some View {
+        let now = Date()
+        Text(CloudSyncCopy.carrier(device: Platform.deviceName))
+            .font(.caption)
+        if let last = CloudSyncCopy.lastSynced(status.cloud?.lastSync ?? store.lastSync, now: now) {
+            Text(last)
+                .font(.caption)
+                .foregroundStyle(Color.secondary)
+        }
+        if let mac = CloudSyncCopy.macCheckedIn(status.cloud?.macHubAt, now: now) {
+            Text(mac)
+                .font(.caption)
+                .foregroundStyle(Color.secondary)
+        }
+    }
+
+    private var syncExplanation: String {
+        if Platform.isMac {
+            return status.cloud == nil
+                ? "Sync runs every 15 seconds while this app is open, and right after every edit. The iPhone picks up changes when it opens or refreshes, as long as Tailscale is connected."
+                : "Sync runs every 15 seconds while this app is open, and right after every edit. The iPhone picks up changes through iCloud when it opens or refreshes."
+        }
+        return cloudCarries
+            ? "Sync runs when you open the app, after edits, and every 20 seconds while it is open. iOS chooses when background refresh runs."
+            : "Sync runs when you open the app, after edits, and when a connection returns. iOS chooses when background refresh runs. Keep your Mac awake and Tailscale connected on both devices."
     }
 
     private func choose(_ conflict: SyncConflict, _ choice: String) {

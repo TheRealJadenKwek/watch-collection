@@ -34,11 +34,15 @@ final class SyncStatus: ObservableObject {
     @Published var conflicts: [SyncConflict] = []
     /// The choices made so far for `conflicts`, by conflict id. A conflict with a choice no longer holds sync up.
     @Published var resolutions: [String: String] = [:]
+    /// The last settled pass of either link.
     @Published var lastSync: Date?
+    /// The Mac: when the iPhone last finished a sync, through the hub or through iCloud (`status-iphone.at`).
     @Published var lastPhoneSync: Date?
     /// Why an attempt of this session did not finish; nil once one reaches the Mac. The store's `SyncFailureLog`
     /// sets it, and `SyncHealth` reads it.
     @Published var failure: SyncFailure?
+    /// The iCloud link, for the screens; nil on a device with no iCloud link.
+    @Published var cloud: CloudDisplay?
 }
 
 @MainActor
@@ -59,22 +63,29 @@ final class AppStore: ObservableObject {
         get { status.isSyncing }
         set { if status.isSyncing != newValue { status.isSyncing = newValue } }
     }
-    private(set) var syncConflicts: [SyncConflict] {
-        get { status.conflicts }
-        set { if !(status.conflicts.isEmpty && newValue.isEmpty) { status.conflicts = newValue } }
+    /// Every change waiting for a choice, from either link.
+    var syncConflicts: [SyncConflict] { status.conflicts }
+    /// The last settled pass of either link.
+    var lastSync: Date? { status.lastSync }
+    /// The changes each link is waiting on, and the choices made for them. `status` shows them together.
+    private var conflictSet = SyncConflictSet() {
+        didSet {
+            let all = conflictSet.all
+            if !(status.conflicts.isEmpty && all.isEmpty) { status.conflicts = all }
+            let resolutions = conflictSet.resolutions
+            if status.resolutions != resolutions { status.resolutions = resolutions }
+        }
     }
-    private(set) var lastSync: Date? {
-        get { status.lastSync }
-        set { status.lastSync = newValue }
+    /// The hub link's last success, kept in `sync.json`.
+    private var hubLastSuccess: Date? {
+        didSet { showLastSync() }
     }
-    private(set) var lastPhoneSync: Date? {
-        get { status.lastPhoneSync }
-        set { if status.lastPhoneSync != newValue { status.lastPhoneSync = newValue } }
+    /// When the hub last heard from a device other than this Mac (its `lastRemoteSync`).
+    private var hubPhoneSync: Date? {
+        didSet { showPhoneSync() }
     }
-    private var syncResolutions: [String: String] {
-        get { status.resolutions }
-        set { if status.resolutions != newValue { status.resolutions = newValue } }
-    }
+    /// The Mac: `status-iphone.at` as the last cloud pass read it.
+    private var phoneStatusAt: Date?
     /// When the failure the sync notice reads is set and cleared; `status.failure` follows it.
     private var syncFailures = SyncFailureLog() {
         didSet { if status.failure != syncFailures.failure { status.failure = syncFailures.failure } }
@@ -84,8 +95,7 @@ final class AppStore: ObservableObject {
     @Published private(set) var boxTrial = BoxTrial.load()
     /// What the Boxes tab should show when it next appears (set by the watch page and the wishlist).
     @Published var boxIntent: BoxIntent?
-    @Published private(set) var syncAddress = UserDefaults.standard.string(forKey: "syncAddress")
-        ?? LegacyServerConfiguration.migrationURL ?? Platform.defaultSyncAddress
+    @Published private(set) var syncAddress = AppStore.initialSyncAddress
 
     static let backgroundSyncID = "com.jadenkwek.watchcollection.refresh"
     private var syncBase: CollectionData?
@@ -103,11 +113,50 @@ final class AppStore: ObservableObject {
     /// The hub of this launch's last completed sync keeps boxes (its snapshot lists "boxes" in its features).
     @Published private(set) var hubSupportsBoxes = false
 
+    // The iCloud link (docs/icloud-plan.md). Its state for the screens is `status.cloud`, never published here.
+    /// Which side of the iCloud link this device plays.
+    private let cloudRole: CloudRole = AppStore.initialRole
+    /// nil wherever `CloudKitStore.live()` is: the app then syncs with the hub exactly as before.
+    private var cloud: CloudSyncSession?
+    /// The phone has installed from iCloud: iCloud is its link from then on (section 6).
+    private var cloudJoinedOnce = UserDefaults.standard.bool(forKey: AppPaths.defaultsKey("cloudJoinedOnce"))
+    /// The phone's "Sync directly with the Mac instead".
+    private var preferHub = UserDefaults.standard.bool(forKey: AppPaths.defaultsKey("cloudPreferHub"))
+    /// `contentVersion` and where each link last settled (section 4).
+    private var versions = SyncVersions()
+    /// The edit generation at which this tick's hub pass finished clean; nil when it did not (`hubSettledNow`).
+    private var hubSettledAt: Int?
+    /// Why the last cloud pass stopped short.
+    private var cloudWait: CloudWait?
+    /// A cloud pass of this launch settled (the starting layout may be offered on its word, as on a box hub's).
+    private var cloudSettledThisLaunch = false
+    /// The network is neither expensive nor constrained: the phone may fetch missing photos in bulk.
+    private var pathAllowsBulk = true
+    private var fillTask: Task<Void, Never>?
+    /// A background refresh: the cloud pass fetches no photos afterwards.
+    private var documentOnly = false
+    #if DEBUG
+    /// `-WCCloudStatus`: the screens show a made-up iCloud state and nothing syncs.
+    private var forcedCloud = false
+    #endif
+
+    /// What this tick runs (section 1): the Mac both links, the phone exactly one.
+    private var route: SyncRoute {
+        SyncRoute.plan(role: cloudRole, cloudLink: cloud != nil, joined: cloudJoinedOnce, preferHub: preferHub)
+    }
+
+    /// The phone has no collection and nothing to ask for one but iCloud: the empty state waits for it instead of
+    /// asking for an address.
+    var waitsForICloud: Bool {
+        data == nil && syncEnabled && syncAddress.isEmpty && status.cloud != nil
+    }
+
     /// The starting layout (the iPhone's seed and "Use the starting layout") waits for a completed sync
-    /// with a hub that keeps boxes, so it never lands on top of boxes set up elsewhere nor goes to a hub
-    /// that would drop it. With sync off it is there at once.
+    /// with a hub that keeps boxes, or a settled pass with iCloud (whose merge keeps boxes), so it never lands on
+    /// top of boxes set up elsewhere nor goes to a hub that would drop it. With sync off it is there at once.
     var canOfferStartingLayout: Bool {
-        Self.startingLayoutAllowed(syncOn: syncEnabled && !syncAddress.isEmpty, hubSupportsBoxes: hubSupportsBoxes)
+        Self.startingLayoutAllowed(syncOn: syncEnabled && (!syncAddress.isEmpty || route.active == .cloud),
+                                   hubSupportsBoxes: hubSupportsBoxes || cloudSettledThisLaunch)
     }
 
     nonisolated static func startingLayoutAllowed(syncOn: Bool, hubSupportsBoxes: Bool) -> Bool {
@@ -115,6 +164,22 @@ final class AppStore: ObservableObject {
     }
 
     private var started = false
+
+    /// The hub address: in DEBUG `-WCHub` stands in for the saved one for this run.
+    private static var initialSyncAddress: String {
+        #if DEBUG
+        if let hub = AppPaths.hub { return hub }
+        #endif
+        return UserDefaults.standard.string(forKey: "syncAddress")
+            ?? LegacyServerConfiguration.migrationURL ?? Platform.defaultSyncAddress
+    }
+
+    private static var initialRole: CloudRole {
+        #if DEBUG
+        if let role = AppPaths.role { return role }
+        #endif
+        return Platform.isMac ? .mac : .phone
+    }
 
     func start() async {
         guard !started else { return }
@@ -124,11 +189,12 @@ final class AppStore: ObservableObject {
 
         if let checkpoint = SyncDisk.load() {
             syncBase = checkpoint.server == syncAddress ? checkpoint.base : nil
-            lastSync = checkpoint.lastSuccess
+            hubLastSuccess = checkpoint.lastSuccess
             publish(checkpoint.data, persist: false)
         } else if let cached = CacheStore.loadData() {
             publish(cached, persist: true)
         }
+        setUpCloud()
 
         // Never replace a populated standalone phone with the old migration snapshot.
         startConnectionMonitor()
@@ -144,12 +210,21 @@ final class AppStore: ObservableObject {
         }
 
         if let data, data.settings.autoBackup {
-            _ = try? LocalBackup.mirrorJSON(from: data)
+            _ = try? AppPaths.mirrorJSON(from: data)
         }
 
-        if data == nil {
+        if data == nil, !waitsForICloud {
             errorMessage = "Set the Mac's sync address in Settings, or restore a collection backup."
         }
+    }
+
+    /// The background refresh: one tick that fetches no photos afterwards.
+    func backgroundRefresh() async {
+        documentOnly = true
+        defer { documentOnly = false }
+        await start()
+        await syncNow()
+        scheduleBackgroundSync()
     }
 
     func refresh() async {
@@ -162,10 +237,9 @@ final class AppStore: ObservableObject {
         let clean = address.trimmingCharacters(in: .whitespacesAndNewlines).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         if clean != syncAddress {
             syncBase = nil
-            lastSync = nil
+            hubLastSuccess = nil
             hubSupportsBoxes = false
-            syncConflicts = []
-            syncResolutions = [:]
+            conflictSet.clear(.hub)
         }
         syncAddress = clean
         syncEnabled = enabled
@@ -179,11 +253,38 @@ final class AppStore: ObservableObject {
         scheduleBackgroundSync()
     }
 
+    /// The choice goes to the link that asked. Once every one of that link's changes has a choice, a tick sends them.
     func resolveSyncConflict(_ id: String, choice: String) async {
-        syncResolutions[id] = choice
-        guard syncConflicts.allSatisfy({ syncResolutions[$0.id] != nil }) else { return }
+        guard conflictSet.resolve(id, choice: choice) != nil else { return }
         while isSyncing { try? await Task.sleep(for: .milliseconds(200)) }
         await syncNow()
+    }
+
+    /// The phone's "Sync directly with the Mac instead": flips which link runs. Both bases stay true ancestors, so
+    /// either way the next pass is a normal three-way merge (section 6).
+    func setPreferHub(_ on: Bool) async {
+        guard cloudRole == .phone, preferHub != on else { return }
+        preferHub = on
+        UserDefaults.standard.set(on, forKey: AppPaths.defaultsKey("cloudPreferHub"))
+        // What failed on the other link says nothing about this one.
+        syncFailures.startSession()
+        configurePhotoSource()
+        showCloud()
+        while isSyncing { try? await Task.sleep(for: .milliseconds(200)) }
+        await syncNow()
+        scheduleBackgroundSync()
+    }
+
+    /// The Mac's "Sync through iCloud again", after he erased the app's iCloud data (section 8).
+    func restartCloudAfterErase() async {
+        guard let cloud, cloudRole == .mac else { return }
+        while isSyncing { try? await Task.sleep(for: .milliseconds(200)) }
+        isSyncing = true
+        let failure = await cloud.restartAfterErase()
+        isSyncing = false
+        cloudWait = failure
+        showCloud()
+        if failure == nil { await syncNow() }
     }
 
     func sceneChanged(_ phase: ScenePhase) {
@@ -213,7 +314,9 @@ final class AppStore: ObservableObject {
             syncTimer = Task { [weak self] in
                 while !Task.isCancelled {
                     await self?.syncNow()
-                    do { try await Task.sleep(for: .seconds(60)) } catch { break }
+                    // Every 20 s once iCloud carries the phone; the hub's 60 s otherwise.
+                    let seconds = self?.route.active == .cloud ? 20 : 60
+                    do { try await Task.sleep(for: .seconds(seconds)) } catch { break }
                 }
             }
         } else if phase == .background {
@@ -225,7 +328,7 @@ final class AppStore: ObservableObject {
 
     func scheduleBackgroundSync() {
         #if os(iOS)
-        guard syncEnabled, !syncAddress.isEmpty else { return }
+        guard syncEnabled, !syncAddress.isEmpty || route.active == .cloud else { return }
         let request = BGAppRefreshTaskRequest(identifier: Self.backgroundSyncID)
         request.earliestBeginDate = Date(timeIntervalSinceNow: 15 * 60)
         // The system determines the actual launch time; foreground sync is the fallback.
@@ -237,6 +340,8 @@ final class AppStore: ObservableObject {
         guard connectionMonitor == nil else { return }
         let monitor = NWPathMonitor()
         monitor.pathUpdateHandler = { [weak self] path in
+            let bulk = !path.isExpensive && !path.isConstrained
+            Task { @MainActor [weak self] in self?.pathAllowsBulk = bulk }
             guard path.status == .satisfied else { return }
             Task { @MainActor [weak self] in
                 // VPNs and Tailscale report path changes constantly; only a real gap is worth a sync.
@@ -248,14 +353,49 @@ final class AppStore: ObservableObject {
         connectionMonitor = monitor
     }
 
+    /// One sync tick, over the links `route` names: the hub alone (no iCloud link, or the phone's switch), iCloud
+    /// alone (a phone that has joined), iCloud then the hub only if iCloud did nothing (a phone not joined yet), or
+    /// on the Mac the hub, iCloud, and the hub again when iCloud brought something in. True when the link the
+    /// screens speak for settled.
     @discardableResult
     func syncNow() async -> Bool {
         guard started, !isSyncing else { return false }
+        #if DEBUG
+        if forcedCloud { return false }
+        #endif
         guard syncEnabled else { syncMessage = "Automatic sync is off"; return false }
-        guard !syncAddress.isEmpty else { syncMessage = "Add the Mac's address in Settings"; return false }
         lastSyncAttempt = Date()
         isSyncing = true
         defer { isSyncing = false }
+        // The route as the tick began: a phone that joins iCloud in this tick's cloud pass does not then run the hub.
+        let route = self.route
+        var ran: [SyncLinkKind] = []
+        var outcome: CloudOutcome?
+        var settled = false
+        while let link = route.next(after: ran, cloud: outcome) {
+            switch link {
+            case .hub:
+                settled = await hubPass()
+            case .cloud:
+                outcome = await cloudPass()
+                if route.active == .cloud || route == .cloudElseHub { settled = Self.settles(outcome) }
+            }
+            ran.append(link)
+        }
+        return settled
+    }
+
+    private static func settles(_ outcome: CloudOutcome?) -> Bool {
+        switch outcome {
+        case .installed?, .upToDate?: return true
+        default: return false
+        }
+    }
+
+    /// The hub link, as it always was. Sets `hubSettledAt` when it finishes clean.
+    private func hubPass() async -> Bool {
+        hubSettledAt = nil
+        guard !syncAddress.isEmpty else { syncMessage = "Add the Mac's address in Settings"; return false }
         let address = syncAddress
         let session = syncFailures.session
         do {
@@ -267,12 +407,14 @@ final class AppStore: ObservableObject {
                 // The Mac answered: an earlier failure does not hold, even if every round below is overtaken by
                 // edits and the attempt runs out without finishing.
                 syncFailures.reachedMac()
-                if let stamp = remote.lastRemoteSync { lastPhoneSync = ISO8601DateFormatter().date(from: stamp) }
-                // Neither side changed: skip the upload, the disk writes and the redraw.
-                if generation == syncedGeneration, remote.revision == syncedRevision,
-                   syncResolutions.isEmpty, syncConflicts.isEmpty, let local,
+                if let stamp = remote.lastRemoteSync { hubPhoneSync = ISO8601DateFormatter().date(from: stamp) }
+                // Neither side changed: skip the upload, the disk writes and the redraw. "This side" includes what
+                // the iCloud link brought in since the hub link last settled (`versions`).
+                if generation == syncedGeneration, remote.revision == syncedRevision, versions.isCurrent(.hub),
+                   conflictSet.resolutions(for: .hub).isEmpty, conflictSet.conflicts(for: .hub).isEmpty, let local,
                    PhotoStore.missingLocalCount(PhotoStore.assets(in: local, baseURL: nil)) == 0 {
-                    lastSync = Date()
+                    hubLastSuccess = Date()
+                    hubSettledAt = generation
                     syncMessage = "Up to date"
                     if isOffline { isOffline = false }
                     noteHub(remote)
@@ -282,13 +424,23 @@ final class AppStore: ObservableObject {
                 syncMessage = "Syncing collection and photos..."
                 let result: SyncSnapshot
                 if let local {
-                    result = try await client.exchange(base: syncBase, local: local, resolutions: syncResolutions, remote: remote)
+                    // On the Mac with iCloud on, a file neither here nor on the hub may still come from iCloud: its
+                    // reference is dropped only once iCloud has said it does not have it (section 5).
+                    var dropping: Set<String>?
+                    if cloudRole == .mac, let cloud { dropping = await cloud.namesNotInCloud() }
+                    guard let exchanged = try await client.exchange(base: syncBase, local: local,
+                                                                    resolutions: conflictSet.resolutions(for: .hub),
+                                                                    remote: remote, dropping: dropping) else {
+                        syncMessage = "Waiting for photos from iCloud"
+                        return false
+                    }
+                    result = exchanged
                 } else { result = remote }
                 guard syncAddress == address, syncEnabled else { return false }
                 // Do not install a response over edits made while a request was in flight.
                 guard generation == editGeneration else { continue }
                 if !result.conflicts.isEmpty {
-                    syncConflicts = result.conflicts.map { $0.labelled(using: [local, result.data]) }
+                    conflictSet.set(result.conflicts.map { $0.labelled(using: [local, result.data]) }, for: .hub)
                     syncMessage = "\(result.conflicts.count) changes need your choice in Settings"
                     return false
                 }
@@ -306,12 +458,13 @@ final class AppStore: ObservableObject {
                 syncBase = result.data
                 syncedRevision = result.revision
                 syncedGeneration = generation
-                lastSync = now
+                hubLastSuccess = now
                 publish(merged, persist: false)
+                versions.settle(.hub)
+                hubSettledAt = generation
                 CacheStore.save(merged)
-                if merged.settings.autoBackup { _ = try? LocalBackup.mirrorJSON(from: merged) }
-                syncConflicts = []
-                syncResolutions = [:]
+                if merged.settings.autoBackup { _ = try? AppPaths.mirrorJSON(from: merged) }
+                conflictSet.clear(.hub)
                 syncMessage = "Up to date"
                 if isOffline { isOffline = false }
                 noteHub(result)
@@ -328,6 +481,206 @@ final class AppStore: ObservableObject {
         }
         return false
     }
+
+    // MARK: The iCloud link (docs/icloud-plan.md sections 4 to 8)
+
+    /// Makes this launch's iCloud session, or none: wherever `CloudKitStore.live()` is nil, nothing below runs.
+    private func setUpCloud() {
+        #if DEBUG
+        if let forced = AppPaths.forcedCloudStatus {
+            forceCloudStatus(forced)
+            return
+        }
+        #endif
+        guard let session = CloudSyncSession.live(role: cloudRole) else { return }
+        cloud = session
+        // A launch that finds the data as the book left it starts on the fast path (a head fetch, no download).
+        if let data {
+            versions.note(CloudLink.projection(data))
+            if let base = session.book.base, CloudLink.projection(base) == versions.projection { versions.settle(.cloud) }
+        }
+        configurePhotoSource()
+        showLastSync()
+        showCloud()
+    }
+
+    /// One cloud pass with the caller's steps (`CloudSyncSession`), then what it means for the screens.
+    @discardableResult
+    private func cloudPass() async -> CloudOutcome? {
+        guard let cloud else { return nil }
+        let role = cloudRole
+        let session = syncFailures.session
+        let host = CloudSyncSession.Host(
+            local: { [weak self] in self?.data },
+            generation: { [weak self] in self?.editGeneration ?? -1 },
+            changed: { [weak self] in !(self?.versions.isCurrent(.cloud) ?? false) },
+            hubSettledAt: role == .mac ? hubSettledAt : nil,
+            hubBase: role == .phone ? syncBase : nil,
+            joinedBefore: cloudJoinedOnce,
+            resolutions: conflictSet.resolutions(for: .cloud),
+            hubAt: role == .mac ? hubLastSuccess : nil,
+            hubRevision: role == .mac ? syncedRevision : nil,
+            activeLink: route.active,
+            install: { [weak self] installed, local in self?.installFromCloud(installed, local: local) ?? false },
+            mirror: { _ = try? AppPaths.mirrorJSON(from: $0) }
+        )
+        let outcome = await cloud.pass(host)
+        switch outcome {
+        case .installed, .upToDate:
+            versions.settle(.cloud)
+            conflictSet.clear(.cloud)
+            cloudWait = nil
+            cloudSettledThisLaunch = true
+            if role == .phone, !cloudJoinedOnce {
+                // Section 6: the phone's link is iCloud from now on. The hub address stays stored.
+                cloudJoinedOnce = true
+                UserDefaults.standard.set(true, forKey: AppPaths.defaultsKey("cloudJoinedOnce"))
+                configurePhotoSource()
+            }
+            if isOffline { isOffline = false }
+            seedIfWaiting()
+            fillPhotosIfNeeded()
+        case let .conflicts(list):
+            conflictSet.set(list.map { SyncConflict($0).labelled(using: [data]) }, for: .cloud)
+            cloudWait = nil
+            syncMessage = "\(list.count) changes need your choice in Settings"
+        case let .waiting(wait):
+            cloudWait = wait
+        }
+        if route.active == .cloud {
+            // The phone's screens speak for iCloud: its words, and its failures for the notice.
+            switch outcome {
+            case .installed, .upToDate: syncMessage = "Up to date"
+            case .conflicts: break
+            case let .waiting(wait):
+                syncMessage = CloudSyncCopy.sentence(CloudDisplay(role: role, active: .cloud, joined: true,
+                                                                  preferHub: false, wait: wait), device: Platform.deviceName)
+                    ?? Self.quietMessage(wait)
+            }
+            switch outcome {
+            case .waiting(.offline): syncFailures.failed(.offline, in: session)
+            case let .waiting(.failed(reason)): syncFailures.failed(.other(reason), in: session)
+            case .waiting(.busy): break
+            default: syncFailures.reachedMac()
+            }
+        }
+        showLastSync()
+        await showCloud(statuses: cloud.statuses())
+        return outcome
+    }
+
+    private static func quietMessage(_ wait: CloudWait) -> String {
+        switch wait {
+        case .offline: return "Saved on this \(Platform.deviceName); sync will resume"
+        case let .failed(reason): return "Saved on this \(Platform.deviceName). \(reason)"
+        default: return "New edits are saved locally; sync will retry"
+        }
+    }
+
+    /// Section 4 step 9, the data side: today's install steps, `sync.json` before the session saves the book. The
+    /// hub base in `sync.json` is left as it is: it still belongs to the hub link.
+    private func installFromCloud(_ installed: CollectionData, local: CollectionData?) -> Bool {
+        var merged = BoxModel.installing(installed, hubSupportsBoxes: true, local: local)
+        if let local {
+            merged.settings.autoBackup = local.settings.autoBackup
+            merged.settings.backupRemote = local.settings.backupRemote
+            merged.settings.lastBackup = local.settings.lastBackup
+        }
+        do {
+            try SyncDisk.save(SyncCheckpoint(data: merged, base: syncBase, server: syncAddress, lastSuccess: hubLastSuccess))
+        } catch {
+            return false
+        }
+        publish(merged, persist: false)
+        versions.settle(.cloud)
+        CacheStore.save(merged)
+        if merged.settings.autoBackup { _ = try? AppPaths.mirrorJSON(from: merged) }
+        return true
+    }
+
+    /// Phone, after a settled pass: the photos still missing come down in the background, 3 at a time, and only
+    /// in bulk on a network that is neither expensive nor constrained (screens fetch what they show either way).
+    private func fillPhotosIfNeeded() {
+        guard cloudRole == .phone, !documentOnly, fillTask == nil, let cloud, let data,
+              PhotoStore.missingLocalCount(PhotoStore.assets(in: data, baseURL: nil)) > 0 else { return }
+        let allowBulk = pathAllowsBulk
+        fillTask = Task { [weak self] in
+            await cloud.fill(data, allowBulk: allowBulk)
+            self?.fillTask = nil
+        }
+    }
+
+    /// Where `PhotoStore.load` fetches a file this device lacks: iCloud when there is a link, the hub only while the
+    /// hub link is active.
+    private func configurePhotoSource() {
+        let store = cloud?.store
+        let hubActive = route.active == .hub || cloudRole == .mac
+        Task { await PhotoStore.shared.configure(cloud: store, hubActive: hubActive) }
+    }
+
+    /// `status.lastSync`: the later of the two links' last successes.
+    private func showLastSync() {
+        let latest = [hubLastSuccess, cloud?.book.lastSuccess].compactMap { $0 }.max()
+        if status.lastSync != latest { status.lastSync = latest }
+    }
+
+    /// `status.lastPhoneSync` on the Mac: the later of the hub's word and the phone's own `Status` record.
+    private func showPhoneSync() {
+        let latest = [hubPhoneSync, phoneStatusAt].compactMap { $0 }.max()
+        if status.lastPhoneSync != latest { status.lastPhoneSync = latest }
+    }
+
+    /// `status.cloud` from the session's book and the `Status` records.
+    private func showCloud(statuses: [String: CloudStatus]? = nil) {
+        guard let cloud else { return }
+        let other = cloudRole == .mac ? "status-iphone" : "status-mac"
+        var display = status.cloud ?? CloudDisplay(role: cloudRole, active: route.active, joined: cloudJoinedOnce,
+                                                   preferHub: preferHub)
+        display.active = route.active
+        display.joined = cloudJoinedOnce
+        display.preferHub = preferHub
+        display.wait = cloudWait
+        display.lastSync = cloud.book.lastSuccess
+        if let statuses {
+            display.macHubAt = statuses["status-mac"]?.hubAt
+            display.otherConflicts = statuses[other]?.conflicts ?? 0
+            if cloudRole == .mac {
+                phoneStatusAt = statuses["status-iphone"]?.at
+                showPhoneSync()
+            }
+        }
+        if status.cloud != display { status.cloud = display }
+    }
+
+    #if DEBUG
+    /// `-WCCloudStatus <case>`: joined, sending, signedout, full, choice, newer, erased, waitinghub, direct. The
+    /// screens show that iCloud state (for screenshots) and no link runs at all.
+    private func forceCloudStatus(_ name: String) {
+        forcedCloud = true
+        let now = Date()
+        let evening = Calendar.current.date(bySettingHour: 21, minute: 41, second: 0, of: now) ?? now
+        var display = CloudDisplay(role: cloudRole, active: cloudRole == .phone ? .cloud : .hub, joined: true,
+                                   preferHub: false, wait: nil, lastSync: now.addingTimeInterval(-120),
+                                   macHubAt: evening <= now ? evening : evening.addingTimeInterval(-86_400))
+        switch name.lowercased() {
+        case "sending": display.wait = .sendingPhotos(done: 120, of: 260)
+        case "signedout": display.wait = .noAccount
+        case "full": display.wait = .full
+        case "choice": display.otherConflicts = 1
+        case "newer": display.wait = .newerFormat
+        case "erased": display.wait = .erased
+        case "waitinghub": display.wait = .needsHubFirst
+        case "direct":
+            display.preferHub = true
+            display.active = .hub
+        default: break
+        }
+        status.cloud = display
+        syncMessage = "Up to date"
+        status.lastSync = cloudRole == .phone && display.active == .cloud ? display.lastSync : now.addingTimeInterval(-60)
+        if cloudRole == .mac { status.lastPhoneSync = now.addingTimeInterval(-120) }
+    }
+    #endif
 
     /// Records what the hub of a completed sync keeps.
     private func noteHub(_ snapshot: SyncSnapshot) {
@@ -987,7 +1340,7 @@ final class AppStore: ObservableObject {
         let updated = BoxModel.sanitized(updated)
         guard publish(updated, persist: true) else { throw LocalStoreError.saveFailed }
         editGeneration += 1
-        if updated.settings.autoBackup { _ = try? LocalBackup.mirrorJSON(from: updated) }
+        if updated.settings.autoBackup { _ = try? AppPaths.mirrorJSON(from: updated) }
         // Retain photo bytes until both devices acknowledge deletions. Incoming and
         // queued uploads must not be garbage-collected by a simultaneous local edit.
         Task { await self.syncNow() }
@@ -998,13 +1351,15 @@ final class AppStore: ObservableObject {
         let derived = DecisionEngine.withDerivedStats(BoxModel.sanitized(rawData))
         if persist {
             do {
-                try SyncDisk.save(SyncCheckpoint(data: derived, base: syncBase, server: syncAddress, lastSuccess: lastSync))
+                try SyncDisk.save(SyncCheckpoint(data: derived, base: syncBase, server: syncAddress, lastSuccess: hubLastSuccess))
             } catch {
                 errorMessage = "The collection could not be saved: \(error.localizedDescription)"
                 return false
             }
         }
         data = derived
+        // `contentVersion`: only the iCloud link needs it, and only a change to the synced projection moves it.
+        if cloud != nil { versions.note(CloudLink.projection(derived)) }
         storeTrial(boxTrial)
         scores = DecisionEngine.scores(for: derived)
         suggestions = DecisionEngine.suggestions(for: derived)

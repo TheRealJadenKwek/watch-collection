@@ -360,13 +360,166 @@ final class SyncHealthTests: XCTestCase {
         for health in all {
             for address in [tailscale, "http://192.168.1.20:8931"] {
                 guard let shown = notice(health, address: address) else { return XCTFail("\(health)") }
-                let words = "\(shown.headline) \(shown.message) \(shown.actionLabel)"
-                XCTAssertFalse(words.contains("\u{2014}"), words)
-                XCTAssertFalse(words.contains("\u{2013}"), words)
-                XCTAssertFalse(words.localizedCaseInsensitiveContains("rolex"), words)
-                XCTAssertFalse(words.unicodeScalars.contains { $0.properties.isEmojiPresentation }, words)
+                checkCopyRules("\(shown.headline) \(shown.message) \(shown.actionLabel)")
                 XCTAssertFalse(shown.headline.isEmpty || shown.message.isEmpty || shown.actionLabel.isEmpty)
             }
         }
+    }
+
+    private func checkCopyRules(_ words: String, file: StaticString = #filePath, line: UInt = #line) {
+        XCTAssertFalse(words.contains("\u{2014}"), words, file: file, line: line)
+        XCTAssertFalse(words.contains("\u{2013}"), words, file: file, line: line)
+        XCTAssertFalse(words.localizedCaseInsensitiveContains("rolex"), words, file: file, line: line)
+        XCTAssertFalse(words.unicodeScalars.contains { $0.properties.isEmojiPresentation }, words, file: file, line: line)
+    }
+}
+
+// MARK: iCloud (docs/icloud-plan.md section 7)
+
+extension SyncHealthTests {
+    private func cloud(_ wait: CloudWait? = nil, role: CloudRole = .phone, active: SyncLinkKind = .cloud,
+                       otherConflicts: Int = 0) -> CloudDisplay {
+        CloudDisplay(role: role, active: active, joined: active == .cloud, preferHub: false, wait: wait,
+                     lastSync: now.addingTimeInterval(-120), macHubAt: nil, otherConflicts: otherConflicts)
+    }
+
+    private func cloudHealth(_ display: CloudDisplay, address: String = "", conflicts count: Int = 0,
+                             failure: SyncFailure? = nil, lastSync: Date? = nil, enabled: Bool = true) -> SyncHealth {
+        SyncHealth.evaluate(enabled: enabled, address: address, conflicts: conflicts(count), resolutions: [:],
+                            failure: failure, lastSync: lastSync, now: now, cloud: display)
+    }
+
+    private func plain(_ text: String?) -> String? {
+        text?.replacingOccurrences(of: "\u{202F}", with: " ").replacingOccurrences(of: "\u{00A0}", with: " ")
+    }
+
+    /// Every line of section 7, word for word.
+    func testTheICloudLinesReadAsSectionSevenHasThem() {
+        XCTAssertEqual(CloudSyncCopy.carrier(device: "iPhone"), "Syncs with your Mac through iCloud.")
+        XCTAssertEqual(CloudSyncCopy.lastSynced(now.addingTimeInterval(-120), now: now), "Last synced 2 min ago")
+        XCTAssertNil(CloudSyncCopy.lastSynced(nil, now: now))
+        XCTAssertEqual(CloudSyncCopy.phoneSeen(now.addingTimeInterval(-120), now: now), "iPhone, 2 min ago")
+        XCTAssertEqual(CloudSyncCopy.sending(120, of: 260), "Sending 120 of 260 photos to iCloud.")
+        XCTAssertEqual(CloudSyncCopy.signedOut(device: "iPhone"), "Sign in to iCloud to sync with your Mac.")
+        XCTAssertEqual(CloudSyncCopy.full(device: "iPhone"), "iCloud storage is full, so changes stay on this iPhone.")
+        XCTAssertEqual(CloudSyncCopy.choiceWaiting(1, device: "iPhone"), "1 change needs your choice on your Mac.")
+        XCTAssertEqual(CloudSyncCopy.choiceWaiting(3, device: "iPhone"), "3 changes need your choice on your Mac.")
+        XCTAssertEqual(CloudSyncCopy.newerFormat(device: "iPhone"), "Update Watch Collection on this iPhone to keep syncing.")
+        XCTAssertEqual(CloudSyncCopy.erased(device: "Mac"), "The iCloud copy was erased. Nothing on this Mac was removed.")
+        XCTAssertEqual(CloudSyncCopy.erased(device: "iPhone"),
+                       "The iCloud copy was erased. Nothing on this iPhone was removed. Open Watch Collection on your Mac to start iCloud sync again.")
+        XCTAssertEqual(CloudSyncCopy.restartButton, "Sync through iCloud again")
+        // The Mac's own lines name the phone.
+        XCTAssertEqual(CloudSyncCopy.signedOut(device: "Mac"), "Sign in to iCloud to sync with your iPhone.")
+        XCTAssertEqual(CloudSyncCopy.choiceWaiting(1, device: "Mac"), "1 change needs your choice on your iPhone.")
+    }
+
+    /// `status-mac.hubAt`, as plain information: a time today, "yesterday at", else the day.
+    func testTheMacsLibraryCheckInIsATimeNotAWarning() {
+        let locale = Locale(identifier: "en_US")
+        XCTAssertEqual(plain(CloudSyncCopy.macCheckedIn(date(2026, 11, 6, 9, 41), now: now, calendar: calendar, locale: locale)),
+                       "Mac's library checked in 9:41 AM")
+        XCTAssertEqual(plain(CloudSyncCopy.macCheckedIn(date(2026, 11, 5, 21, 41), now: now, calendar: calendar, locale: locale)),
+                       "Mac's library checked in yesterday at 9:41 PM")
+        XCTAssertEqual(plain(CloudSyncCopy.macCheckedIn(date(2026, 11, 3, 21, 41), now: now, calendar: calendar, locale: locale)),
+                       "Mac's library checked in on Nov 3")
+        XCTAssertNil(CloudSyncCopy.macCheckedIn(nil, now: now, calendar: calendar, locale: locale))
+    }
+
+    func testAgoReadsInPlainUnits() {
+        XCTAssertEqual(CloudSyncCopy.ago(now.addingTimeInterval(-30), now: now), "just now")
+        XCTAssertEqual(CloudSyncCopy.ago(now.addingTimeInterval(30), now: now), "just now", "a clock set back")
+        XCTAssertEqual(CloudSyncCopy.ago(now.addingTimeInterval(-59 * 60), now: now), "59 min ago")
+        XCTAssertEqual(CloudSyncCopy.ago(now.addingTimeInterval(-3 * 3600 - 59), now: now), "3 hr ago")
+        XCTAssertEqual(CloudSyncCopy.ago(now.addingTimeInterval(-25 * 3600), now: now), "1 day ago")
+        XCTAssertEqual(CloudSyncCopy.ago(now.addingTimeInterval(-3 * 86400), now: now), "3 days ago")
+    }
+
+    /// The sync line's sentence for each state of the link; a pause the next tick deals with says nothing.
+    func testTheSyncLineSaysOneSentencePerState() {
+        XCTAssertEqual(CloudSyncCopy.sentence(cloud(.noAccount), device: "iPhone"), "Sign in to iCloud to sync with your Mac.")
+        XCTAssertEqual(CloudSyncCopy.sentence(cloud(.full), device: "iPhone"), "iCloud storage is full, so changes stay on this iPhone.")
+        XCTAssertEqual(CloudSyncCopy.sentence(cloud(.newerFormat), device: "iPhone"),
+                       "Update Watch Collection on this iPhone to keep syncing.")
+        XCTAssertEqual(CloudSyncCopy.sentence(cloud(.erased, role: .mac, active: .hub), device: "Mac"),
+                       "The iCloud copy was erased. Nothing on this Mac was removed.")
+        XCTAssertEqual(CloudSyncCopy.sentence(cloud(.sendingPhotos(done: 120, of: 260), role: .mac, active: .hub), device: "Mac"),
+                       "Sending 120 of 260 photos to iCloud.")
+        XCTAssertEqual(CloudSyncCopy.sentence(cloud(.needsHubFirst, role: .mac, active: .hub), device: "Mac"),
+                       "iCloud sync starts once this Mac reaches its library.")
+        XCTAssertEqual(CloudSyncCopy.sentence(cloud(otherConflicts: 1), device: "iPhone"), "1 change needs your choice on your Mac.")
+        for quiet: CloudWait? in [nil, .noDocument, .offline, .busy, .failed("x")] {
+            XCTAssertNil(CloudSyncCopy.sentence(cloud(quiet), device: "iPhone"), "\(String(describing: quiet))")
+        }
+    }
+
+    /// Once iCloud carries the phone, the notice speaks for it: the hub's address means nothing.
+    func testTheNoticeSpeaksForICloudWhenItCarriesThePhone() {
+        XCTAssertEqual(cloudHealth(cloud(), address: ""), .healthy, "no address is not a problem")
+        XCTAssertEqual(cloudHealth(cloud(), address: "not an address"), .healthy)
+        XCTAssertEqual(cloudHealth(cloud(.erased)), .cloudErased)
+        XCTAssertEqual(cloudHealth(cloud(.newerFormat)), .cloudNewerFormat)
+        XCTAssertEqual(cloudHealth(cloud(.noAccount)), .cloudSignedOut)
+        XCTAssertEqual(cloudHealth(cloud(.full)), .cloudFull)
+        XCTAssertEqual(cloudHealth(cloud(otherConflicts: 2)), .choiceOnOtherDevice(2))
+        XCTAssertEqual(cloudHealth(cloud(.sendingPhotos(done: 1, of: 2))), .healthy)
+        // Order: off, then this device's own choices, then the link's state.
+        XCTAssertEqual(cloudHealth(cloud(.erased), enabled: false), .off)
+        XCTAssertEqual(cloudHealth(cloud(.erased), conflicts: 2), .conflicts(2))
+        XCTAssertEqual(cloudHealth(cloud(.erased, otherConflicts: 1)), .cloudErased)
+        XCTAssertEqual(cloudHealth(cloud(.full, otherConflicts: 1)), .cloudFull)
+        // A quiet failure shows only after the usual three minutes.
+        XCTAssertEqual(cloudHealth(cloud(.offline), failure: .offline, lastSync: now.addingTimeInterval(-60)), .healthy)
+        XCTAssertEqual(cloudHealth(cloud(.offline), failure: .offline, lastSync: now.addingTimeInterval(-3600)),
+                       .stale(.offline, since: now.addingTimeInterval(-3600)))
+    }
+
+    /// The Mac, and a phone the hub still carries: the hub's rules, unchanged, whatever iCloud is doing.
+    func testTheHubsRulesStandWhereTheHubCarriesTheScreens() {
+        for display in [cloud(.erased, role: .mac, active: .hub), cloud(.full, role: .phone, active: .hub)] {
+            XCTAssertEqual(cloudHealth(display, address: ""), .noAddress)
+            XCTAssertEqual(cloudHealth(display, address: tailscale), .healthy)
+            XCTAssertEqual(cloudHealth(display, address: tailscale, failure: .invalidAddress), .badAddress)
+            XCTAssertEqual(cloudHealth(display, address: tailscale, conflicts: 1), .conflicts(1))
+        }
+    }
+
+    func testTheICloudNotices() {
+        let signedOut = notice(.cloudSignedOut)
+        XCTAssertEqual(signedOut?.headline, "Signed out of iCloud")
+        XCTAssertEqual(signedOut?.message, "Sign in to iCloud to sync with your Mac.")
+        XCTAssertEqual(signedOut?.action, .retry)
+        XCTAssertEqual(signedOut?.actionLabel, "Try again")
+
+        let expected: [(SyncHealth, String, String)] = [
+            (.cloudFull, "iCloud is full", "iCloud storage is full, so changes stay on this iPhone."),
+            (.choiceOnOtherDevice(1), "Choice waiting", "1 change needs your choice on your Mac."),
+            (.choiceOnOtherDevice(4), "Choice waiting", "4 changes need your choice on your Mac."),
+            (.cloudNewerFormat, "Update needed", "Update Watch Collection on this iPhone to keep syncing."),
+            (.cloudErased, "iCloud copy erased",
+             "The iCloud copy was erased. Nothing on this iPhone was removed. Open Watch Collection on your Mac to start iCloud sync again."),
+        ]
+        for (health, headline, message) in expected {
+            let shown = notice(health)
+            XCTAssertEqual(shown?.headline, headline)
+            XCTAssertEqual(shown?.message, message)
+            XCTAssertNil(shown?.action, "nothing to do on this iPhone: no pill")
+            XCTAssertEqual(shown?.urgent, true)
+        }
+    }
+
+    func testTheICloudCopyKeepsTheCopyRules() {
+        let health: [SyncHealth] = [.cloudSignedOut, .cloudFull, .choiceOnOtherDevice(1), .choiceOnOtherDevice(3),
+                                    .cloudNewerFormat, .cloudErased]
+        var words = health.compactMap { notice($0) }.map { "\($0.headline) \($0.message) \($0.actionLabel)" }
+        XCTAssertEqual(words.count, health.count)
+        for device in ["iPhone", "Mac"] {
+            words += [CloudSyncCopy.carrier(device: device), CloudSyncCopy.erased(device: device),
+                      CloudSyncCopy.signedOut(device: device), CloudSyncCopy.full(device: device),
+                      CloudSyncCopy.newerFormat(device: device), CloudSyncCopy.choiceWaiting(2, device: device)]
+        }
+        words += [CloudSyncCopy.restartButton, CloudSyncCopy.needsHubFirst, CloudSyncCopy.sending(1, of: 2),
+                  "Sync directly with the Mac instead", "Waiting for your collection from iCloud\u{2026}"]
+        for line in words { checkCopyRules(line) }
     }
 }

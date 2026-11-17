@@ -5,7 +5,8 @@ import SwiftUI
 /// draws nothing and takes no room.
 ///
 /// It watches only the sync status, so a sync tick redraws this panel and not the screen around it. Whether sync is
-/// on and the Mac's address come from the screen, which already redraws when Settings change them.
+/// on and the Mac's address come from the screen, which already redraws when Settings change them. Once iCloud
+/// carries the phone (`status.cloud`), the panel speaks for iCloud and the address no longer matters.
 struct SyncNoticeBar: View {
     @ObservedObject var status: SyncStatus
     let enabled: Bool
@@ -41,7 +42,8 @@ struct SyncNoticeBar: View {
             resolutions: status.resolutions,
             failure: status.failure,
             lastSync: status.lastSync,
-            now: now
+            now: now,
+            cloud: status.cloud
         )
         Group {
             if let notice = health.notice(address: address, device: Platform.deviceName, now: now) {
@@ -49,7 +51,7 @@ struct SyncNoticeBar: View {
                     notice: notice,
                     compact: compact,
                     busy: status.isSyncing,
-                    act: notice.action == .retry ? retry : openSettings
+                    act: notice.action == .settings ? openSettings : retry
                 )
                 .padding(insets)
                 .transition(.opacity)
@@ -81,16 +83,19 @@ struct SyncNoticePanel: View {
                     .lineLimit(1)
                     .minimumScaleFactor(0.75)
                 Spacer(minLength: 8)
-                Button(action: act) {
-                    Text(notice.actionLabel)
-                        .opacity(spins ? 0 : 1)
-                        .overlay {
-                            if spins { ProgressView().controlSize(.small) }
-                        }
+                // Some iCloud states have nothing to do on this device: no pill then.
+                if notice.action != nil {
+                    Button(action: act) {
+                        Text(notice.actionLabel)
+                            .opacity(spins ? 0 : 1)
+                            .overlay {
+                                if spins { ProgressView().controlSize(.small) }
+                            }
+                    }
+                    .quietButton()
+                    .controlSize(.small)
+                    .accessibilityLabel(spins ? "Syncing" : notice.actionLabel)
                 }
-                .quietButton()
-                .controlSize(.small)
-                .accessibilityLabel(spins ? "Syncing" : notice.actionLabel)
             }
             if !compact {
                 Text(notice.message)

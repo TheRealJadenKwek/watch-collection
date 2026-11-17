@@ -312,13 +312,9 @@ actor APIClient {
 }
 
 enum CacheStore {
+    /// Beside `sync.json` (in DEBUG under `-WCDataRoot` when one is given).
     private static var directory: URL? {
-        try? FileManager.default.url(
-            for: .applicationSupportDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        ).appendingPathComponent("WatchCollection", isDirectory: true)
+        AppPaths.collectionFolder
     }
 
     static func loadData() -> CollectionData? { load(CollectionData.self, name: "data.json") }

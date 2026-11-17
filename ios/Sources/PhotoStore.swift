@@ -21,6 +21,12 @@ actor PhotoStore {
     private let session: URLSession
     private var downloads: [PhotoKey: Task<Data, Error>] = [:]
     private var uploadedButUnconfirmed: Set<PhotoKey> = []
+    /// iCloud, when this device has a cloud link: a file not here is fetched from it by name.
+    private var cloud: CloudStore?
+    /// The hub link is the one this device syncs through, so a file the hub link asks for comes from the hub.
+    private var hubActive = true
+    /// Names iCloud lately said it does not have, so a screen scrolling past does not ask again at once.
+    private var cloudMisses: [PhotoKey: Date] = [:]
 
     private init() {
         let configuration = URLSessionConfiguration.ephemeral
@@ -81,6 +87,17 @@ actor PhotoStore {
         )
     }
 
+    /// Where `load` may fetch a file this device does not hold (docs/icloud-plan.md section 5). The store sets it
+    /// whenever its links change; with no cloud link and the hub active, `load` is what it always was.
+    func configure(cloud: CloudStore?, hubActive: Bool) {
+        self.cloud = cloud
+        self.hubActive = hubActive
+        if cloud == nil { cloudMisses = [:] }
+    }
+
+    /// The file, else (with `allowDownload`) a fetch: a file the hub link asks for (one with the hub's address)
+    /// from the hub while the hub link is active, anything else from iCloud by name (the store checks its size and
+    /// sha256 and writes it atomically), else nil and the screen shows its placeholder.
     func load(_ asset: PhotoAsset, allowDownload: Bool) async -> Data? {
         guard let fileURL = Self.localURL(for: asset) else { return nil }
 
@@ -89,21 +106,33 @@ actor PhotoStore {
         if FileManager.default.fileExists(atPath: fileURL.path) {
             return try? Data(contentsOf: fileURL)
         }
-        guard allowDownload, let remoteURL = asset.remoteURL else { return nil }
+        guard allowDownload else { return nil }
 
         if let download = downloads[asset.key] {
             return try? await download.value
         }
 
-        let session = session
-        let download = Task.detached(priority: .utility) {
-            let (data, response) = try await session.data(from: remoteURL)
-            guard let response = response as? HTTPURLResponse,
-                  200..<300 ~= response.statusCode else {
-                throw URLError(.badServerResponse)
+        let download: Task<Data, Error>
+        if let remoteURL = asset.remoteURL, hubActive || cloud == nil {
+            let session = session
+            download = Task.detached(priority: .utility) {
+                let (data, response) = try await session.data(from: remoteURL)
+                guard let response = response as? HTTPURLResponse,
+                      200..<300 ~= response.statusCode else {
+                    throw URLError(.badServerResponse)
+                }
+                try Self.persist(data, to: fileURL)
+                return data
             }
-            try Self.persist(data, to: fileURL)
-            return data
+        } else if let cloud {
+            if let missed = cloudMisses[asset.key], Date().timeIntervalSince(missed) < CloudLink.missingRecheck { return nil }
+            let name = "\(asset.directory)/\(asset.filename)"
+            download = Task.detached(priority: .utility) {
+                guard try await cloud.downloadPhoto(name, to: fileURL) else { throw CocoaError(.fileNoSuchFile) }
+                return try Data(contentsOf: fileURL)
+            }
+        } else {
+            return nil
         }
         downloads[asset.key] = download
 
@@ -113,6 +142,7 @@ actor PhotoStore {
             return data
         } catch {
             downloads[asset.key] = nil
+            if (error as? CocoaError)?.code == .fileNoSuchFile { cloudMisses[asset.key] = Date() }
             return nil
         }
     }
@@ -198,16 +228,14 @@ actor PhotoStore {
 
     nonisolated static func localURL(for asset: PhotoAsset) -> URL? {
         guard isSafePathComponent(asset.directory), isSafePathComponent(asset.filename) else { return nil }
-        return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("PhotoStore", isDirectory: true)
+        return AppPaths.photoRoot
             .appendingPathComponent(asset.directory, isDirectory: true)
             .appendingPathComponent(asset.filename, isDirectory: false)
     }
 
     private func garbageCollect(keeping referenced: Set<PhotoKey>) {
         let fileManager = FileManager.default
-        let root = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("PhotoStore", isDirectory: true)
+        let root = AppPaths.photoRoot
         guard let directories = try? fileManager.contentsOfDirectory(
             at: root,
             includingPropertiesForKeys: [.isDirectoryKey],

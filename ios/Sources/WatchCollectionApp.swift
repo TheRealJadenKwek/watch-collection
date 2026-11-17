@@ -27,9 +27,8 @@ struct WatchCollectionApp: App {
                 #endif
         }
         .backgroundTask(.appRefresh(AppStore.backgroundSyncID)) {
-            await store.start()
-            await store.syncNow()
-            await store.scheduleBackgroundSync()
+            // One tick, the document only: missing photos are fetched when the app is next open.
+            await store.backgroundRefresh()
         }
     }
 }
@@ -47,10 +46,11 @@ struct RootView: View {
             Group {
                 if store.data != nil {
                     tabs
-                } else if store.isRefreshing {
+                } else if store.isRefreshing || store.waitsForICloud {
+                    // With no collection and no address, it waits for iCloud rather than asking for an address.
                     VStack(spacing: 14) {
                         ProgressView()
-                        Text("Opening the collection…")
+                        Text(store.isRefreshing ? "Opening the collection…" : "Waiting for your collection from iCloud…")
                             .foregroundStyle(.secondary)
                     }
                 } else {

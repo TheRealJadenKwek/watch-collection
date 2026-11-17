@@ -50,10 +50,11 @@ struct MacRootView: View {
         Group {
             if store.data != nil {
                 sections
-            } else if store.isRefreshing {
+            } else if store.isRefreshing || store.waitsForICloud {
                 VStack(spacing: 14) {
                     ProgressView()
-                    Text("Opening the collection…").foregroundStyle(.secondary)
+                    Text(store.isRefreshing ? "Opening the collection…" : "Waiting for your collection from iCloud…")
+                        .foregroundStyle(.secondary)
                 }
             } else {
                 VStack {
@@ -83,6 +84,14 @@ struct MacRootView: View {
             }
         }
         .animation(.easeInOut, value: store.notice)
+        #if DEBUG
+        .task {
+            // `-atelierProbe settings` opens Settings, for screenshots.
+            guard AtelierProbe.opensSettings else { return }
+            try? await Task.sleep(for: .seconds(3))
+            openSettings()
+        }
+        #endif
     }
 
     // Every section stays alive behind the current one, so switching only cross-fades what's
@@ -94,6 +103,8 @@ struct MacRootView: View {
                 .safeAreaInset(edge: .bottom) {
                     SyncStatusBar(status: store.status) {
                         Task { await store.refresh() }
+                    } restartCloud: {
+                        Task { await store.restartCloudAfterErase() }
                     }
                 }
         } detail: {
@@ -245,33 +256,60 @@ private struct MacSidebar: View {
 private struct SyncStatusBar: View {
     @ObservedObject var status: SyncStatus
     let syncNow: () -> Void
+    /// "Sync through iCloud again", shown only after he erased the app's iCloud data.
+    let restartCloud: () -> Void
 
     var body: some View {
-        Button(action: syncNow) {
-            HStack(spacing: 8) {
-                Circle()
-                    .fill(status.message == "Up to date" ? Color.green : Color.yellow)
-                    .frame(width: 7, height: 7)
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(status.conflicts.isEmpty ? status.message : "\(status.conflicts.count) changes need a choice")
-                        .lineLimit(2)
-                    if let lastSync = status.lastSync {
-                        Text("Synced \(lastSync.formatted(.relative(presentation: .named)))")
-                            .foregroundStyle(.secondary)
+        let cloudLine = status.cloud.flatMap { CloudSyncCopy.sentence($0, device: Platform.deviceName) }
+        VStack(alignment: .leading, spacing: 6) {
+            Button(action: syncNow) {
+                HStack(spacing: 8) {
+                    Circle()
+                        .fill(status.message == "Up to date" && !cloudNeedsAttention ? Color.green : Color.yellow)
+                        .frame(width: 7, height: 7)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(status.conflicts.isEmpty ? status.message : "\(status.conflicts.count) changes need a choice")
+                            .lineLimit(2)
+                        if let lastSync = status.lastSync {
+                            Text("Synced \(lastSync.formatted(.relative(presentation: .named)))")
+                                .foregroundStyle(.secondary)
+                        }
+                        if let phone = status.lastPhoneSync {
+                            // With iCloud on, the iPhone's own Status record says when it last synced.
+                            Text(status.cloud == nil
+                                 ? "iPhone \(phone.formatted(.relative(presentation: .named)))"
+                                 : CloudSyncCopy.phoneSeen(phone, now: Date()))
+                                .foregroundStyle(.secondary)
+                        }
+                        if let cloudLine {
+                            Text(cloudLine)
+                                .foregroundStyle(.secondary)
+                        }
                     }
-                    if let phone = status.lastPhoneSync {
-                        Text("iPhone \(phone.formatted(.relative(presentation: .named)))")
-                            .foregroundStyle(.secondary)
-                    }
+                    .font(.caption)
+                    Spacer(minLength: 0)
                 }
-                .font(.caption)
-                Spacer(minLength: 0)
+                .contentShape(Rectangle())
             }
-            .contentShape(Rectangle())
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
+            .buttonStyle(.plain)
+            .help("Sync with the iPhone now")
+            if status.cloud?.wait == .erased {
+                Button(CloudSyncCopy.restartButton, action: restartCloud)
+                    .controlSize(.small)
+                    .disabled(status.isSyncing)
+                    .padding(.leading, 15)
+            }
         }
-        .buttonStyle(.plain)
-        .help("Sync with the iPhone now")
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    /// An iCloud state that needs him (the photo upload and the wait for the library are only progress).
+    private var cloudNeedsAttention: Bool {
+        guard let cloud = status.cloud else { return false }
+        switch cloud.wait {
+        case .noAccount?, .full?, .newerFormat?, .erased?: return true
+        default: return cloud.otherConflicts > 0
+        }
     }
 }
