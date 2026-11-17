@@ -320,6 +320,14 @@ final class SyncHealthTests: XCTestCase {
         XCTAssertEqual(notice(.stale(.other("x"), since: nil))?.message, "Not synced with your Mac yet. It will keep trying.")
     }
 
+    /// D10: a joined phone that finds no iCloud copy says so in its stale banner, not the generic line.
+    func testTheStaleBannerSaysTheICloudCopyIsMissing() {
+        let evening = date(2026, 11, 16, 21, 30)
+        let missing = notice(.stale(.other(CloudSyncCopy.missing), since: date(2026, 11, 16, 20, 0)), now: evening)
+        XCTAssertEqual(missing?.headline, "iCloud copy missing")
+        XCTAssertEqual(missing?.message, "Last synced at 8:00 PM. \(CloudSyncCopy.missing)")
+    }
+
     func testConflictsOpenSettings() {
         let one = notice(.conflicts(1))
         XCTAssertEqual(one?.headline, "Sync paused")

@@ -256,6 +256,9 @@ extension SyncHealth {
             case .hub:
                 headline = "Sync did not finish"
                 fix = "Your Mac answered but could not finish. It will keep trying."
+            case .other(CloudSyncCopy.missing):
+                headline = "iCloud copy missing"
+                fix = CloudSyncCopy.missing
             case .invalidAddress, .other:
                 headline = "Sync did not finish"
                 fix = "It will keep trying."

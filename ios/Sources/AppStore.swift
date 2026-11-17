@@ -1049,6 +1049,11 @@ final class AppStore: ObservableObject {
     }
 
     func restore(_ imported: CollectionImport) async -> Bool {
+        #if os(macOS)
+        // Settings can be open while the app still waits for the library lock; a restore writes the library, so it
+        // waits too (a bridge tick steps aside within a second).
+        _ = await Entry.library.whenReady()
+        #endif
         do {
             try await PhotoStore.shared.restore(imported.photos)
             try await commit(imported.data)
