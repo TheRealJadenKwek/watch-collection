@@ -16,11 +16,14 @@ struct CloudPhotoMarks: Codable, Equatable, Sendable {
     var notInCloud: [String: Date] = [:]
     /// iCloud holds other bytes under these names. Both copies are kept as they are; never sent again.
     var mismatched: Set<String> = []
-    /// Mac: fetches that handed over bytes not matching their record (docs/icloud-fixes.md D3). Retried on later
-    /// passes, and the install waits for them meanwhile.
+    /// Fetches that handed over bytes not matching their record (docs/icloud-fixes.md D3). Retried no sooner than
+    /// `CloudLink.missingRecheck` later; on the Mac the install waits for them meanwhile.
     var damaged: [String: CloudPhotoStrikes] = [:]
-    /// Mac: given up on after `CloudLink.damagedStrikes` such fetches over at least `CloudLink.damagedSpan`. The
-    /// install goes ahead without them, and they count as not in iCloud for the drop rule.
+    /// Given up on after `CloudLink.damagedStrikes` such fetches over at least `CloudLink.damagedSpan`, on the Mac
+    /// and on the phone (polish 2 items 8 and 11). The link's own fetches (the Mac's pull, the phone's fill and its
+    /// fetch before a hub exchange) never ask for it again; on the phone a screen that shows it still asks iCloud
+    /// through `PhotoStore` each time. The install goes ahead without the file, and the reference is kept:
+    /// everywhere but the hub, which is sent the collection without it while the file is on neither side (`kept`).
     var unreadable: [String: Date] = [:]
 
     /// Whether iCloud has said it does not have this photo (the Mac's narrowed drop rule, section 5).
@@ -28,9 +31,15 @@ struct CloudPhotoMarks: Codable, Equatable, Sendable {
         notInCloud[name] != nil
     }
 
-    /// The names the narrowed drop rule may let go: not in iCloud, or given up on as unreadable (D3).
+    /// The names the narrowed drop rule may let go: those iCloud has said it does not have.
     var lost: Set<String> {
-        Set(notInCloud.keys).union(unreadable.keys)
+        Set(notInCloud.keys)
+    }
+
+    /// The names given up on as unreadable (D3): iCloud has them, but never once handed one over whole. Their
+    /// references are kept, and held back from the hub only (`CollectionSyncClient.photoPlan`).
+    var kept: Set<String> {
+        Set(unreadable.keys)
     }
 
     mutating func confirm(_ name: String) {
@@ -52,9 +61,11 @@ struct CloudPhotoMarks: Codable, Equatable, Sendable {
         inCloud.remove(name)
     }
 
-    /// A fetch of this photo handed over bytes that do not match its record. Returns the strikes so far.
+    /// A fetch of this photo handed over bytes that do not match its record. Returns the strikes so far. iCloud has
+    /// the photo after all, so an older "not in iCloud" no longer holds.
     @discardableResult
     mutating func strike(_ name: String, at date: Date) -> CloudPhotoStrikes {
+        notInCloud[name] = nil
         var strikes = damaged[name] ?? CloudPhotoStrikes(first: date, last: date, count: 0)
         strikes.last = date
         strikes.count += 1
@@ -116,11 +127,24 @@ struct CloudPhotoPush: Equatable, Sendable {
 
     static let unreadableReason = "a photo on this device could not be read; sync will try it again"
 
-    /// Why the document cannot be written yet; nil once every held photo is up.
-    var wait: CloudWait? {
+    /// Why the document cannot be written yet; nil once every held photo is up. A photo that could not be read is
+    /// named by the watch it belongs to (`CloudLink.photoOwner` in `data`), so he knows which one to look at; with no
+    /// owner found (an empty box tile, or no collection given), today's words.
+    func wait(naming data: CollectionData? = nil) -> CloudWait? {
         if finished { return nil }
-        if !unreadable.isEmpty, done + unreadable.count >= of { return .failed(Self.unreadableReason) }
+        if !unreadable.isEmpty, done + unreadable.count >= of { return .failed(Self.reason(unreadable, in: data)) }
         return .sendingPhotos(done: done, of: of)
+    }
+
+    /// The reason for held photos that could not be read: by the first one's watch, when one is found.
+    static func reason(_ unreadable: [String], in data: CollectionData?) -> String {
+        guard let data, let owner = unreadable.lazy.compactMap({ CloudLink.photoOwner($0, in: data) }).first else {
+            return unreadableReason
+        }
+        if unreadable.count == 1 {
+            return "a photo of \(owner) on this device could not be read; sync will try it again"
+        }
+        return "\(unreadable.count) photos on this device could not be read, the first of \(owner); sync will try them again"
     }
 }
 
@@ -143,6 +167,16 @@ extension CloudLink {
         return PhotoStore.assets(in: data, baseURL: nil)
             .map { "\($0.directory)/\($0.filename)" }
             .filter { seen.insert($0).inserted }
+    }
+
+    /// The name of the watch (or wishlist watch, for `wl-<id>`) whose folder holds this photo ("dir/file"); nil for
+    /// the empty box tiles and for a folder no item in `data` has.
+    static func photoOwner(_ name: String, in data: CollectionData) -> String? {
+        guard let slash = name.firstIndex(of: "/") else { return nil }
+        let folder = String(name[..<slash])
+        if let watch = data.watches.first(where: { $0.id == folder }) { return watch.name }
+        if folder.hasPrefix("wl-"), let item = data.wishlist.first(where: { "wl-" + $0.id == folder }) { return item.name }
+        return nil
     }
 
     /// The phone's fill order: what the screens show first. Each item's cover (its render, or its first photo when
@@ -283,17 +317,7 @@ extension CloudLink {
                     marks.noteMissing(name, at: at)
                 }
             } catch CloudFailure.damagedPhoto {
-                let strikes = marks.strike(name, at: at)
-                guard strikes.count >= Self.damagedStrikes,
-                      strikes.last.timeIntervalSince(strikes.first) >= Self.damagedSpan else {
-                    damaged = true
-                    continue
-                }
-                marks.noteUnreadable(name, at: at)
-                Self.photoLog.error("""
-                    gave up on \(name, privacy: .public) after \(strikes.count) fetches whose bytes did not match \
-                    its record; installing without it, and the hub may drop its reference
-                    """)
+                if !struck(name, at: at) { damaged = true }
             }
         }
         // One wording for every pass it holds up (the store has logged which check failed).
@@ -301,6 +325,21 @@ extension CloudLink {
     }
 
     static let damagedReason = "a photo from iCloud did not match its record; sync will try it again"
+
+    /// A fetch of `name` handed over bytes that did not match its record: one more strike. Once there are
+    /// `damagedStrikes` of them spread over at least `damagedSpan`, the photo is given up on (D3, on the Mac and, item
+    /// 11, on the phone): never fetched again, and its reference is kept. Returns whether it was given up on now.
+    private func struck(_ name: String, at date: Date) -> Bool {
+        let strikes = marks.strike(name, at: date)
+        guard strikes.count >= Self.damagedStrikes,
+              strikes.last.timeIntervalSince(strikes.first) >= Self.damagedSpan else { return false }
+        marks.noteUnreadable(name, at: date)
+        Self.photoLog.error("""
+            gave up on \(name, privacy: .public) after \(strikes.count) fetches whose bytes did not match its \
+            record; installing without it; its reference is kept
+            """)
+        return true
+    }
 
     /// Phone, after an install: fetch the named photos it lacks, 3 at a time. With `allowBulk` false (an expensive
     /// or constrained network) nothing is fetched here; screens fetch what they show.
@@ -357,14 +396,15 @@ extension CloudLink {
     }
 
     /// Phone, before a hub exchange: fetch these photos it lacks now, over any connection, so the exchange never
-    /// drops a photo iCloud has (C1 10). What fails is left for the narrowed drop rule, which keeps it. Returns the
+    /// drops a photo iCloud has (C1 10). What fails is left for the narrowed drop rule, which keeps it. Returns
+    /// whether it asked iCloud at all (polish 2 item 14: an answer this hub pass outranks an older sign-out), and the
     /// failure that stopped it, if one did.
     @discardableResult
-    func fetchPhotos(_ names: [String]) async -> CloudFailure? {
-        guard disabled == nil else { return nil }
+    func fetchPhotos(_ names: [String]) async -> (asked: Bool, stoppedBy: CloudFailure?) {
+        guard disabled == nil else { return (false, nil) }
         let start = now()
         let wanted = names.filter { files.url($0) != nil && !files.exists($0) && wantsDownload($0, at: start) }
-        guard !wanted.isEmpty else { return nil }
+        guard !wanted.isEmpty else { return (false, nil) }
         let scope = (account: marks.account, epoch: marks.epoch)
         var results: [Fetched] = []
         var stoppedBy: CloudFailure?
@@ -378,7 +418,7 @@ extension CloudLink {
             }
         }
         note(results, scope: scope)
-        return stoppedBy
+        return (!results.isEmpty, stoppedBy)
     }
 
     /// One fetch's answer, and when it came.
@@ -391,7 +431,10 @@ extension CloudLink {
             switch result {
             case .success(true): marks.confirm(name)
             case .success(false): marks.noteMissing(name, at: at)
-            case .failure(.other), .failure(.damagedPhoto): failedLately[name] = at
+            case .failure(.damagedPhoto):
+                failedLately[name] = at
+                _ = struck(name, at: at)
+            case .failure(.other): failedLately[name] = at
             case .failure: break
             }
         }

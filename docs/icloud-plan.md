@@ -122,7 +122,8 @@ Per device, strictly one link at a time (the existing `isSyncing` flag), never t
    "not in iCloud" (unknownItem) lets the install go ahead without the photo; it is noted in `cloud-photos.json`. A
    photo whose bytes do not match its record is struck and fetched again on later passes (no sooner than 10
    minutes); after 3 strikes spread over at least an hour it is given up on as unreadable, logged, and the install
-   goes ahead (D3). Every damaged photo a pass meets is struck in that pass, so their hours run side by side (R5).
+   goes ahead (D3); its reference is kept and held back from the hub. Every damaged photo a pass meets is struck in
+   that pass, so their hours run side by side (R5).
    Any other failure (network, cancelled, a server error, a disk that will not take the file): do not install,
    retry next pass.
 7. If merged differs from the remote body: save with `ifServerRecordUnchanged` over the fetched system fields.
@@ -171,9 +172,10 @@ Files on each device, beside `sync.json`:
   for it (D2), and the hub exchange stops that pass with a retryable error, dropping and sending nothing, and logs
   the path (R4). Only a file that no longer exists counts as gone.
 - Mac downloads (step 6): only "not in iCloud" is installed past. A photo iCloud hands over with bytes that do not
-  match its record is retried; after 3 such fetches over at least an hour it is given up on as unreadable and counts
-  as not in iCloud for the drop rule below (D3), with a loud log line. A pass strikes every damaged photo it meets,
-  then waits once (R5).
+  match its record is retried; after 3 such fetches over at least an hour it is given up on as unreadable, with a
+  loud log line: its reference is kept and held back from the hub (D3). A pass strikes every damaged photo it meets,
+  then waits once (R5). The phone gives up on a damaged photo the same way, from its fetches before a hub exchange
+  and its fill.
 - Phone downloads are lazy. `PhotoStore.load` gets a cloud source: local file, else iCloud by record name (verify
   size and `sha256`, write atomically), else a placeholder. After an install, a background fill fetches what is
   still missing, 3 at a time, only on a path that is not expensive or constrained; on cellular only what a screen
@@ -184,10 +186,12 @@ Files on each device, beside `sync.json`:
 - One existing rule is narrowed. The hub exchange drops references to files "gone on both sides" (CS:147-157). While
   the cloud link can answer (link on, account available, not paused, not turned off for this launch, not a newer
   format, and the book holds a document epoch), a reference is dropped only if iCloud has said it does not have that
-  file, or the Mac has given up on it as unreadable (`cloud-photos.json`). Otherwise the hub exchange is skipped for
-  this tick. When the cloud link cannot answer, the old rule applies, exactly as before iCloud (D4). A phone on the
-  hub link first fetches from iCloud the files the exchange would drop. Without this, a photo that simply has not
-  come down yet could lose its reference everywhere.
+  file (`cloud-photos.json`). Otherwise the hub exchange is skipped for this tick. When the cloud link cannot answer,
+  the old rule applies, exactly as before iCloud (D4). A phone on the hub link first fetches from iCloud the files the
+  exchange would drop. Without this, a photo that simply has not come down yet could lose its reference everywhere.
+  A file given up on as unreadable (D3) is neither dropped nor waited on: its reference is kept and held back from
+  the hub, which is sent the collection without it (the hub refuses a document naming a file it lacks), and laid back
+  into what this device installs. Only the hub, which has no file to show, goes without it.
 
 ## 6. Who creates the document, and what base a device joins with
 
@@ -264,7 +268,7 @@ No new choices. Copy for the existing sync line and tonight's notice (which must
 | An edit lands while a pass runs | Nothing installed; go round again. After a confirmed write the round's book is kept with the round's own collection as base (R1), and a no-base pass (D5) uses that book from then on (R2). |
 | `unknownItem` for a photo | Not an error. Never deletes anything. Whoever holds the file and sees it referenced uploads it. |
 | A held photo cannot be read (also `assetFileNotFound` while the file is still there) | Not gone while the file exists: the document waits this pass (D2), and the hub exchange stops with a retryable error, sending and dropping nothing, and logs the path (R4). |
-| Photo bytes do not match their record (Mac download) | Retried no sooner than 10 minutes on; the install waits. After 3 such fetches over at least an hour: given up on as unreadable, logged, and installed past; it then counts as not in iCloud for the drop rule (D3). Every damaged photo met in a pass is struck in that pass (R5). Any other download failure waits for the next pass. |
+| Photo bytes do not match their record (Mac download; the phone's fetches too) | Retried no sooner than 10 minutes on; the install waits. After 3 such fetches over at least an hour: given up on as unreadable, logged, and installed past; its reference is kept and held back from the hub (D3). Every damaged photo met in a pass is struck in that pass (R5). Any other download failure waits for the next pass. |
 | `requestRateLimited`, `zoneBusy`, `serviceUnavailable` | `notBefore = now + retryAfter`. |
 | Network errors | Quiet; next tick. The staleness notice covers a long gap. |
 | `assetFileNotFound` | Drop that photo's mark, next pass re-checks the file (a file still there: the held-photo row above). |

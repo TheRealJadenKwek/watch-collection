@@ -939,7 +939,8 @@ final class CloudLinkTests: XCTestCase {
         let marks = await mac.link.marks
         XCTAssertNotNil(marks.unreadable["wl-i9/p1.jpg"])
         XCTAssertFalse(marks.saysMissing("wl-i9/p1.jpg"), "iCloud has it; it just never came down whole")
-        XCTAssertTrue(marks.lost.contains("wl-i9/p1.jpg"), "for the drop rule it counts as not in iCloud")
+        XCTAssertFalse(marks.lost.contains("wl-i9/p1.jpg"), "never dropped (polish 2 item 8)")
+        XCTAssertTrue(marks.kept.contains("wl-i9/p1.jpg"), "its reference is kept and held back from the hub")
 
         // Given up on: not fetched again.
         let afterGiveUp = await store.count(.download)
@@ -983,6 +984,8 @@ final class CloudLinkTests: XCTestCase {
 
         let held = await phone.pass()
         XCTAssertNil(held.wroteCloud, "the document went up while a held photo was not sent: \(held)")
+        XCTAssertEqual(held.wait, .failed("a photo of Nine on this device could not be read; sync will try it again"),
+                       "named by its watch (polish 2 item 9)")
         let writes = await store.writes
         XCTAssertEqual(writes, ["mac"])
         let macPass = await mac.pass()
@@ -1164,8 +1167,9 @@ final class CloudLinkTests: XCTestCase {
     func test34ThePhoneFetchesWhatItLacksBeforeAHubExchange() async throws {
         let (store, _, phone) = try await joined(sample)
         try await store.putPhoto("wl-i1/there.jpg", bytes("there"))
-        let failures = await phone.link.fetchPhotos(["wl-i1/there.jpg", "wl-i1/never.jpg"])
-        XCTAssertNil(failures)
+        let fetched = await phone.link.fetchPhotos(["wl-i1/there.jpg", "wl-i1/never.jpg"])
+        XCTAssertTrue(fetched.asked)
+        XCTAssertNil(fetched.stoppedBy)
         XCTAssertTrue(phone.files.exists("wl-i1/there.jpg"))
         let marks = await phone.link.marks
         XCTAssertTrue(marks.saysMissing("wl-i1/never.jpg"))
@@ -1173,7 +1177,10 @@ final class CloudLinkTests: XCTestCase {
 
         await store.signIn(nil)
         let stopped = await phone.link.fetchPhotos(["wl-i1/other.jpg"])
-        XCTAssertEqual(stopped, .noAccount)
+        XCTAssertTrue(stopped.asked)
+        XCTAssertEqual(stopped.stoppedBy, .noAccount)
+        let none = await phone.link.fetchPhotos(["wl-i1/there.jpg"])
+        XCTAssertFalse(none.asked, "held already: iCloud is not asked")
     }
 
     /// C1 7: a cancelled pass is quiet. It is `.busy` (the next tick carries on), never a failure.
@@ -1343,6 +1350,181 @@ final class CloudLinkTests: XCTestCase {
         XCTAssertEqual(all.count, CloudLink.photoNames(in: data).count, "nothing fetched twice")
         let idle = await phone.link.fillPhotos(for: installed, while: { true })
         XCTAssertEqual(idle, CloudLink.FillResult(fetched: 0, stopped: false), "no work left is not a stop")
+    }
+
+    // MARK: Polish round 2 (docs/icloud-polish2-spec.md)
+
+    /// Item 8 (B probe P1 turned round): iCloud's copy of p1 is damaged and the phone's is good. After the hour the
+    /// Mac gives up on it and keeps its reference. Its hub exchange (on an in-process hub) sends the collection
+    /// without p1 and says it held p1 back; what the Mac installs has p1 laid back, so its next cloud pass writes
+    /// nothing, and the phone, which holds the file, keeps it named. AppStore.hubPass itself is not driven here.
+    func test41AGivenUpPhotoKeepsItsReferenceEverywhere() async throws {
+        let dataRoot = root.appendingPathComponent("hub-photos", isDirectory: true)
+        let saved = addLaunchArguments(["WCDataRoot": dataRoot.path])
+        defer { restoreLaunchArguments(saved) }
+        let (store, mac, phone) = try await joined(sample)
+        try phone.files.put("wl-i9/p1.jpg", bytes("p1"))
+        phone.edit { $0.wishlist.append(item("i9", "Nine", photos: ["p1.jpg"])) }
+        let up = await phone.pass()
+        XCTAssertEqual(up.wroteCloud, true)
+        try await store.damagePhoto("wl-i9/p1.jpg")
+        var installed = false
+        for _ in 0..<12 where !installed {
+            installed = await mac.pass().installedData != nil
+            if !installed { clock.advance(11 * 60) }
+        }
+        XCTAssertTrue(installed, "given up on after the hour")
+        let marks = await mac.link.marks
+        XCTAssertTrue(marks.kept.contains("wl-i9/p1.jpg"))
+        XCTAssertFalse(marks.lost.contains("wl-i9/p1.jpg"))
+
+        // The hub exchange: p1's file is on neither the Mac nor the hub.
+        let macData = try XCTUnwrap(mac.data)
+        let remote = SyncSnapshot(data: sample, revision: "r1", photos: [], conflicts: [])
+        XCTAssertEqual(CollectionSyncClient.goneFiles(local: macData, remote: remote), ["wl-i9/p1.jpg"])
+        StubHub.reset()
+        let client = try CollectionSyncClient(address: "http://127.0.0.1:9", protocolClasses: [StubHub.self])
+        let exchanged = try await client.exchange(base: sample, local: macData, resolutions: [:], remote: remote,
+                                                  dropping: marks.lost, keeping: marks.kept)
+        let result = try XCTUnwrap(exchanged, "a kept photo never makes the exchange wait")
+        XCTAssertEqual(result.heldBack, ["wl-i9/p1.jpg"])
+        let sent = try XCTUnwrap(StubHub.lastSentCollection)
+        XCTAssertEqual(sent.wishlist.first { $0.id == "i9" }?.photos, [], "the hub is sent the collection without it")
+        XCTAssertEqual(StubHub.uploads, [], "no file to send")
+        mac.data = CollectionSyncClient.restoringPhotos(result.heldBack, from: macData, into: result.answer.data)
+        XCTAssertEqual(mac.data?.wishlist.first { $0.id == "i9" }?.photos, ["p1.jpg"])
+
+        let writes = await store.writes
+        let next = await mac.pass()
+        let writesAfter = await store.writes
+        XCTAssertEqual(writesAfter, writes, "the Mac's next pass writes nothing: \(next)")
+        let cloud = try await cloudData(store)
+        XCTAssertEqual(cloud.wishlist.first { $0.id == "i9" }?.photos, ["p1.jpg"], "iCloud still names it")
+        _ = await phone.pass()
+        XCTAssertEqual(phone.data?.wishlist.first { $0.id == "i9" }?.photos, ["p1.jpg"])
+        XCTAssertTrue(phone.files.exists("wl-i9/p1.jpg"))
+    }
+
+    /// Item 9: a held photo that cannot be read is named by its watch (or wishlist watch); a file of no item (an
+    /// empty box tile) keeps today's words.
+    func test42AnUnreadablePhotoIsNamedByItsWatch() {
+        var data = sample
+        data.watches[0].photos = ["a.jpg"]
+        data.wishlist[0].photos = ["c.jpg"]
+        XCTAssertEqual(CloudLink.photoOwner("w1/a.jpg", in: data), "Alpha")
+        XCTAssertEqual(CloudLink.photoOwner("wl-i1/c.jpg", in: data), "One")
+        XCTAssertNil(CloudLink.photoOwner("_box/empty-black-00000000.jpg", in: data))
+        XCTAssertNil(CloudLink.photoOwner("w9/a.jpg", in: data), "no such item")
+        XCTAssertNil(CloudLink.photoOwner("wl-w1/a.jpg", in: data), "a watch's id under the wishlist prefix")
+
+        let one = CloudPhotoPush(done: 0, of: 1, finished: false, unreadable: ["w1/a.jpg"])
+        XCTAssertEqual(one.wait(naming: data),
+                       .failed("a photo of Alpha on this device could not be read; sync will try it again"))
+        let several = CloudPhotoPush(done: 1, of: 3, finished: false, unreadable: ["wl-i1/c.jpg", "w1/a.jpg"])
+        XCTAssertEqual(several.wait(naming: data),
+                       .failed("2 photos on this device could not be read, the first of One; sync will try them again"))
+        let tile = CloudPhotoPush(done: 0, of: 1, finished: false, unreadable: ["_box/empty-black-00000000.jpg"])
+        XCTAssertEqual(tile.wait(naming: data), .failed(CloudPhotoPush.unreadableReason))
+        XCTAssertEqual(one.wait(), .failed(CloudPhotoPush.unreadableReason), "no collection given: today's words")
+        // Still sending, or done: as before.
+        XCTAssertEqual(CloudPhotoPush(done: 0, of: 3, finished: false, unreadable: ["w1/a.jpg"]).wait(naming: data),
+                       .sendingPhotos(done: 0, of: 3))
+        XCTAssertNil(CloudPhotoPush(done: 1, of: 1, finished: true).wait(naming: data))
+    }
+
+    /// Item 11: the phone gives up on a damaged photo as the Mac does, from its fetches before a hub exchange (and
+    /// its fill): struck each time, and after three or more strikes over an hour never asked for again. A photo
+    /// repaired before then comes down whole and its strikes go.
+    func test43ThePhoneGivesUpOnADamagedPhotoAfterThreeTriesOverAnHour() async throws {
+        let (store, _, phone) = try await joined(sample)
+        let name = "wl-i1/d.jpg"
+        try await store.putPhoto(name, bytes("d"))
+        try await store.damagePhoto(name)
+        var minutes = 0
+        var gaveUpAt: Int?
+        for attempt in 1...8 {
+            _ = await phone.link.fetchPhotos([name])
+            let marks = await phone.link.marks
+            if marks.kept.contains(name) {
+                gaveUpAt = minutes
+                break
+            }
+            XCTAssertEqual(marks.damaged[name]?.count, attempt, "struck at \(minutes) min")
+            XCTAssertFalse(marks.lost.contains(name))
+            clock.advance(11 * 60)
+            minutes += 11
+        }
+        XCTAssertEqual(gaveUpAt, 66, "three strikes or more, spread over an hour")
+
+        let downloads = await store.count(.download)
+        clock.advance(30 * 60)
+        _ = await phone.link.fetchPhotos([name])
+        var data = sample
+        data.wishlist[0].photos = ["d.jpg"]
+        let fill = await phone.link.fillPhotos(for: data, while: { true })
+        XCTAssertEqual(fill, CloudLink.FillResult(fetched: 0, stopped: false))
+        let after = await store.count(.download)
+        XCTAssertEqual(after, downloads, "given up on: neither the fetch nor the fill asks iCloud again")
+        XCTAssertFalse(phone.files.exists(name))
+
+        let other = "wl-i1/e.jpg"
+        try await store.putPhoto(other, bytes("e"))
+        try await store.damagePhoto(other)
+        _ = await phone.link.fetchPhotos([other])
+        var marks = await phone.link.marks
+        XCTAssertEqual(marks.damaged[other]?.count, 1)
+        try await store.repairPhoto(other, bytes("e"))
+        clock.advance(11 * 60)
+        _ = await phone.link.fetchPhotos([other])
+        marks = await phone.link.marks
+        XCTAssertNil(marks.damaged[other], "repaired before the hour: the strikes go")
+        XCTAssertTrue(marks.inCloud.contains(other))
+        XCTAssertTrue(phone.files.exists(other))
+    }
+
+    /// Item 12a: a strike means iCloud has the photo after all, so an older "not in iCloud" no longer lets the drop
+    /// rule let it go.
+    func test44AStrikeClearsAnOlderNotInICloudMark() async throws {
+        var plain = CloudPhotoMarks()
+        plain.noteMissing("w1/a.jpg", at: clock.now())
+        XCTAssertEqual(plain.lost, ["w1/a.jpg"])
+        plain.strike("w1/a.jpg", at: clock.now())
+        XCTAssertEqual(plain.lost, [])
+        XCTAssertEqual(plain.damaged["w1/a.jpg"]?.count, 1)
+
+        // Through the link: the Mac hears iCloud lacks p1, then p1 arrives damaged and the Mac's fetch strikes it.
+        let (store, mac, phone) = try await joined(sample)
+        phone.edit { $0.wishlist.append(item("i9", "Nine", photos: ["p1.jpg"])) }
+        let up = await phone.pass()
+        XCTAssertEqual(up.wroteCloud, true, "a photo the phone does not hold never blocks")
+        _ = await mac.pass()
+        var marks = await mac.link.marks
+        XCTAssertTrue(marks.lost.contains("wl-i9/p1.jpg"), "iCloud said it does not have it")
+        try await store.putPhoto("wl-i9/p1.jpg", bytes("p1"))
+        try await store.damagePhoto("wl-i9/p1.jpg")
+        clock.advance(11 * 60)
+        let struck = await mac.pass()
+        XCTAssertEqual(struck.wait, .failed(CloudLink.damagedReason))
+        marks = await mac.link.marks
+        XCTAssertEqual(marks.damaged["wl-i9/p1.jpg"]?.count, 1)
+        XCTAssertFalse(marks.lost.contains("wl-i9/p1.jpg"), "iCloud has it: the drop rule may not let it go")
+    }
+
+    /// Item 12b: CloudKit stores whatever the file holds when it reads it, under the checksum it was given. A file
+    /// rewritten while it goes up makes a record the Mac cannot read whole: its pass waits and strikes it.
+    func test45AFileRewrittenWhileItGoesUpMakesARecordTheMacCannotRead() async throws {
+        let (store, mac, phone) = try await joined(sample)
+        try phone.files.put("wl-i9/p1.jpg", bytes("p1"))
+        phone.edit { $0.wishlist.append(item("i9", "Nine", photos: ["p1.jpg"])) }
+        let files = phone.files
+        await store.onNextUploadRead { try? files.put("wl-i9/p1.jpg", Data("rewritten".utf8)) }
+        let up = await phone.pass()
+        XCTAssertEqual(up.wroteCloud, true, "the phone cannot tell")
+        let macPass = await mac.pass()
+        XCTAssertEqual(macPass.wait, .failed(CloudLink.damagedReason))
+        let marks = await mac.link.marks
+        XCTAssertEqual(marks.damaged["wl-i9/p1.jpg"]?.count, 1)
+        XCTAssertFalse(mac.files.exists("wl-i9/p1.jpg"))
     }
 
     // MARK: Fixtures

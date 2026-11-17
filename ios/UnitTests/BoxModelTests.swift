@@ -364,6 +364,104 @@ final class BoxModelTests: XCTestCase {
         XCTAssertNil(result.emptyBoxTiles)
     }
 
+    /// Polish 2 item 8: what the hub exchange held back from the hub goes back into what this device keeps.
+    /// `restoringPhotos` undoes `removingPhotos` exactly, for a first, a middle and a last photo with their framing,
+    /// a cutout and tiles, and twice is the same as once.
+    func testRestoringPhotosUndoesRemovingPhotos() throws {
+        var data = BoxFixture.standard
+        data.watches[0].photos = ["a.jpg", "b.jpg", "c.jpg", "d.jpg", "e.jpg"]
+        data.watches[0].photoFocus = ["a.jpg": PhotoFocus(x: 0.1, y: 0.2, zoom: 1.5), "c.jpg": PhotoFocus(x: 0.3, y: 0.4, zoom: 2),
+                                      "e.jpg": PhotoFocus(x: 0.6, y: 0.7, zoom: 1), "b.jpg": .centered]
+        data.watches[0].boxCutout = BoxCutout(photo: "c.jpg", turn: 5)
+        data.watches[0].boxTiles = ["black": "box-black-11111111.jpg", "brown": "box-brown-22222222.jpg"]
+        data.watches[1].photos = ["x.jpg"]
+        data.wishlist = [BoxFixture.candidate("nomos", photos: ["n1.jpg", "n2.jpg"])]
+        data.wishlist[0].photoFocus = ["n2.jpg": PhotoFocus(x: 0.9, y: 0.1, zoom: 3)]
+        data.wishlist[0].boxCutout = BoxCutout(photo: "n2.jpg")
+        data.wishlist[0].boxTiles = ["black": "box-black-44444444.jpg"]
+        data.emptyBoxTiles = ["black": "empty-black-33333333.jpg", "brown": "empty-brown-55555555.jpg"]
+
+        let first: Set<String> = ["field/a.jpg"]
+        let middle: Set<String> = ["field/c.jpg"]
+        let last: Set<String> = ["field/e.jpg", "wl-nomos/n2.jpg"]
+        let tiles: Set<String> = ["field/box-black-11111111.jpg", "wl-nomos/box-black-44444444.jpg",
+                                  "_box/empty-black-33333333.jpg"]
+        let all = first.union(middle).union(last).union(tiles).union(["field/b.jpg", "field/d.jpg", "wl-nomos/n1.jpg"])
+        let expected = try JSONValue(encoding: data)
+        for keys in [first, middle, last, tiles, first.union(last), middle.union(tiles), all] {
+            let removed = CollectionSyncClient.removingPhotos(keys, from: data)
+            XCTAssertNotEqual(try JSONValue(encoding: removed), expected, "\(keys): something was held back")
+            let restored = CollectionSyncClient.restoringPhotos(keys, from: data, into: removed)
+            XCTAssertEqual(try JSONValue(encoding: restored), expected, "\(keys)")
+            let twice = CollectionSyncClient.restoringPhotos(keys, from: data, into: restored)
+            XCTAssertEqual(try JSONValue(encoding: twice), expected, "\(keys): twice is once")
+        }
+        let untouched = CollectionSyncClient.removingPhotos(middle, from: data)
+        XCTAssertEqual(try JSONValue(encoding: CollectionSyncClient.restoringPhotos([], from: data, into: untouched)),
+                       try JSONValue(encoding: untouched), "no keys: the input as it is")
+    }
+
+    /// Polish 2 item 8: laying the held-back references back never undoes what the hub did: an item it deleted
+    /// stays deleted, photos it added or moved stay where it put them, and a cutout or tile slot it filled stays.
+    func testRestoringPhotosLeavesTheHubsOwnChangesAlone() throws {
+        var local = BoxFixture.standard
+        local.watches[0].photos = ["a.jpg", "k.jpg", "b.jpg"]
+        local.watches[0].photoFocus = ["k.jpg": PhotoFocus(x: 0.2, y: 0.2, zoom: 2)]
+        local.watches[0].boxCutout = BoxCutout(photo: "k.jpg")
+        local.watches[0].boxTiles = ["black": "box-black-11111111.jpg"]
+        local.watches[1].photos = ["kd.jpg"]
+        local.wishlist = [BoxFixture.candidate("nomos", photos: ["kn.jpg"])]
+        local.wishlist[0].boxTiles = ["black": "box-black-44444444.jpg"]
+        local.emptyBoxTiles = ["black": "empty-black-33333333.jpg"]
+        let keys: Set<String> = ["field/k.jpg", "field/box-black-11111111.jpg", "diver/kd.jpg", "wl-nomos/kn.jpg",
+                                 "wl-nomos/box-black-44444444.jpg", "_box/empty-black-33333333.jpg"]
+
+        // What the hub answered to the collection sent without the keys, with its own changes on top.
+        var answer = CollectionSyncClient.removingPhotos(keys, from: local)
+        answer.watches.removeAll { $0.id == "diver" }
+        answer.watches[0].photos = ["b.jpg", "new.jpg", "a.jpg"]
+        answer.watches[0].boxCutout = BoxCutout(photo: "b.jpg")
+        answer.watches[0].boxTiles = ["black": "box-black-99999999.jpg"]
+        answer.wishlist[0].boxTiles = ["black": "box-black-88888888.jpg"]
+        answer.emptyBoxTiles = ["black": "empty-black-77777777.jpg"]
+
+        let restored = CollectionSyncClient.restoringPhotos(keys, from: local, into: answer)
+        XCTAssertNil(restored.watches.first { $0.id == "diver" }, "deleted on the hub: stays deleted")
+        XCTAssertEqual(restored.watches.map(\.id), answer.watches.map(\.id))
+        let field = try XCTUnwrap(restored.watches.first { $0.id == "field" })
+        XCTAssertEqual(field.photos, ["b.jpg", "new.jpg", "a.jpg", "k.jpg"], "the hub's order kept; k after a, as here")
+        XCTAssertEqual(field.photoFocus, ["k.jpg": PhotoFocus(x: 0.2, y: 0.2, zoom: 2)])
+        XCTAssertEqual(field.boxCutout, BoxCutout(photo: "b.jpg"), "the hub's cutout is not replaced")
+        XCTAssertEqual(field.boxTiles, ["black": "box-black-99999999.jpg"], "the hub's tile is not replaced")
+        XCTAssertEqual(restored.wishlist[0].photos, ["kn.jpg"], "first when no earlier photo is there")
+        XCTAssertEqual(restored.wishlist[0].boxTiles, ["black": "box-black-88888888.jpg"])
+        XCTAssertEqual(restored.emptyBoxTiles, ["black": "empty-black-77777777.jpg"])
+
+        // Slots the hub left empty take the held-back tile; a key the hub sent back itself is not added twice.
+        answer.watches[0].boxTiles = nil
+        answer.watches[0].boxCutout = nil
+        answer.emptyBoxTiles = nil
+        answer.wishlist[0].photos = ["kn.jpg"]
+        let filled = CollectionSyncClient.restoringPhotos(keys, from: local, into: answer)
+        XCTAssertEqual(filled.watches[0].boxTiles, ["black": "box-black-11111111.jpg"])
+        XCTAssertEqual(filled.watches[0].boxCutout, BoxCutout(photo: "k.jpg"))
+        XCTAssertEqual(filled.emptyBoxTiles, ["black": "empty-black-33333333.jpg"])
+        XCTAssertEqual(filled.wishlist[0].photos, ["kn.jpg"])
+
+        // The hub deleted a kept photo (k removed on the Mac). The exchange passes only what it held back (review
+        // F1), and a k whose file is on this device is not held back: the hub's delete sticks.
+        var deleted = CollectionSyncClient.removingPhotos(keys, from: local)
+        deleted.watches[0].photos = ["a.jpg", "b.jpg"]
+        let stuck = CollectionSyncClient.restoringPhotos(keys.subtracting(["field/k.jpg"]), from: local, into: deleted)
+        XCTAssertEqual(stuck.watches[0].photos, ["a.jpg", "b.jpg"], "k was not held back: deleted stays deleted")
+        XCTAssertNil(stuck.watches[0].photoFocus?["k.jpg"])
+        XCTAssertNil(stuck.watches[0].boxCutout)
+        // With its file on neither side k was held back, and an answer without it reads the same whether the hub
+        // deleted it or never saw it: it is laid back, a reference with no file (the spec's accepted limit).
+        let laidBack = CollectionSyncClient.restoringPhotos(keys, from: local, into: deleted)
+        XCTAssertEqual(laidBack.watches[0].photos, ["a.jpg", "k.jpg", "b.jpg"])
+    }
+
     func testUploadsSendTilesOnlyForItemsTheHubLacks() {
         var hub = BoxFixture.standard
         hub.wishlist = [BoxFixture.candidate("nomos")]

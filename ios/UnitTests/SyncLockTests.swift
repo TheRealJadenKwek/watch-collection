@@ -11,8 +11,15 @@ final class SyncLockTests: XCTestCase {
     }
 
     override func tearDownWithError() throws {
+        if let savedArguments {
+            UserDefaults.standard.setVolatileDomain(savedArguments, forName: UserDefaults.argumentDomain)
+            self.savedArguments = nil
+        }
         try? FileManager.default.removeItem(at: folder)
     }
+
+    /// The launch arguments as they were before `useOwnDataRoot`, put back in teardown.
+    private var savedArguments: [String: Any]?
 
     /// A holder that polls `isWanted`, as the bridge does between steps, and steps aside when it reads true.
     private func pollForWant(_ holder: SyncLock, every interval: TimeInterval = 0.02, gaveUp: XCTestExpectation) {
@@ -208,6 +215,110 @@ final class SyncLockTests: XCTestCase {
         guard case .unavailable? = hold.value else { return XCTFail("expected .unavailable, got \(String(describing: hold.value))") }
         XCTAssertFalse(app.isHeld)
         bridge.unlock()
+    }
+
+    // MARK: The store holds the gate (polish 2 item 16)
+
+    /// While a bridge tick has the library, `start()` reads nothing: no `sync.json`, no collection shown. Once the
+    /// tick lets go, the same call loads it.
+    @MainActor
+    func testTheStoreReadsNothingUntilItHoldsTheLibrary() async throws {
+        try useOwnDataRoot()
+        try SyncDisk.save(SyncCheckpoint(data: sample, base: nil, server: Self.deadHub, lastSuccess: nil))
+        let bridge = SyncLock(url: SyncLock.appURL)
+        XCTAssertTrue(try bridge.tryLock())
+        let app = SyncLock(url: SyncLock.appURL)
+        defer { app.unlock() }
+        XCTAssertEqual(app.holdForApp(retry: 0.02), .waiting)
+        let store = AppStore(library: app)
+        let starting = Task { @MainActor in await store.start() }
+
+        try await waitUntil { app.asks >= 20 }
+        XCTAssertFalse(store.hasStarted)
+        XCTAssertNil(store.data)
+        bridge.unlock()
+        await starting.value
+        XCTAssertTrue(app.isHeld)
+        XCTAssertTrue(store.hasStarted)
+        XCTAssertEqual(store.data?.watches.map(\.id), ["w1", "w2"])
+        try await waitForQuiet(store)
+    }
+
+    /// A restore writes the library, so it waits for the same lock (and then for the store's own load).
+    @MainActor
+    func testARestoreWaitsForTheLibraryToo() async throws {
+        try useOwnDataRoot()
+        try SyncDisk.save(SyncCheckpoint(data: sample, base: nil, server: Self.deadHub, lastSuccess: nil))
+        let before = try Data(contentsOf: SyncDisk.url)
+        let bridge = SyncLock(url: SyncLock.appURL)
+        XCTAssertTrue(try bridge.tryLock())
+        let app = SyncLock(url: SyncLock.appURL)
+        defer { app.unlock() }
+        XCTAssertEqual(app.holdForApp(retry: 0.02), .waiting)
+        let store = AppStore(library: app)
+        var restored = sample
+        restored.watches.append(watch("w9", "Restored"))
+        let imported = CollectionImport(data: restored, photos: [], sourceName: "test", includesPhotoArchive: false)
+        let restoring = Task { @MainActor in await store.restore(imported) }
+
+        try await waitUntil { app.asks >= 20 }
+        XCTAssertEqual(try Data(contentsOf: SyncDisk.url), before, "nothing written while the tick has the library")
+        XCTAssertFalse(store.hasStarted)
+        bridge.unlock()
+        let done = await restoring.value
+        XCTAssertTrue(done)
+        XCTAssertEqual(SyncDisk.load()?.data.watches.map(\.id), ["w1", "w2", "w9"], "the restore is in")
+        try await waitForQuiet(store)
+    }
+
+    // MARK: Fixtures
+
+    /// A hub address nothing listens on (never the real hub).
+    private static let deadHub = "http://127.0.0.1:9"
+
+    /// Points the app's folders at a data root inside this test's folder, with a hub nothing answers on, through
+    /// the `-WCDataRoot` and `-WCHub` launch arguments; teardown puts them back.
+    @MainActor
+    private func useOwnDataRoot() throws {
+        let root = folder.appendingPathComponent("root", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let defaults = UserDefaults.standard
+        let saved = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
+        savedArguments = saved
+        defaults.setVolatileDomain(saved.merging(["WCDataRoot": root.path, "WCHub": Self.deadHub]) { $1 },
+                                   forName: UserDefaults.argumentDomain)
+        XCTAssertEqual(AppPaths.collectionFolder.standardizedFileURL.path,
+                       root.appendingPathComponent("WatchCollection").standardizedFileURL.path)
+        XCTAssertEqual(AppStore.initialSyncAddress, Self.deadHub)
+    }
+
+    @MainActor
+    private func waitUntil(timeout: TimeInterval = 10, _ condition: () -> Bool) async throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while !condition() {
+            guard Date() < deadline else { return XCTFail("timed out") }
+            try await Task.sleep(for: .milliseconds(10))
+        }
+    }
+
+    /// The sync a restore starts runs out before teardown puts the folders back.
+    @MainActor
+    private func waitForQuiet(_ store: AppStore) async throws {
+        try await Task.sleep(for: .milliseconds(100))
+        try await waitUntil { !store.status.isSyncing }
+    }
+
+    private var sample: CollectionData {
+        CollectionData(
+            settings: CollectionSettings(autoBackup: false, backupRemote: nil, autoImage: true,
+                                         wrist: WristProfile(inches: 6.75, sweetSpotMin: 38, sweetSpotMax: 41, perfect: 39, lugMax: 48)),
+            watches: [watch("w1", "Alpha"), watch("w2", "Bravo")],
+            categories: ["Dive"], wishlist: [], brandWatchlist: [], dialColors: ["Black"], materials: ["Steel"]
+        )
+    }
+
+    private func watch(_ id: String, _ name: String) -> Watch {
+        Watch(id: id, name: name, story: "", purchasedText: "", price: 100, status: "owned", statusNote: "", photos: [])
     }
 }
 

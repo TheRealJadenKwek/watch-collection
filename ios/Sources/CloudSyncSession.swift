@@ -62,8 +62,14 @@ final class CloudSyncSession {
     private(set) var lastPassConfirmedWrite = false
     /// The last pass installed a collection that changed something here (C1 9).
     private(set) var lastPassInstalled = false
-    /// Why the last pass stopped short; nil when it settled, asked, or none has run this launch.
+    /// Why the last pass stopped short; nil when it settled, asked, or none has run this launch. The drop rule's
+    /// gate also writes it.
     private(set) var lastWait: CloudWait?
+    /// When `lastWait` was last learnt from iCloud (a pass's report, or the drop rule's gate); nil before either this
+    /// launch. Older than `CloudLink.missingRecheck`, the drop rule asks again before trusting it (polish 2 item 13).
+    private var gateAt: Date?
+    /// The phone's last fetch before a hub exchange asked iCloud at least once (polish 2 item 14).
+    private var fetchAsked = false
     /// What stopped the phone's last fetch before a hub exchange; nil when nothing did.
     private var fetchFailure: CloudFailure?
     /// The round in flight, for the hooks the link calls mid-pass.
@@ -221,8 +227,13 @@ final class CloudSyncSession {
     /// Phone, before a hub exchange: fetch these missing photos from iCloud now (C1 10). A phone on the hub runs no
     /// cloud pass, so what stops this fetch is what it knows of the account.
     func fetch(_ names: [String]) async {
+        // What an earlier hub pass's fetch learnt says nothing about this one.
+        fetchAsked = false
+        fetchFailure = nil
         guard !names.isEmpty else { return }
-        fetchFailure = await link.fetchPhotos(names)
+        let fetched = await link.fetchPhotos(names)
+        fetchAsked = fetched.asked
+        fetchFailure = fetched.stoppedBy
         files.saveMarks(await link.marks)
     }
 
@@ -231,24 +242,42 @@ final class CloudSyncSession {
         await link.statuses
     }
 
-    /// The narrowed drop rule's names (docs/icloud-fixes.md D4): those iCloud has said it does not have, and those
-    /// given up on as unreadable. nil when the cloud link cannot answer (turned off for this launch, signed out,
-    /// paused, a newer format, or no document behind the book), and then the hub exchange drops what is gone on both
-    /// sides, as it did before iCloud.
-    func namesNotInCloud() async -> Set<String>? {
+    /// The narrowed drop rule's names (docs/icloud-fixes.md D4): those iCloud has said it does not have. nil when
+    /// the cloud link cannot answer (turned off for this launch, signed out, paused, a newer format, or no document
+    /// behind the book), and then the hub exchange drops what is gone on both sides, as it did before iCloud.
+    /// `gone`: a file is gone on both sides, so the answer matters. Then a memory of iCloud older than
+    /// `CloudLink.missingRecheck`, or from no pass this launch, is asked again first (polish 2 item 13). A fetch this
+    /// hub pass made outranks an older sign-out (item 14).
+    func namesNotInCloud(gone: Bool = false) async -> Set<String>? {
         guard await link.disabled == nil, book.paused == nil, book.epoch != nil else { return nil }
+        if fetchAsked {
+            switch fetchFailure {
+            case .noAccount?, .purged?, .misconfigured?:
+                return nil
+            default:
+                // iCloud took the account's call this hub pass: an older sign-out no longer holds.
+                if lastWait == .noAccount { lastWait = nil }
+            }
+        }
+        if gone, gateAt.map({ now().timeIntervalSince($0) >= CloudLink.missingRecheck }) ?? true {
+            lastWait = await link.gate(book)
+            gateAt = now()
+        }
         switch lastWait {
         case .noAccount?, .newerFormat?, .erased?, .noDocument?, .needsHubFirst?:
             return nil
         default:
-            break
-        }
-        switch fetchFailure {
-        case .noAccount?, .purged?, .misconfigured?:
-            return nil
-        default:
             return await link.marks.lost
         }
+    }
+
+    /// The names the cloud link has given up on as unreadable (D3, polish 2 item 8) whose file is not on this device:
+    /// their references are kept, and held back from the hub only. No gate: keeping is the safe side whether or not
+    /// iCloud can answer. A given-up name whose file is here (fetched from the hub since) is an ordinary photo to the
+    /// hub exchange, so a delete made elsewhere sticks (review F1); its mark stays until a cloud pass confirms it.
+    func namesKeptWithoutFile() async -> Set<String> {
+        let kept = await link.marks.kept
+        return kept.filter { !link.files.exists($0) }
     }
 
     private func keep(_ next: CloudBook) {
@@ -260,6 +289,7 @@ final class CloudSyncSession {
 
     private func report(_ outcome: CloudOutcome, _ host: Host) async {
         if case let .waiting(wait) = outcome { lastWait = wait } else { lastWait = nil }
+        gateAt = now()
         let marks = await link.marks
         let names = host.local().map(CloudLink.photoNames) ?? []
         let held = names.filter { link.files.exists($0) }.count

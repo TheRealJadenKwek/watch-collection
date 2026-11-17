@@ -354,8 +354,20 @@ enum CloudSyncCopy {
     /// The Mac with no document and no clean hub pass to make it from (section 6).
     static let needsHubFirst = "iCloud sync starts once this Mac reaches its library."
 
-    /// A joined phone finds no iCloud copy (docs/icloud-fixes.md D10).
-    static let missing = "The iCloud copy is missing. Open Watch Collection on your Mac to start iCloud sync again."
+    /// A joined phone finds no iCloud copy (docs/icloud-fixes.md D10). The likeliest cause after an erase is a Mac
+    /// signed in to another account, so it asks for that check first.
+    static let missing = "The iCloud copy is missing. Check that this iPhone and your Mac use the same Apple Account. "
+        + "If they do, open Watch Collection on your Mac to start iCloud sync again."
+
+    /// The Mac sidebar's headline while changes wait for a choice here: "1 change needs a choice".
+    static func choices(_ count: Int) -> String {
+        count == 1 ? "1 change needs a choice" : "\(count) changes need a choice"
+    }
+
+    /// The sync message while changes wait for a choice here: "1 change needs your choice in Settings".
+    static func choicesInSettings(_ count: Int) -> String {
+        count == 1 ? "1 change needs your choice in Settings" : "\(count) changes need your choice in Settings"
+    }
 
     /// The sentence the sync line adds for the iCloud link's state, or nil when there is nothing to say (settled,
     /// or a pause the next tick deals with quietly). The phone's banner says the same for the states it covers.
@@ -459,7 +471,7 @@ struct MacSyncLine: Equatable {
     static let hubSettledMessage = "Up to date"
 
     static func evaluate(hubMessage: String, conflicts: Int, cloud: CloudDisplay?, now: Date) -> MacSyncLine {
-        let hubHeadline = conflicts == 0 ? hubMessage : "\(conflicts) changes need a choice"
+        let hubHeadline = conflicts == 0 ? hubMessage : CloudSyncCopy.choices(conflicts)
         let hubSettled = conflicts == 0 && hubMessage == hubSettledMessage
         guard let cloud else { return MacSyncLine(headline: hubHeadline, settled: hubSettled) }
         guard let alert = alert(cloud, now: now) else {
@@ -495,5 +507,16 @@ struct MacSyncLine: Equatable {
         default:
             return nil
         }
+    }
+}
+
+/// The Mac window's line while it waits to open the collection (a bridge tick still holds the library). After a
+/// minute it says why, under "Opening the collection".
+enum OpeningCopy {
+    static let slowAfter: TimeInterval = 60
+
+    /// nil before `slowAfter`, then the sentence.
+    static func line(waited: TimeInterval) -> String? {
+        waited < slowAfter ? nil : "Still waiting for the last background sync to finish."
     }
 }

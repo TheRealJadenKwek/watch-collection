@@ -368,19 +368,22 @@ enum CloudRecords {
         (error.partialErrorsByItemID ?? [:]).values.compactMap { $0 as? CKError }.filter { $0.code != .batchRequestFailed }
     }
 
-    /// Which of two failures from one partial failure tells the link more. The order of the items is not fixed,
-    /// so ties break on the retry time, then on the text.
-    private static func precedes(_ a: CloudFailure, _ b: CloudFailure) -> Bool {
+    /// Which of two failures from one partial failure tells the link more. The order of the items is not fixed, so
+    /// every case has its own rank, and two of the same case break on the retry time, then on the text.
+    static func precedes(_ a: CloudFailure, _ b: CloudFailure) -> Bool {
         func rank(_ failure: CloudFailure) -> Int {
             switch failure {
-            case .misconfigured: 7
-            case .noAccount: 6
-            case .purged: 5
-            case .quotaFull: 4
-            case .retryAfter: 3
-            case .changed: 2
-            case .photoFileMissing, .network, .damagedPhoto: 1
-            case .other, .cancelled: 0
+            case .misconfigured: 10
+            case .noAccount: 9
+            case .purged: 8
+            case .quotaFull: 7
+            case .retryAfter: 6
+            case .changed: 5
+            case .network: 4
+            case .photoFileMissing: 3
+            case .damagedPhoto: 2
+            case .other: 1
+            case .cancelled: 0
             }
         }
         if rank(a) != rank(b) { return rank(a) < rank(b) }

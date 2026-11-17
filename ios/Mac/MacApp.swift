@@ -28,7 +28,8 @@ enum Entry {
 }
 
 struct WatchCollectionMacApp: App {
-    @StateObject private var store = AppStore()
+    /// The store waits on the same hold before it reads anything (`AppStore.start`, `restore`).
+    @StateObject private var store = AppStore(library: Entry.library)
     @Environment(\.scenePhase) private var scenePhase
     /// The app holds the library (or there is no lock file to hold): the store may read and sync it.
     @State private var libraryOpen = false
@@ -45,8 +46,9 @@ struct WatchCollectionMacApp: App {
                 .frame(minWidth: 980, minHeight: 640)
                 .task { @MainActor in
                     // Nothing reads or syncs the library until the app holds it: a bridge tick still running steps
-                    // aside at its next step, and its watchdog ends it at 50 s whatever it is doing.
-                    await Entry.library.whenReady()
+                    // aside at its next step, and its watchdog ends it at 50 s whatever it is doing. The store waits
+                    // on the same hold itself; this wait is for the spinner.
+                    _ = await Entry.library.whenReady()
                     libraryOpen = true
                     await store.start()
                 }
@@ -77,6 +79,9 @@ struct MacRootView: View {
     @State private var mounted: Set<String> = []
     /// Pages open in each section, so going back to a section returns to where you were in it.
     @State private var paths: [String: NavigationPath] = [:]
+    /// How long the window has waited to hold the library, as far as the opening line needs to know: 0, then
+    /// `OpeningCopy.slowAfter` once that long has gone by. Back to 0 when the wait ends.
+    @State private var openingWaited: TimeInterval = 0
 
     var body: some View {
         Group {
@@ -87,6 +92,10 @@ struct MacRootView: View {
                     ProgressView()
                     Text(opening || store.isRefreshing ? "Opening the collection…" : "Waiting for your collection from iCloud…")
                         .foregroundStyle(.secondary)
+                    if opening, let slow = OpeningCopy.line(waited: openingWaited) {
+                        Text(slow)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             } else {
                 VStack {
@@ -116,6 +125,13 @@ struct MacRootView: View {
             }
         }
         .animation(.easeInOut, value: store.notice)
+        .task(id: opening) {
+            // A minute into the wait for the library, the window says why it is still opening.
+            openingWaited = 0
+            guard opening else { return }
+            try? await Task.sleep(for: .seconds(OpeningCopy.slowAfter))
+            if !Task.isCancelled, opening { openingWaited = OpeningCopy.slowAfter }
+        }
         #if DEBUG
         .task {
             // `-atelierProbe settings` opens Settings, for screenshots.

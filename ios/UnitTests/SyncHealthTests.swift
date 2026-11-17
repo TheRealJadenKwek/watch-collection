@@ -465,7 +465,8 @@ extension SyncHealthTests {
     /// have nothing to say (the phone keeps its hub link; the Mac makes the document).
     func testAJoinedPhoneWithNoICloudCopySaysItIsMissing() {
         XCTAssertEqual(CloudSyncCopy.missing,
-                       "The iCloud copy is missing. Open Watch Collection on your Mac to start iCloud sync again.")
+                       "The iCloud copy is missing. Check that this iPhone and your Mac use the same Apple Account. "
+                           + "If they do, open Watch Collection on your Mac to start iCloud sync again.")
         XCTAssertEqual(CloudSyncCopy.sentence(cloud(.noDocument), device: "iPhone"), CloudSyncCopy.missing)
         let notJoined = CloudDisplay(role: .phone, active: .hub, joined: false, preferHub: false, wait: .noDocument)
         XCTAssertNil(CloudSyncCopy.sentence(notJoined, device: "iPhone"))
@@ -640,6 +641,27 @@ extension SyncHealthTests {
             XCTAssertTrue(line(mac(wait, lastSync: now.addingTimeInterval(600))).settled)
             checkCopyRules("\(stale.headline) \(stale.cloudLine ?? "")")
         }
+    }
+
+    /// C2 round 2 note 8: one change reads in the singular, in the sidebar's headline and in the sync message.
+    func testOneChangeNeedsAChoice() {
+        XCTAssertEqual(CloudSyncCopy.choices(1), "1 change needs a choice")
+        XCTAssertEqual(CloudSyncCopy.choices(3), "3 changes need a choice")
+        XCTAssertEqual(CloudSyncCopy.choicesInSettings(1), "1 change needs your choice in Settings")
+        XCTAssertEqual(CloudSyncCopy.choicesInSettings(3), "3 changes need your choice in Settings")
+        XCTAssertEqual(line(nil, hub: CloudSyncCopy.choicesInSettings(1), conflicts: 1),
+                       MacSyncLine(headline: "1 change needs a choice", settled: false))
+        for words in [CloudSyncCopy.choices(1), CloudSyncCopy.choices(3), CloudSyncCopy.choicesInSettings(1),
+                      CloudSyncCopy.choicesInSettings(3)] { checkCopyRules(words) }
+    }
+
+    /// C2 round 2 note 7: the Mac window waiting to open the collection says why once a minute has gone by.
+    func testTheOpeningLineAppearsAfterAMinute() {
+        XCTAssertNil(OpeningCopy.line(waited: 0))
+        XCTAssertNil(OpeningCopy.line(waited: OpeningCopy.slowAfter - 1))
+        XCTAssertEqual(OpeningCopy.line(waited: OpeningCopy.slowAfter), "Still waiting for the last background sync to finish.")
+        XCTAssertEqual(OpeningCopy.line(waited: 600), "Still waiting for the last background sync to finish.")
+        checkCopyRules(OpeningCopy.line(waited: 600) ?? "")
     }
 
     /// The worse of the two wins; on a tie the hub keeps the headline and iCloud keeps its line.

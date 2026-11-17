@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import os
 
 // iCloud sync: the types shared by the cloud link (CloudLink, tested against a fake) and the real
 // CloudKit store. This file never imports CloudKit. See docs/icloud-plan.md sections 2, 4 and 8.
@@ -379,6 +380,31 @@ actor CloudLink {
         return (nil, book)
     }
 
+    // MARK: The drop rule's gate (polish 2 items 13 and 14)
+
+    /// What iCloud says now about the document behind `book`, for the hub exchange's drop rule when the session's
+    /// memory of it is old or from no pass this launch. Two reads (the account, the head); nothing is written or kept,
+    /// and `statuses` are not touched. nil when nothing stands against the narrowed rule, or when iCloud could not be
+    /// asked (a pass is running, the link is off for this launch, or the book is throttled) or failed otherwise.
+    func gate(_ book: CloudBook) async -> CloudWait? {
+        guard !running, disabled == nil else { return nil }
+        if let notBefore = book.notBefore, now() < notBefore { return nil }
+        do {
+            let account = try await store.account()
+            let head = try await store.head().document
+            guard account == book.account, let head else { return .noDocument }
+            guard head.format <= CloudRecords.format else { return .newerFormat }
+            guard head.epoch == book.epoch else { return .noDocument }
+            return nil
+        } catch {
+            switch Self.failure(error) {
+            case .noAccount: return .noAccount
+            case .purged: return .erased
+            default: return nil
+            }
+        }
+    }
+
     private func run(_ input: CloudInput, book: inout CloudBook, deadline: Date) async throws -> CloudOutcome {
         // 1. Gate: the account. Another account's book and marks say nothing about this one's database.
         let account = try await store.account()
@@ -454,7 +480,7 @@ actor CloudLink {
 
             // 5. Photos up. The document is not written while any held one is outstanding.
             let push = try await pushPhotos(names, trustMarks: true, deadline: deadline)
-            if changesCloud, let wait = push.wait { return .waiting(wait) }
+            if changesCloud, let wait = held(push, naming: installed) { return .waiting(wait) }
 
             // 6. Mac: the photos it lacks come down before it installs.
             if role == .mac { try await pullPhotos(names) }
@@ -498,7 +524,7 @@ actor CloudLink {
         // Marks made for a document that has gone prove nothing about a new one; and none is trusted here.
         if marks.epoch != nil { marks = CloudPhotoMarks(account: marks.account) }
         let push = try await pushPhotos(Self.photoNames(in: installed), trustMarks: false, deadline: deadline)
-        if let wait = push.wait { return .waiting(wait) }
+        if let wait = held(push, naming: installed) { return .waiting(wait) }
         let bytes = body.canonicalData
         // D1: the epoch is chosen here and kept on disk with the body as its base before the save. Whatever happens
         // to the answer (lost, the process gone, the book not saved), the next pass that sees this epoch knows the
@@ -527,6 +553,19 @@ actor CloudLink {
         record(document, base: installed, in: &book)
         await noteStatus(input, book, conflicts: 0)
         return .installed(installed, wroteCloud: true)
+    }
+
+    /// Why step 5 holds the document back, if it does: photos still going up, or held photos that could not be read
+    /// (D2), named by their watch in `data`. Those are logged by name at error level, once per pass that waits.
+    private func held(_ push: CloudPhotoPush, naming data: CollectionData) -> CloudWait? {
+        guard let wait = push.wait(naming: data) else { return nil }
+        if !push.unreadable.isEmpty {
+            Self.photoLog.error("""
+                could not read \(push.unreadable.joined(separator: ", "), privacy: .public) on this device; \
+                the document waits
+                """)
+        }
+        return wait
     }
 
     /// D1: a document this device was making when its last pass ended. If the head shows that epoch, it landed, and

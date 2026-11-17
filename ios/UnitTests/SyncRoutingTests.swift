@@ -795,6 +795,43 @@ final class SyncRoutingTests: XCTestCase {
                 XCTAssertNotNil(error as? URLError, "\(error)")
             }
         }
+
+        // Polish 2 item 8: a file the cloud link has given up on is kept, not waited on: the exchange goes ahead.
+        do {
+            _ = try await client.exchange(base: sample, local: local, resolutions: [:], remote: remote, dropping: [],
+                                          keeping: Set(keys))
+            XCTFail("expected the exchange to reach for the hub")
+        } catch {
+            XCTAssertNotNil(error as? URLError, "\(error)")
+        }
+    }
+
+    /// Polish 2 item 8: the drop rule's plan. A name given up on is kept (held back from the hub only) and never makes
+    /// the exchange wait; the rest is dropped or waited on as before. With nothing kept it is the old rule.
+    func testThePhotoPlanKeepsAGivenUpNameAndDropsOrWaitsOnTheRest() {
+        typealias Plan = (drop: Set<String>, keep: Set<String>)
+        func plan(_ gone: Set<String>, _ dropping: Set<String>?, _ keeping: Set<String>) -> Plan? {
+            CollectionSyncClient.photoPlan(gone: gone, dropping: dropping, keeping: keeping)
+        }
+        func same(_ a: Plan?, _ b: Plan?, _ note: String, line: UInt = #line) {
+            XCTAssertEqual(a?.drop, b?.drop, note, line: line)
+            XCTAssertEqual(a?.keep, b?.keep, note, line: line)
+            XCTAssertEqual(a == nil, b == nil, note, line: line)
+        }
+        let gone: Set<String> = ["w1/a.jpg", "w1/b.jpg"]
+        // Keeping nothing: today's rule.
+        same(plan(gone, nil, []), (gone, []), "nil drops everything gone")
+        same(plan(gone, [], []), nil, "nothing iCloud lacks: wait")
+        same(plan(gone, ["w1/a.jpg"], []), nil, "one iCloud may still have: wait")
+        same(plan(gone, gone.union(["w9/z.jpg"]), []), (gone, []), "a superset drops them all")
+        same(plan([], [], []), ([], []), "nothing gone: nothing to do")
+        // Kept names never make it wait, with `dropping` nil too.
+        same(plan(gone, [], gone), ([], gone), "all kept")
+        same(plan(gone, nil, gone), ([], gone), "all kept, iCloud unable to answer")
+        same(plan(gone, nil, ["w1/a.jpg"]), (["w1/b.jpg"], ["w1/a.jpg"]), "one kept, the other dropped as before")
+        same(plan(gone, ["w1/b.jpg"], ["w1/a.jpg"]), (["w1/b.jpg"], ["w1/a.jpg"]), "one kept, the other iCloud lacks")
+        same(plan(gone, [], ["w1/a.jpg"]), nil, "one kept, the other iCloud may still have: wait")
+        same(plan(["w1/a.jpg"], [], ["w1/a.jpg", "w9/z.jpg"]), ([], ["w1/a.jpg"]), "only gone names are kept")
     }
 
     // MARK: PhotoStore's iCloud source (section 5)
@@ -1008,12 +1045,16 @@ final class SyncRoutingTests: XCTestCase {
                 XCTFail("the exchange went ahead past a photo it could not read")
             } catch let error as UnreadablePhotoError {
                 XCTAssertEqual(error.name, "wl-\(id)/b.jpg")
+                XCTAssertEqual(error.owner, "Held", "named by its watch (polish 2 item 9)")
+                XCTAssertEqual(error.localizedDescription, "A photo of Held on this device could not be read. Sync will retry.")
             } catch {
                 XCTFail("\(String(describing: dropping)): reached for the hub instead of stopping: \(error)")
             }
         }
         XCTAssertTrue(FileManager.default.fileExists(atPath: b.path))
         XCTAssertNotNil(SyncFailure.classify(UnreadablePhotoError(name: "x/b.jpg")), "a failure the notice can show")
+        XCTAssertEqual(UnreadablePhotoError(name: "_box/e.jpg").localizedDescription,
+                       "A photo on this device could not be read. Sync will retry.", "no owner: the old words")
 
         try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: b.path)
         do {
@@ -1043,9 +1084,315 @@ final class SyncRoutingTests: XCTestCase {
             XCTFail("the exchange went ahead past a photo it could not read")
         } catch let error as UnreadablePhotoError {
             XCTAssertEqual(error.name, "wl-\(id)/c.jpg")
+            XCTAssertEqual(error.owner, "Held")
         } catch {
             XCTFail("dropped the reference and reached for the hub: \(error)")
         }
+    }
+
+    // MARK: Polish round 2 (docs/icloud-polish2-spec.md)
+
+    /// Item 15: flipping the phone's switch clears the questions and answers of the link it leaves (no pass of that
+    /// link runs to send them); the other link's stay. A flip that leaves the same link active clears nothing.
+    func testAFlipClearsTheQuestionsOfTheLinkItLeaves() throws {
+        func route(joined: Bool, preferHub: Bool) -> SyncRoute {
+            SyncRoute.plan(role: .phone, cloudLink: true, joined: joined, preferHub: preferHub)
+        }
+        func waiting() throws -> SyncConflictSet {
+            var set = SyncConflictSet()
+            set.set([try hubConflict("h1"), try hubConflict("h2")], for: .hub)
+            let merge = CollectionMerge.Conflict(id: "c1", path: ["watches", "w1", "story"], local: .string("phone"),
+                                                 remote: .string("mac"), localDeleted: false, remoteDeleted: false)
+            set.set([SyncConflict(merge)], for: .cloud)
+            set.resolve("h1", choice: "local")
+            return set
+        }
+
+        let toHub = SyncRoute.linkLeft(from: route(joined: true, preferHub: false), to: route(joined: true, preferHub: true))
+        XCTAssertEqual(toHub, .cloud)
+        var set = try waiting()
+        if let left = toHub { set.clear(left) }
+        XCTAssertEqual(set.all.map(\.id), ["h1", "h2"], "the hub, now active, keeps its questions")
+        XCTAssertEqual(set.resolutions, ["h1": "local"])
+
+        let toCloud = SyncRoute.linkLeft(from: route(joined: true, preferHub: true), to: route(joined: true, preferHub: false))
+        XCTAssertEqual(toCloud, .hub)
+        set = try waiting()
+        if let left = toCloud { set.clear(left) }
+        XCTAssertEqual(set.all.map(\.id), ["c1"], "the hub's questions and its answer go")
+        XCTAssertEqual(set.resolutions, [:])
+
+        XCTAssertNil(SyncRoute.linkLeft(from: route(joined: false, preferHub: false), to: route(joined: false, preferHub: true)),
+                     "a phone not joined yet: the hub stays active, nothing is cleared")
+        XCTAssertNil(SyncRoute.linkLeft(from: .hubThenCloud, to: .hubThenCloud))
+    }
+
+    /// Item 5: a run on its own data root never falls back to the real hub. With `-WCHub` it uses that hub; without,
+    /// only the address saved for that root, else none. A run on the real data keeps today's chain.
+    func testARunOnItsOwnDataNeverFallsBackToTheRealHub() {
+        let real = "http://127.0.0.1:8931"
+        XCTAssertEqual(AppStore.initialAddress(hub: nil, ownData: true, saved: nil, legacy: "http://legacy:1", fallback: real), "")
+        XCTAssertEqual(AppStore.initialAddress(hub: nil, ownData: true, saved: "http://127.0.0.1:9", legacy: "http://legacy:1",
+                                               fallback: real), "http://127.0.0.1:9")
+        XCTAssertEqual(AppStore.initialAddress(hub: "http://127.0.0.1:7", ownData: true, saved: "http://127.0.0.1:9",
+                                               legacy: nil, fallback: real), "http://127.0.0.1:7")
+        XCTAssertEqual(AppStore.initialAddress(hub: "", ownData: true, saved: "http://127.0.0.1:9", legacy: nil, fallback: real),
+                       "", "an empty -WCHub is no hub for this run")
+        // Today's chain on the real data.
+        XCTAssertEqual(AppStore.initialAddress(hub: nil, ownData: false, saved: nil, legacy: nil, fallback: real), real)
+        XCTAssertEqual(AppStore.initialAddress(hub: nil, ownData: false, saved: nil, legacy: "http://legacy:1", fallback: real),
+                       "http://legacy:1")
+        XCTAssertEqual(AppStore.initialAddress(hub: nil, ownData: false, saved: "http://saved:1", legacy: "http://legacy:1",
+                                               fallback: real), "http://saved:1")
+    }
+
+    /// Items 13 and 14 (C1 probe 3): a relaunch has no memory of iCloud yet. Asked for a file gone on both sides,
+    /// the session asks iCloud first, and a document that has gone (or a sign-out) since the last launch leaves the
+    /// hub exchange today's rule, not a narrowed rule speaking for marks of nothing.
+    func testAFreshLaunchAsksICloudBeforeNarrowingTheDropRule() async throws {
+        let store = makeStore()
+        let folder = root.appendingPathComponent("mac-relaunch", isDirectory: true)
+        let mac = try makeHarness(.mac, store, sample, folder: folder)
+        mac.hubSettledAt = mac.generation
+        let created = await mac.pass()
+        XCTAssertEqual(created.wroteCloud, true)
+        await store.deleteZone()
+
+        let relaunched = try makeHarness(.mac, store, sample, folder: folder)
+        let unasked = await relaunched.session.namesNotInCloud()
+        XCTAssertEqual(unasked, [], "nothing gone: the book is trusted as it was")
+        var names = await relaunched.session.namesNotInCloud(gone: true)
+        XCTAssertNil(names, "the document has gone since the last launch")
+
+        let signedOutStore = makeStore()
+        let signedOutFolder = root.appendingPathComponent("mac-relaunch-signed-out", isDirectory: true)
+        let before = try makeHarness(.mac, signedOutStore, sample, folder: signedOutFolder)
+        before.hubSettledAt = before.generation
+        _ = await before.pass()
+        await signedOutStore.signIn(nil)
+        let after = try makeHarness(.mac, signedOutStore, sample, folder: signedOutFolder)
+        names = await after.session.namesNotInCloud(gone: true)
+        XCTAssertNil(names, "signed out since the last launch")
+    }
+
+    /// Item 13: iCloud is asked only when a file is gone on both sides, at most once every 10 minutes; a pass in
+    /// between counts as an answer and restarts the 10 minutes.
+    func testTheGateIsAskedOnlyForAGoneFileAndAtMostEveryTenMinutes() async throws {
+        let store = makeStore()
+        let folder = root.appendingPathComponent("mac-gate", isDirectory: true)
+        let mac = try makeHarness(.mac, store, sample, folder: folder)
+        mac.hubSettledAt = mac.generation
+        _ = await mac.pass()
+        let relaunched = try makeHarness(.mac, store, sample, folder: folder)
+        let session = relaunched.session
+        let start = await store.count(.head)
+
+        _ = await session.namesNotInCloud()
+        _ = await session.namesNotInCloud(gone: false)
+        var heads = await store.count(.head)
+        XCTAssertEqual(heads, start, "nothing gone: iCloud is not asked")
+
+        var names = await session.namesNotInCloud(gone: true)
+        XCTAssertEqual(names, [])
+        heads = await store.count(.head)
+        XCTAssertEqual(heads, start + 1, "asked once")
+        clock.advance(9 * 60)
+        names = await session.namesNotInCloud(gone: true)
+        XCTAssertEqual(names, [])
+        heads = await store.count(.head)
+        XCTAssertEqual(heads, start + 1, "not again within 10 minutes")
+        clock.advance(2 * 60)
+        _ = await session.namesNotInCloud(gone: true)
+        heads = await store.count(.head)
+        XCTAssertEqual(heads, start + 2, "again after")
+
+        clock.advance(9 * 60)
+        _ = await relaunched.pass()
+        let afterPass = await store.count(.head)
+        clock.advance(2 * 60)
+        _ = await session.namesNotInCloud(gone: true)
+        heads = await store.count(.head)
+        XCTAssertEqual(heads, afterPass, "the pass 2 minutes ago is the answer")
+        clock.advance(9 * 60)
+        _ = await session.namesNotInCloud(gone: true)
+        heads = await store.count(.head)
+        XCTAssertEqual(heads, afterPass + 1, "10 minutes after the pass")
+    }
+
+    /// Item 13: iCloud that cannot be reached says nothing against the narrowed rule: the photo waits, as today.
+    func testAnUnreachableICloudKeepsTheNarrowedRule() async throws {
+        let store = makeStore()
+        let folder = root.appendingPathComponent("mac-offline", isDirectory: true)
+        let mac = try makeHarness(.mac, store, sample, folder: folder)
+        mac.hubSettledAt = mac.generation
+        _ = await mac.pass()
+        await store.setOffline(true)
+        let relaunched = try makeHarness(.mac, store, sample, folder: folder)
+        let accounts = await store.count(.account)
+        let names = await relaunched.session.namesNotInCloud(gone: true)
+        XCTAssertEqual(names, [], "offline relaunch: the narrowed rule holds")
+        let asked = await store.count(.account)
+        XCTAssertEqual(asked, accounts + 1, "it did try")
+    }
+
+    /// Item 14 (C1 probe 4): the phone's fetch this hub pass reached iCloud signed in, so an older sign-out no longer
+    /// holds. A fetch that failed for the network leaves the name out of the set, and the exchange waits for it.
+    func testAFetchThatReachedForICloudOutranksAnOldSignOut() async throws {
+        let (store, _, phone) = try await joined()
+        await store.signIn(nil)
+        let signedOut = await phone.pass()
+        XCTAssertEqual(signedOut.wait, .noAccount)
+        await store.signIn("account-A")
+        await store.fail(.download, with: .network)
+        await phone.session.fetch(["w1/gone.jpg"])
+        let names = await phone.session.namesNotInCloud(gone: true)
+        let dropping = try XCTUnwrap(names, "nil would drop the photo everywhere")
+        XCTAssertFalse(dropping.contains("w1/gone.jpg"))
+        XCTAssertNil(CollectionSyncClient.photoPlan(gone: ["w1/gone.jpg"], dropping: names, keeping: []),
+                     "the exchange waits for it")
+
+        // Signed out again; the next hub pass has nothing to fetch, so what this one's fetch learnt does not carry over.
+        await store.signIn(nil)
+        let again = await phone.pass()
+        XCTAssertEqual(again.wait, .noAccount)
+        await phone.session.fetch([])
+        let later = await phone.session.namesNotInCloud(gone: true)
+        XCTAssertNil(later, "the sign-out holds again")
+    }
+
+    /// Item 11 (C1 probe 6 turned round): a phone on the hub whose iCloud copy of a photo is damaged waits for it
+    /// before the hour, and after the hour keeps it (given up on, reference kept) instead of waiting for ever.
+    func testAPhoneOnTheHubStopsWaitingOnADamagedPhoto() async throws {
+        let (store, _, phone) = try await joined()
+        let name = "w1/damaged.jpg"
+        try await store.putPhoto(name, Data("damaged one".utf8))
+        try await store.damagePhoto(name)
+        var minutes = 0
+        var plan: (drop: Set<String>, keep: Set<String>)?
+        while minutes <= 120 {
+            await phone.session.fetch([name])
+            let dropping = await phone.session.namesNotInCloud(gone: true)
+            let keeping = await phone.session.namesKeptWithoutFile()
+            plan = CollectionSyncClient.photoPlan(gone: [name], dropping: dropping, keeping: keeping)
+            if plan != nil { break }
+            clock.advance(11 * 60)
+            minutes += 11
+        }
+        XCTAssertEqual(minutes, 66, "waits before the hour, keeps after it")
+        XCTAssertEqual(plan?.keep, [name])
+        XCTAssertEqual(plan?.drop, [])
+        XCTAssertFalse(phone.photos.exists(name))
+        XCTAssertTrue(phone.files.loadMarks().kept.contains(name), "saved in cloud-photos.json")
+    }
+
+    /// Review F1, the phone: it gave up on w1/k.jpg through iCloud, then flipped to the hub, which served it the
+    /// file. No cloud pass runs on the hub link, so the mark stays. The Mac deletes k and the hub answers without it:
+    /// the delete sticks here, and nothing sends k back.
+    func testAHubDeleteOfAKeptPhotoThePhoneHoldsSticks() async throws {
+        let dataRoot = root.appendingPathComponent("phone-data", isDirectory: true)
+        let saved = addLaunchArguments(["WCDataRoot": dataRoot.path])
+        defer { restoreLaunchArguments(saved) }
+        let store = makeStore()
+        let mac = try makeHarness(.mac, store, sample)
+        mac.hubSettledAt = mac.generation
+        _ = await mac.pass()
+        let phone = try makeHarness(.phone, store, nil, folder: dataRoot)
+        _ = await phone.pass()
+        XCTAssertEqual(phone.photos.root.standardizedFileURL.path, AppPaths.photoRoot.standardizedFileURL.path,
+                       "the exchange and the cloud link look at one photo folder, as in the app")
+
+        let k = "w1/k.jpg"
+        try await store.putPhoto(k, Data("k".utf8))
+        try await store.damagePhoto(k)
+        for _ in 0..<12 where !phone.files.loadMarks().kept.contains(k) {
+            await phone.session.fetch([k])
+            if !phone.files.loadMarks().kept.contains(k) { clock.advance(11 * 60) }
+        }
+        XCTAssertTrue(phone.files.loadMarks().kept.contains(k), "given up on after the hour")
+        try phone.photos.put("w1/a.jpg", Data("a".utf8))
+        try phone.photos.put(k, Data("k".utf8))   // from the hub
+        let keeping = await phone.session.namesKeptWithoutFile()
+        XCTAssertFalse(keeping.contains(k), "its file is here: an ordinary photo to the hub")
+        XCTAssertTrue(phone.files.loadMarks().kept.contains(k), "the mark itself stays")
+
+        var local = try XCTUnwrap(phone.data)
+        local.watches[0].photos = ["a.jpg", "k.jpg"]
+        var hub = local
+        hub.watches[0].photos = ["a.jpg"]   // the Mac deleted k: the hub has neither it nor its file
+        let remote = SyncSnapshot(data: hub, revision: "r2", photos: ["w1/a.jpg"], conflicts: [])
+        let gone = CollectionSyncClient.goneFiles(local: local, remote: remote)
+        XCTAssertEqual(gone, [])
+        let dropping = await phone.session.namesNotInCloud(gone: !Set(gone).subtracting(keeping).isEmpty)
+        StubHub.reset { _ in hub }   // the hub's merge: base [a, k], sent [a, k], hub [a] answers [a]
+        let client = try CollectionSyncClient(address: "http://127.0.0.1:9", protocolClasses: [StubHub.self])
+        let exchanged = try await client.exchange(base: local, local: local, resolutions: [:], remote: remote,
+                                                  dropping: dropping, keeping: keeping)
+        let result = try XCTUnwrap(exchanged)
+        XCTAssertEqual(result.heldBack, [])
+        XCTAssertEqual(StubHub.uploads, [k], "its file goes up as any photo's would")
+        XCTAssertEqual(StubHub.lastSentCollection?.watches[0].photos, ["a.jpg", "k.jpg"])
+        let installed = CollectionSyncClient.restoringPhotos(result.heldBack, from: local, into: result.answer.data)
+        XCTAssertEqual(installed.watches[0].photos, ["a.jpg"], "the Mac's delete sticks")
+
+        // The exchange's half alone: told k is kept although its file is here, it holds back nothing.
+        let toldExchange = try await client.exchange(base: local, local: local, resolutions: [:], remote: remote,
+                                                     dropping: dropping, keeping: [k])
+        let told = try XCTUnwrap(toldExchange)
+        XCTAssertEqual(told.heldBack, [])
+        XCTAssertEqual(CollectionSyncClient.restoringPhotos(told.heldBack, from: local, into: told.answer.data)
+            .watches[0].photos, ["a.jpg"])
+    }
+
+    /// Review F1, the Mac: it gave up on w1/k.jpg, later got the file from the hub, and its cloud pass cannot reach
+    /// the photo push (signed out), so the mark stays. A delete of k made on the phone through the hub sticks here.
+    func testAHubDeleteOfAKeptPhotoTheMacHoldsSticks() async throws {
+        let dataRoot = root.appendingPathComponent("mac-data", isDirectory: true)
+        let saved = addLaunchArguments(["WCDataRoot": dataRoot.path])
+        defer { restoreLaunchArguments(saved) }
+        let store = makeStore()
+        let mac = try makeHarness(.mac, store, sample, folder: dataRoot)
+        mac.hubSettledAt = mac.generation
+        _ = await mac.pass()
+        let phone = try makeHarness(.phone, store, nil)
+        _ = await phone.pass()
+        XCTAssertEqual(mac.photos.root.standardizedFileURL.path, AppPaths.photoRoot.standardizedFileURL.path)
+
+        let k = "w1/k.jpg"
+        try phone.photos.put(k, Data("k".utf8))
+        phone.edit { $0.watches[0].photos = ["k.jpg"] }
+        let up = await phone.pass()
+        XCTAssertEqual(up.wroteCloud, true)
+        try await store.damagePhoto(k)
+        var installed = false
+        for _ in 0..<12 where !installed {
+            installed = await mac.pass().installedData != nil
+            if !installed { clock.advance(11 * 60) }
+        }
+        XCTAssertTrue(installed, "given up on after the hour")
+        XCTAssertTrue(mac.files.loadMarks().kept.contains(k))
+        try mac.photos.put(k, Data("k".utf8))   // from the hub
+        await store.signIn(nil)
+        let signedOut = await mac.pass()
+        XCTAssertEqual(signedOut.wait, .noAccount)
+        XCTAssertTrue(mac.files.loadMarks().kept.contains(k), "no photo push ran: the mark stays")
+        let keeping = await mac.session.namesKeptWithoutFile()
+        XCTAssertFalse(keeping.contains(k))
+
+        let local = try XCTUnwrap(mac.data)
+        XCTAssertEqual(local.watches[0].photos, ["k.jpg"])
+        var hub = local
+        hub.watches[0].photos = []   // deleted on the phone through the hub
+        let remote = SyncSnapshot(data: hub, revision: "r2", photos: [], conflicts: [])
+        let gone = CollectionSyncClient.goneFiles(local: local, remote: remote)
+        let dropping = await mac.session.namesNotInCloud(gone: !Set(gone).subtracting(keeping).isEmpty)
+        StubHub.reset { _ in hub }
+        let client = try CollectionSyncClient(address: "http://127.0.0.1:9", protocolClasses: [StubHub.self])
+        let exchanged = try await client.exchange(base: local, local: local, resolutions: [:], remote: remote,
+                                                  dropping: dropping, keeping: keeping)
+        let result = try XCTUnwrap(exchanged)
+        XCTAssertEqual(result.heldBack, [])
+        let restored = CollectionSyncClient.restoringPhotos(result.heldBack, from: local, into: result.answer.data)
+        XCTAssertEqual(restored.watches[0].photos, [], "the phone's delete sticks")
     }
 
     // MARK: Fixtures
@@ -1295,4 +1642,108 @@ final class EditEveryFetch: Sendable {
             await self.arm()
         }
     }
+}
+
+/// A hub answered in-process, for `CollectionSyncClient(address:protocolClasses:)`: it keeps what each request sent,
+/// takes every photo upload, and answers `api/sync` with `answer` given the collection that was sent. One at a time:
+/// `reset` before each use.
+final class StubHub: URLProtocol {
+    struct Sent {
+        var path: String
+        /// For `api/sync`: the collection sent (`SyncRequest.local`).
+        var local: CollectionData?
+    }
+
+    private struct Request: Decodable {
+        var local: CollectionData
+    }
+
+    private final class State: @unchecked Sendable {
+        let lock = NSLock()
+        var sent: [Sent] = []
+        var answer: (CollectionData) -> CollectionData = { $0 }
+    }
+
+    private static let state = State()
+
+    /// Forgets what was sent, and answers `api/sync` with `answer` from now on (the collection sent, unchanged, when
+    /// not given: a hub with nothing of its own to merge).
+    static func reset(answer: @escaping (CollectionData) -> CollectionData = { $0 }) {
+        state.lock.lock()
+        state.sent = []
+        state.answer = answer
+        state.lock.unlock()
+    }
+
+    static var sent: [Sent] {
+        state.lock.lock()
+        defer { state.lock.unlock() }
+        return state.sent
+    }
+
+    /// The collection the last `api/sync` sent.
+    static var lastSentCollection: CollectionData? { sent.last { $0.local != nil }?.local }
+
+    /// The photo uploads, as "dir/file".
+    static var uploads: [String] {
+        sent.compactMap { sent in sent.path.range(of: "/api/sync/photos/").map { String(sent.path[$0.upperBound...]) } }
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool { true }
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
+
+    override func startLoading() {
+        let path = request.url?.path ?? ""
+        let body = request.httpBody ?? request.httpBodyStream.map(Self.read)
+        var reply = Data("{}".utf8)
+        var status = 200
+        if path.hasSuffix("/api/sync"), let body, let sent = try? JSONDecoder().decode(Request.self, from: body) {
+            Self.state.lock.lock()
+            Self.state.sent.append(Sent(path: path, local: sent.local))
+            let answer = Self.state.answer
+            Self.state.lock.unlock()
+            if let data = try? JSONEncoder().encode(answer(sent.local)) {
+                reply = Data(#"{"revision":"stub","photos":[],"conflicts":[],"features":["boxes"],"data":"#.utf8) + data
+                    + Data("}".utf8)
+            } else {
+                status = 500
+            }
+        } else {
+            Self.state.lock.lock()
+            Self.state.sent.append(Sent(path: path, local: nil))
+            Self.state.lock.unlock()
+        }
+        let response = HTTPURLResponse(url: request.url!, statusCode: status, httpVersion: "HTTP/1.1",
+                                       headerFields: ["Content-Type": "application/json"])!
+        client?.urlProtocol(self, didReceive: response, cacheStoragePolicy: .notAllowed)
+        client?.urlProtocol(self, didLoad: reply)
+        client?.urlProtocolDidFinishLoading(self)
+    }
+
+    override func stopLoading() {}
+
+    private static func read(_ stream: InputStream) -> Data {
+        stream.open()
+        defer { stream.close() }
+        var data = Data()
+        var buffer = [UInt8](repeating: 0, count: 16_384)
+        while stream.hasBytesAvailable {
+            let count = stream.read(&buffer, maxLength: buffer.count)
+            guard count > 0 else { break }
+            data.append(buffer, count: count)
+        }
+        return data
+    }
+}
+
+/// Adds launch arguments (`-Key value`) to the argument domain; returns what to put back with `restoreLaunchArguments`.
+func addLaunchArguments(_ arguments: [String: String]) -> [String: Any] {
+    let defaults = UserDefaults.standard
+    let saved = defaults.volatileDomain(forName: UserDefaults.argumentDomain)
+    defaults.setVolatileDomain(saved.merging(arguments) { $1 }, forName: UserDefaults.argumentDomain)
+    return saved
+}
+
+func restoreLaunchArguments(_ saved: [String: Any]) {
+    UserDefaults.standard.setVolatileDomain(saved, forName: UserDefaults.argumentDomain)
 }

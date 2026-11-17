@@ -172,14 +172,39 @@ final class AppStore: ObservableObject {
     }
 
     private var started = false
+    /// The Mac app's library lock (docs/icloud-fixes.md D9, polish 2 item 16): nothing here reads or writes the
+    /// library until it is held. nil on the phone and in the Mac's bridge, whose tick holds the tick lock instead.
+    private let library: SyncLock?
+
+    init(library: SyncLock? = nil) {
+        self.library = library
+    }
+
+    /// `start()` has begun loading the library.
+    var hasStarted: Bool { started }
 
     /// The hub address: in DEBUG `-WCHub` stands in for the saved one for this run (only with `-WCDataRoot`).
     static var initialSyncAddress: String {
         #if DEBUG
-        if let hub = AppPaths.hub { return hub }
+        let hub = AppPaths.hub
+        let ownData = AppPaths.dataRoot != nil
+        #else
+        let hub: String? = nil
+        let ownData = false
         #endif
-        return UserDefaults.standard.string(forKey: AppPaths.defaultsKey("syncAddress"))
-            ?? LegacyServerConfiguration.migrationURL ?? Platform.defaultSyncAddress
+        return initialAddress(hub: hub, ownData: ownData,
+                              saved: UserDefaults.standard.string(forKey: AppPaths.defaultsKey("syncAddress")),
+                              legacy: LegacyServerConfiguration.migrationURL, fallback: Platform.defaultSyncAddress)
+    }
+
+    /// Polish 5: `hub` (`-WCHub`) when given. A run on its own data (`-WCDataRoot`) takes only its own saved address,
+    /// or none: never the legacy address or the fallback, which on the Mac is the real hub. Otherwise the saved
+    /// address, the legacy one, then the fallback, as always.
+    nonisolated static func initialAddress(hub: String?, ownData: Bool, saved: String?, legacy: String?,
+                                           fallback: String) -> String {
+        if let hub { return hub }
+        if ownData { return saved ?? "" }
+        return saved ?? legacy ?? fallback
     }
 
     /// Automatic sync, on unless he turned it off.
@@ -209,6 +234,8 @@ final class AppStore: ObservableObject {
     }
 
     func start() async {
+        // Before anything reads `sync.json`: a bridge tick may still have the library (it steps aside within a second).
+        if let library { _ = await library.whenReady() }
         guard !started else { return }
         started = true
         isRefreshing = true
@@ -304,6 +331,7 @@ final class AppStore: ObservableObject {
         preferHub = on
         UserDefaults.standard.set(on, forKey: AppPaths.defaultsKey("cloudPreferHub"))
         if let link = SyncRoute.baselessAfterFlip(from: before, to: route) { setBaselessNext(link) }
+        if let left = SyncRoute.linkLeft(from: before, to: route) { conflictSet.clear(left) }
         // What failed on the other link says nothing about this one.
         syncFailures.startSession()
         configurePhotoSource()
@@ -452,7 +480,7 @@ final class AppStore: ObservableObject {
                 // the iCloud link brought in since the hub link last settled (`versions`).
                 if generation == syncedGeneration, remote.revision == syncedRevision, versions.isCurrent(.hub),
                    conflictSet.resolutions(for: .hub).isEmpty, conflictSet.conflicts(for: .hub).isEmpty, let local,
-                   PhotoStore.missingLocalCount(PhotoStore.assets(in: local, baseURL: nil)) == 0 {
+                   await onlyKeptPhotosMissing(in: local) {
                     hubLastSuccess = Date()
                     hubSettledAt = generation
                     syncMessage = "Up to date"
@@ -464,34 +492,42 @@ final class AppStore: ObservableObject {
                 }
                 syncMessage = "Syncing collection and photos..."
                 let result: SyncSnapshot
+                var keeping: Set<String> = []
+                var heldBack: Set<String> = []
                 if let local {
                     // With iCloud on, a file neither here nor on the hub may still come from iCloud: its reference is
                     // dropped only once iCloud has said it does not have it (section 5), and only while iCloud can
                     // answer (D4); otherwise as before iCloud. The phone, which holds photos lazily, asks for them
-                    // first (C1 10).
+                    // first (C1 10). A photo the cloud link has given up on as unreadable is kept, and only held back
+                    // from the hub (polish 2 item 8).
                     var dropping: Set<String>?
                     if let cloud {
-                        if cloudRole == .phone, cloudJoinedOnce {
-                            await cloud.fetch(CollectionSyncClient.goneFiles(local: local, remote: remote))
-                        }
-                        dropping = await cloud.namesNotInCloud()
+                        let gone = CollectionSyncClient.goneFiles(local: local, remote: remote)
+                        if cloudRole == .phone, cloudJoinedOnce { await cloud.fetch(gone) }
+                        keeping = await cloud.namesKeptWithoutFile()
+                        dropping = await cloud.namesNotInCloud(gone: !Set(gone).subtracting(keeping).isEmpty)
                     }
                     // D5: the first hub pass after the phone's switch made the hub its link again has no base.
                     let base = baselessNext == .hub ? nil : syncBase
                     guard let exchanged = try await client.exchange(base: base, local: local,
                                                                     resolutions: conflictSet.resolutions(for: .hub),
-                                                                    remote: remote, dropping: dropping) else {
+                                                                    remote: remote, dropping: dropping,
+                                                                    keeping: keeping) else {
                         syncMessage = "Waiting for photos from iCloud"
                         return false
                     }
-                    result = exchanged
+                    result = exchanged.answer
+                    heldBack = exchanged.heldBack
                 } else { result = remote }
                 guard syncAddress == address, syncEnabled else { return false }
                 // Do not install a response over edits made while a request was in flight.
                 guard generation == editGeneration else { continue }
                 if !result.conflicts.isEmpty {
+                    // The phone's switch left the hub while this pass ran: `setPreferHub` cleared the hub's questions
+                    // then, and a link that is no longer active does not ask them again (review F2).
+                    guard route.active == .hub else { return false }
                     conflictSet.set(result.conflicts.map { $0.labelled(using: [local, result.data]) }, for: .hub)
-                    syncMessage = "\(result.conflicts.count) changes need your choice in Settings"
+                    syncMessage = CloudSyncCopy.choicesInSettings(result.conflicts.count)
                     return false
                 }
                 try await client.downloadPhotos(result.data)
@@ -502,6 +538,12 @@ final class AppStore: ObservableObject {
                     merged.settings.autoBackup = local.settings.autoBackup
                     merged.settings.backupRemote = local.settings.backupRemote
                     merged.settings.lastBackup = local.settings.lastBackup
+                }
+                // The references this exchange held back from the hub go back into what this device keeps (only
+                // those: a kept name whose file is here went to the hub as usual, and its delete there sticks); the
+                // base stays the hub's own answer.
+                if !heldBack.isEmpty, let local {
+                    merged = CollectionSyncClient.restoringPhotos(heldBack, from: local, into: merged)
                 }
                 let now = Date()
                 try SyncDisk.save(SyncCheckpoint(data: merged, base: result.data, server: address, lastSuccess: now,
@@ -532,6 +574,19 @@ final class AppStore: ObservableObject {
             // Keep local editing enabled when the sync server is unreachable.
         }
         return false
+    }
+
+    /// The hub's fast path, its photo clause: every file the collection names is here, or every missing one is a
+    /// photo the cloud link has given up on (kept with no file, polish 2 item 8), so a kept photo does not force a
+    /// full exchange every tick. The cloud link is asked only when something is missing.
+    private func onlyKeptPhotosMissing(in local: CollectionData) async -> Bool {
+        let missing = PhotoStore.assets(in: local, baseURL: nil).filter { asset in
+            PhotoStore.localURL(for: asset).map { !FileManager.default.fileExists(atPath: $0.path) } ?? true
+        }
+        guard !missing.isEmpty else { return true }
+        guard let cloud else { return false }
+        let keeping = await cloud.namesKeptWithoutFile()
+        return missing.allSatisfy { keeping.contains($0.directory + "/" + $0.filename) }
     }
 
     // MARK: The iCloud link (docs/icloud-plan.md sections 4 to 8)
@@ -606,7 +661,7 @@ final class AppStore: ObservableObject {
         case let .conflicts(list):
             conflictSet.set(list.map { SyncConflict($0).labelled(using: [data]) }, for: .cloud)
             cloudWait = nil
-            syncMessage = "\(list.count) changes need your choice in Settings"
+            syncMessage = CloudSyncCopy.choicesInSettings(list.count)
         case let .waiting(wait):
             cloudWait = wait
         }
@@ -1066,13 +1121,10 @@ final class AppStore: ObservableObject {
     }
 
     func restore(_ imported: CollectionImport) async -> Bool {
-        #if os(macOS)
         // Settings can be open while the app still waits for the library lock; a restore writes the library, so it
-        // waits too (a bridge tick steps aside within a second).
-        _ = await Entry.library.whenReady()
-        // And for the app's own load: before `start()` the hub base is not read yet, so a save here would lose it.
-        await start()
-        #endif
+        // waits too, and for the app's own load: before `start()` the hub base is not read yet, so a save here would
+        // lose it. `start()` does both waits.
+        if library != nil { await start() }
         do {
             try await PhotoStore.shared.restore(imported.photos)
             try await commit(imported.data)

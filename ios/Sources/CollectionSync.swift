@@ -160,13 +160,19 @@ enum CollectionSyncError: LocalizedError {
 struct UnreadablePhotoError: LocalizedError {
     /// "dir/file".
     var name: String
-    var errorDescription: String? { "A photo on this device could not be read. Sync will retry." }
+    /// The watch it belongs to, by name (`CloudLink.photoOwner`); nil for an empty box tile.
+    var owner: String? = nil
+    var errorDescription: String? {
+        guard let owner else { return "A photo on this device could not be read. Sync will retry." }
+        return "A photo of \(owner) on this device could not be read. Sync will retry."
+    }
 }
 
 actor CollectionSyncClient {
     let baseURL: URL
     let session: URLSession
-    init(address: String) throws {
+    /// `protocolClasses`: tests only, a hub answered in-process (`StubHub`); nil in the app.
+    init(address: String, protocolClasses: [AnyClass]? = nil) throws {
         guard let url = URL(string: address), ["http", "https"].contains(url.scheme),
               url.host != nil, url.user == nil, url.password == nil,
               url.query == nil, url.fragment == nil else { throw CollectionSyncError.invalidAddress }
@@ -175,6 +181,7 @@ actor CollectionSyncClient {
         configuration.timeoutIntervalForRequest = 12
         configuration.timeoutIntervalForResource = 25
         configuration.requestCachePolicy = .reloadIgnoringLocalCacheData
+        if let protocolClasses { configuration.protocolClasses = protocolClasses }
         session = URLSession(configuration: configuration)
     }
 
@@ -182,28 +189,43 @@ actor CollectionSyncClient {
         try JSONDecoder().decode(SyncSnapshot.self, from: await request("api/sync"))
     }
 
-    /// - Parameter dropping: which references to files gone on this device and the hub may be dropped. nil drops
-    ///   them all, as before iCloud; on a Mac with the cloud link on it is the names iCloud has said it does not
-    ///   have, and any other such file skips this exchange (nil is returned) until the cloud link has fetched it or
-    ///   heard it is not there (docs/icloud-plan.md section 5).
+    /// - Parameters:
+    ///   - dropping: which references to files gone on this device and the hub may be dropped. nil drops them all,
+    ///     as before iCloud; with the cloud link on it is the names iCloud has said it does not have, and any other
+    ///     such file skips this exchange (nil is returned) until the cloud link has fetched it or heard it is not
+    ///     there (docs/icloud-plan.md section 5).
+    ///   - keeping: the names the cloud link has given up on as unreadable (D3, polish 2 item 8). Such a file gone
+    ///     here and on the hub is neither dropped nor waited on: the hub is sent the collection without its
+    ///     reference (the hub answers 409 to a document naming a file it lacks). Empty, the rule is `dropping`'s
+    ///     alone.
+    /// - Returns: the hub's answer, and `heldBack`: the kept names this exchange actually left out of what it sent,
+    ///   which the caller lays back into what it installs (`restoringPhotos`) and nothing else (review F1). nil when
+    ///   the drop rule waits.
     ///
     /// A file still on this device that cannot be read is not gone (R4): the exchange throws
     /// `UnreadablePhotoError` with nothing dropped, and, when the check before sending finds it, nothing sent.
     func exchange(base: CollectionData?, local: CollectionData, resolutions: [String: String], remote: SyncSnapshot,
-                  dropping: Set<String>? = nil) async throws -> SyncSnapshot? {
-        var local = local
+                  dropping: Set<String>? = nil,
+                  keeping: Set<String> = []) async throws -> (answer: SyncSnapshot, heldBack: Set<String>)? {
         let assets = Self.uploads(from: local, hub: remote.data, hubFiles: remote.photos)
-        let gone = Set(Self.goneFiles(assets))
-        if let dropping, !gone.isSubset(of: dropping) { return nil }
-        if let asset = assets.first(where: Self.isUnreadable) { throw Self.unreadable(asset) }
+        guard let plan = Self.photoPlan(gone: Set(Self.goneFiles(assets)), dropping: dropping, keeping: keeping) else {
+            return nil
+        }
+        if let asset = assets.first(where: Self.isUnreadable) { throw Self.unreadable(asset, in: local) }
         var lost: Set<String> = []
+        var kept = plan.keep
         for asset in assets {
             try Task.checkCancellation()
             guard let file = PhotoStore.localURL(for: asset), let bytes = try? Data(contentsOf: file) else {
                 // Still here but it would not read (it changed since the check above): not gone, as above.
-                if Self.isHeld(asset) { throw Self.unreadable(asset) }
-                // Gone on both sides (e.g. a partial restore): drop the reference instead of blocking sync forever.
+                if Self.isHeld(asset) { throw Self.unreadable(asset, in: local) }
                 let key = asset.directory + "/" + asset.filename
+                // Given up on: kept here, held back from the hub (also when its file went after the first check).
+                if keeping.contains(key) {
+                    kept.insert(key)
+                    continue
+                }
+                // Gone on both sides (e.g. a partial restore): drop the reference instead of blocking sync forever.
                 if let dropping, !dropping.contains(key) { return nil }
                 lost.insert(key)
                 continue
@@ -211,9 +233,22 @@ actor CollectionSyncClient {
             let body = try JSONEncoder().encode(["data": bytes.base64EncodedString()])
             _ = try await request("api/sync/photos/\(asset.directory)/\(asset.filename)", body: body)
         }
-        if !lost.isEmpty { local = Self.removingPhotos(lost, from: local) }
-        let body = try JSONEncoder().encode(SyncRequest(base: base, local: local, resolutions: resolutions))
-        return try JSONDecoder().decode(SyncSnapshot.self, from: await request("api/sync", body: body))
+        let withheld = lost.union(kept)
+        let sent = withheld.isEmpty ? local : Self.removingPhotos(withheld, from: local)
+        let body = try JSONEncoder().encode(SyncRequest(base: base, local: sent, resolutions: resolutions))
+        let answer = try JSONDecoder().decode(SyncSnapshot.self, from: await request("api/sync", body: body))
+        return (answer, kept)
+    }
+
+    /// What the exchange does with the files gone here and on the hub: those the cloud link has given up on are
+    /// kept (held back from the hub only); the rest are dropped when `dropping` is nil or holds every one of them;
+    /// otherwise nil, and the exchange waits. With `keeping` empty this is the drop rule as it was.
+    static func photoPlan(gone: Set<String>, dropping: Set<String>?,
+                          keeping: Set<String>) -> (drop: Set<String>, keep: Set<String>)? {
+        let keep = gone.intersection(keeping)
+        let drop = gone.subtracting(keep)
+        if let dropping, !drop.isSubset(of: dropping) { return nil }
+        return (drop, keep)
     }
 
     /// The files an exchange would send that are on neither side, as "dir/file": the ones its drop rule decides on.
@@ -241,11 +276,11 @@ actor CollectionSyncClient {
         return !FileManager.default.isReadableFile(atPath: file.path)
     }
 
-    private static func unreadable(_ asset: PhotoAsset) -> UnreadablePhotoError {
+    private static func unreadable(_ asset: PhotoAsset, in local: CollectionData) -> UnreadablePhotoError {
         let name = asset.directory + "/" + asset.filename
         let path = PhotoStore.localURL(for: asset)?.path ?? name
         log.error("could not read \(path, privacy: .public); the hub exchange keeps its reference and waits")
-        return UnreadablePhotoError(name: name)
+        return UnreadablePhotoError(name: name, owner: CloudLink.photoOwner(name, in: local))
     }
 
     func downloadPhotos(_ data: CollectionData) async throws {
@@ -302,6 +337,71 @@ actor CollectionSyncClient {
             data.wishlist[i].boxTiles = tiles(data.wishlist[i].boxTiles, in: dir)
         }
         data.emptyBoxTiles = tiles(data.emptyBoxTiles, in: PhotoStore.boxTileDirectory)
+        return data
+    }
+
+    /// The inverse of `removingPhotos` over the same four things, for the references the exchange held back from
+    /// the hub (`keys`, "dir/file"), laid back into what the hub answered (`data`) from the collection that was sent
+    /// (`local`). Only on items `data` still has, and never over the hub's own changes:
+    /// - a photo `local` names and `data` lacks goes back after the nearest earlier photo of `local`'s order that
+    ///   `data` has (first when there is none);
+    /// - its framing (`photoFocus`) goes back when `data` has none for it;
+    /// - a box cutout made from it goes back only when `data` has no cutout;
+    /// - a tile slot whose file is a key goes back only when `data` has nothing in that slot (items and the empty
+    ///   tiles).
+    /// Running it twice gives what running it once does.
+    static func restoringPhotos(_ keys: Set<String>, from local: CollectionData, into data: CollectionData) -> CollectionData {
+        guard !keys.isEmpty else { return data }
+        var data = data
+        func tiles(_ tiles: [String: String]?, from source: [String: String]?, in dir: String) -> [String: String]? {
+            var result = tiles ?? [:]
+            for (slot, file) in source ?? [:] where keys.contains(dir + "/" + file) && result[slot] == nil {
+                result[slot] = file
+            }
+            return result.isEmpty ? tiles : result
+        }
+        func photos(_ photos: [String], from source: [String], in dir: String) -> [String] {
+            var result = photos
+            for (index, photo) in source.enumerated() where keys.contains(dir + "/" + photo) && !result.contains(photo) {
+                let earlier = source[..<index].last { result.contains($0) }
+                let at = earlier.flatMap { result.firstIndex(of: $0) }.map { $0 + 1 } ?? 0
+                result.insert(photo, at: at)
+            }
+            return result
+        }
+        func focus(_ focus: [String: PhotoFocus]?, from source: [String: PhotoFocus]?, photos: [String],
+                   in dir: String) -> [String: PhotoFocus]? {
+            var result = focus
+            for (photo, frame) in source ?? [:]
+            where keys.contains(dir + "/" + photo) && photos.contains(photo) && result?[photo] == nil {
+                if result == nil { result = [:] }
+                result?[photo] = frame
+            }
+            return result
+        }
+        func cutout(_ cutout: BoxCutout?, from source: BoxCutout?, in dir: String) -> BoxCutout? {
+            guard cutout == nil, let source, keys.contains(dir + "/" + source.photo) else { return cutout }
+            return source
+        }
+        for i in data.watches.indices {
+            guard let mine = local.watches.first(where: { $0.id == data.watches[i].id }) else { continue }
+            let dir = mine.id
+            data.watches[i].photos = photos(data.watches[i].photos, from: mine.photos, in: dir)
+            data.watches[i].photoFocus = focus(data.watches[i].photoFocus, from: mine.photoFocus,
+                                               photos: data.watches[i].photos, in: dir)
+            data.watches[i].boxCutout = cutout(data.watches[i].boxCutout, from: mine.boxCutout, in: dir)
+            data.watches[i].boxTiles = tiles(data.watches[i].boxTiles, from: mine.boxTiles, in: dir)
+        }
+        for i in data.wishlist.indices {
+            guard let mine = local.wishlist.first(where: { $0.id == data.wishlist[i].id }) else { continue }
+            let dir = "wl-" + mine.id
+            data.wishlist[i].photos = photos(data.wishlist[i].photos, from: mine.photos, in: dir)
+            data.wishlist[i].photoFocus = focus(data.wishlist[i].photoFocus, from: mine.photoFocus,
+                                                photos: data.wishlist[i].photos, in: dir)
+            data.wishlist[i].boxCutout = cutout(data.wishlist[i].boxCutout, from: mine.boxCutout, in: dir)
+            data.wishlist[i].boxTiles = tiles(data.wishlist[i].boxTiles, from: mine.boxTiles, in: dir)
+        }
+        data.emptyBoxTiles = tiles(data.emptyBoxTiles, from: local.emptyBoxTiles, in: PhotoStore.boxTileDirectory)
         return data
     }
 

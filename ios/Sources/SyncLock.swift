@@ -56,6 +56,7 @@ final class SyncLock: @unchecked Sendable {
     private var appHold: Hold?
     /// `whenReady` callers still waiting for the hold to settle.
     private var readyWaiters: [CheckedContinuation<Hold, Never>] = []
+    private var askCount = 0
 
     init(url: URL) {
         self.url = url
@@ -63,6 +64,13 @@ final class SyncLock: @unchecked Sendable {
 
     deinit {
         unlock()
+    }
+
+    /// How many times `holdForApp` has asked again while the lock was someone else's (for tests).
+    var asks: Int {
+        state.lock()
+        defer { state.unlock() }
+        return askCount
     }
 
     /// This lock holds the file now.
@@ -173,6 +181,9 @@ final class SyncLock: @unchecked Sendable {
 
     private func keepAsking(every retry: TimeInterval, on queue: DispatchQueue) {
         queue.asyncAfter(deadline: .now() + retry) { [self] in
+            state.lock()
+            askCount += 1
+            state.unlock()
             raiseWant()
             do {
                 if try tryLock() {

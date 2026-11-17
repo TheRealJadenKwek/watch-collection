@@ -16,8 +16,9 @@ Every fix gets a regression test that fails before it and passes after (the revi
   when rechecked. Any other read error holds the document back this pass (no write) and reports a wait.
 - **D3 Mac download failures (B3).** The Mac installs past a failed download only for "not in iCloud" (marked
   notInCloud). A checksum mismatch is retried on later passes; after 3 failures spread over at least 1 hour it is
-  marked unreadable. Every other failure waits for the next pass. Unreadable counts as notInCloud for the drop rule
-  (D4), logged loudly.
+  marked unreadable. Every other failure waits for the next pass. Unreadable is logged loudly; its reference is
+  kept and held back from the hub (polish 2 item 8: the hub exchange sends the collection without it and lays it
+  back into what it installs).
 - **D4 Narrowed drop rule (C1#1).** It applies only while the cloud link can answer: link on, account available,
   not paused, not off, not newer format, and the book holds a document epoch. Otherwise the old rule (drop what is
   gone on both sides) applies, exactly as before iCloud.

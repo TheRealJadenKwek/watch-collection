@@ -93,6 +93,13 @@ enum SyncRoute: Equatable, Sendable {
     static func baselessAfterFlip(from old: SyncRoute, to new: SyncRoute) -> SyncLinkKind? {
         old.active == new.active ? nil : new.active
     }
+
+    /// The link the phone's switch stopped using, whose waiting questions and answers go with it: no pass of that
+    /// link runs to send the answers, and when the switch is flipped back its first pass merges with no base and
+    /// asks again about anything still real. nil when the flip leaves the same link active.
+    static func linkLeft(from old: SyncRoute, to new: SyncRoute) -> SyncLinkKind? {
+        old.active == new.active ? nil : old.active
+    }
 }
 
 /// What a tick's cloud pass did, as the route reads it.

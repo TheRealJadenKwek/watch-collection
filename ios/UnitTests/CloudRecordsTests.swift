@@ -363,6 +363,38 @@ final class CloudRecordsTests: XCTestCase {
         XCTAssertEqual((CloudRecords.itemError(CKError(.networkFailure), for: a) as? CKError)?.code, .networkFailure)
     }
 
+    /// Polish 2 item 12c: every failure has a rank of its own, so a partial failure gives the same answer whatever
+    /// order its items come in.
+    func testAPartialFailureNeverTiesOnItsItems() {
+        func most(_ failures: [CloudFailure]) -> CloudFailure? { failures.max(by: { CloudRecords.precedes($0, $1) }) }
+        let pairs: [(CloudFailure, CloudFailure, CloudFailure)] = [
+            (.cancelled, .other("internalError"), .other("internalError")),
+            (.network, .damagedPhoto("x"), .network),
+            (.network, .photoFileMissing, .network),
+            (.photoFileMissing, .damagedPhoto("x"), .photoFileMissing),
+            (.damagedPhoto("x"), .other("y"), .damagedPhoto("x")),
+            (.changed, .network, .changed),
+        ]
+        for (a, b, expected) in pairs {
+            XCTAssertEqual(most([a, b]), expected, "\(a), \(b)")
+            XCTAssertEqual(most([b, a]), expected, "\(b), \(a)")
+        }
+        // Built from CloudKit's own codes, in both orders.
+        XCTAssertEqual(CloudRecords.failure(partial([.operationCancelled, .internalError])), .other("internalError"))
+        XCTAssertEqual(CloudRecords.failure(partial([.internalError, .operationCancelled])), .other("internalError"))
+        XCTAssertEqual(CloudRecords.failure(partial([.networkFailure, .assetFileNotFound])), .network)
+        XCTAssertEqual(CloudRecords.failure(partial([.assetFileNotFound, .networkFailure])), .network)
+        // Every case outranks or is outranked by every other: no two different cases tie.
+        let all: [CloudFailure] = [.misconfigured("m"), .noAccount, .purged, .quotaFull, .retryAfter(1), .changed, .network,
+                                   .photoFileMissing, .damagedPhoto("d"), .other("o"), .cancelled]
+        for (i, a) in all.enumerated() {
+            for b in all[(i + 1)...] {
+                XCTAssertTrue(CloudRecords.precedes(b, a), "\(a) should outrank \(b)")
+                XCTAssertFalse(CloudRecords.precedes(a, b), "\(a) should outrank \(b)")
+            }
+        }
+    }
+
     func testErrorsFromOutsideCloudKit() {
         XCTAssertEqual(CloudRecords.failure(URLError(.timedOut)), .network)
         XCTAssertEqual(CloudRecords.failure(URLError(.notConnectedToInternet)), .network)

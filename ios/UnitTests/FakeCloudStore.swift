@@ -11,7 +11,8 @@ import Foundation
 ///   longer the current one (or is gone) throws `.changed`.
 /// - `uploadPhoto` makes a missing zone (never an erased one), throws `.photoFileMissing` for a file it cannot read
 ///   (CloudKit's `assetFileNotFound`), returns true when the name is already there with the same bytes and false when
-///   with other bytes.
+///   with other bytes. Like CloudKit, it stores whatever bytes the file holds when it reads it, under the sha256 and
+///   size it was given: a file rewritten after it was hashed makes a record no fetch can match.
 /// - `downloadPhoto` returns false when iCloud does not have the name, checks the bytes against the record's size and
 ///   sha256 as the real store does (`.damagedPhoto` when they differ), and writes the file atomically. A bulk fetch
 ///   (the phone's fill) is noted in `bulkDownloads`.
@@ -88,6 +89,8 @@ actor FakeCloudStore: CloudStore {
     /// a process that died at that moment would leave it).
     private var afterWrite: (@Sendable () async -> Void)?
     private var afterUpload: (count: Int, run: @Sendable () async -> Void)?
+    /// Runs inside the next upload, before it reads the file (a test rewrites the file here).
+    private var beforeUploadRead: (@Sendable () async -> Void)?
     /// Runs inside every upload that makes a photo record (a test moves its clock here).
     private var everyUpload: (@Sendable () -> Void)?
 
@@ -164,10 +167,13 @@ actor FakeCloudStore: CloudStore {
     func uploadPhoto(_ name: String, file: URL, sha256: String, bytes: Int) async throws -> Bool {
         try begin(.upload)
         uploadCalls[name, default: 0] += 1
+        if let hook = beforeUploadRead {
+            beforeUploadRead = nil
+            await hook()
+        }
         var db = try database()
         if quotaFull { throw CloudFailure.quotaFull }
         guard let data = try? Data(contentsOf: file) else { throw CloudFailure.photoFileMissing }
-        guard CloudLink.sha256(data) == sha256, data.count == bytes else { throw CloudFailure.other("\(name) described wrongly") }
         db.zone = .present
         if let existing = db.photos[name] {
             store(db)
@@ -292,6 +298,9 @@ actor FakeCloudStore: CloudStore {
     func onUpload(_ count: Int, _ hook: @escaping @Sendable () async -> Void) { afterUpload = (count, hook) }
 
     func onEveryUpload(_ hook: @escaping @Sendable () -> Void) { everyUpload = hook }
+
+    /// Runs `hook` once, inside the next upload, before it reads the file.
+    func onNextUploadRead(_ hook: @escaping @Sendable () async -> Void) { beforeUploadRead = hook }
 
     // MARK: Reading
 
