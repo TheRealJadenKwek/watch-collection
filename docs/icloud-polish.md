@@ -57,3 +57,18 @@ Rehearsal evidence: ~/Offload/watch-collection/test-evidence/icloud-rehearsal/ (
     (7) "Opening the collection" has no message if a tick outlives its watchdog; a line after about 60 s. (8) "1
     changes need a choice" in the Mac headline; the unused-result warning at MacApp.swift:49; a lock file unlinked
     while held allows two holders.
+
+## Left after round 2 (shipped 2026-11-17, main 449f299; spec docs/icloud-polish2-spec.md, review and walk in
+## ~/Offload/watch-collection/review/polish2/ and test-evidence/polish2-walk/)
+18. Walk finding, older than round 2: in a hub exchange the Mac uploads every file the hub lacks before the merge,
+    so a photo whose reference the hub has just deleted is sent back and sits on the hub with nothing naming it
+    (disk only; the reference stays gone). Upload only files the merged result names, or let the hub prune files no
+    document names.
+19. Review F3: the "iCloud cannot answer" memory lives in the process, so the bridge asks iCloud (two reads) on every
+    tick while a file is gone on both sides and not kept. Bounded, nothing lost; persist it with cloud-status.json if
+    it ever shows in the meter.
+20. Review F2, the mirror case: a cloud pass in flight when the phone flips to the hub can set its questions after
+    `setPreferHub` cleared them. `route.active == .cloud` is the wrong check there (the Mac's cloud pass runs with
+    the hub active); needs a per-pass route snapshot.
+21. Still notes: item 10 (left by design), item 17 (4) zoneNotFound on the next CloudKit check run, (6) one amber
+    pass after a long sleep, the lock file unlinked while held.
