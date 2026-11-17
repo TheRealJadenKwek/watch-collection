@@ -7,6 +7,9 @@ struct WatchCollectionMacApp: App {
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
+        #if DEBUG
+        if let folder = CloudKitCheck.folder { CloudKitCheck.runAndExit(folder) }
+        #endif
         // Graphite as this app's system accent, so controls stay monochrome with contrast the system
         // has tuned. The white Dark Mode accent made selected sidebar rows white on white.
         UserDefaults.standard.register(defaults: ["AppleAccentColor": -1])
