@@ -56,9 +56,13 @@ extension JSONValue {
     }
 
     /// One spelling per value, for fingerprints and for the bytes written to iCloud: keys sorted by Unicode
-    /// code point, no spaces, a whole number without a fraction ("42", never "42.0"), any other number in
+    /// code point, no spaces, a whole number below 2^63 without a fraction ("42", never "42.0"), any other number in
     /// its shortest form. Strings are escaped as Python's `json.dumps` escapes them (ASCII only, `\u00e9` for é), so
-    /// a document holding no whole floats is spelled byte for byte as `sync.fingerprint` spells it.
+    /// a document is spelled byte for byte as `sync.fingerprint` spells it only when it holds no float with a
+    /// whole value (Python writes "42.0") and no integer a Double cannot hold below 2^63. Past 2^53 most
+    /// integers are rounded as they are read (9007199254740993 comes back as 9007199254740992), and from
+    /// 2^63 on this writes the exponent form where Python writes every digit; CollectionMergeTests lists
+    /// both as known differences.
     /// A number that is not finite (which no JSON text can hold) is written as null.
     var canonicalData: Data {
         var bytes: [UInt8] = []
