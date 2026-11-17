@@ -137,6 +137,19 @@ struct CollectionScreen: View {
                 .navigationBarTitleDisplayMode(.inline)
                 .atelierProbeScroll("collection")
                 .foldScroll($fold)
+                // Half open on a table the sync notice is one row held above the tiles, under the crease. It is an
+                // inset, not content, so the place kept across folds does not move with it.
+                .safeAreaInset(edge: .top, spacing: 0) {
+                    if duo.isTableTop {
+                        SyncNoticeBar(
+                            store: store,
+                            compact: true,
+                            insets: EdgeInsets(top: 0, leading: WatchTheme.narrowMargin, bottom: WatchTheme.gridGap, trailing: WatchTheme.narrowMargin),
+                            openSettings: showSettings
+                        )
+                        .background(WatchTheme.background)
+                    }
+                }
             }
             .screenBackground()
         } else {
@@ -158,6 +171,12 @@ struct CollectionScreen: View {
                 #if os(iOS)
                 Masthead(kicker: "Watch Collection", title: title, subtitle: subtitle)
                     .padding(.horizontal, margin)
+                // Silent while sync is healthy; it redraws on its own, never this page.
+                SyncNoticeBar(
+                    store: store,
+                    insets: EdgeInsets(top: 0, leading: margin, bottom: 20, trailing: margin),
+                    openSettings: showSettings
+                )
                 UnderlineTabs(selection: $scope, options: Scope.allCases.map { (value: $0.rawValue, label: $0.rawValue) })
                     .padding(.horizontal, margin)
                     .padding(.bottom, 20)
@@ -214,6 +233,14 @@ struct CollectionScreen: View {
         VStack(spacing: 0) {
             Masthead(kicker: "Watch Collection", title: title, subtitle: subtitle)
                 .padding(.horizontal, margin)
+            // Half open on a table this pane is too short for it: there it heads the tiles (see `pages`).
+            if !duo.isTableTop {
+                SyncNoticeBar(
+                    store: store,
+                    insets: EdgeInsets(top: 0, leading: margin, bottom: 20, trailing: margin),
+                    openSettings: showSettings
+                )
+            }
             UnderlineTabs(selection: $scope, options: Scope.allCases.map { (value: $0.rawValue, label: $0.rawValue) })
                 .padding(.horizontal, margin)
                 .padding(.bottom, 20)
@@ -266,21 +293,21 @@ struct CollectionScreen: View {
         return byPurchaseDate(inScope).last { datedSource($0, in: all).purchased != nil && $0.cover != nil }
     }
 
-    /// The feature's shape on a scrolling page: the plate, but no taller than 420 points with the crease across. On
-    /// a cover screen it runs under the status strip as wide as the window, but only as tall as the plate across the
-    /// width left of the strip, so its name and pill are on the first screen.
+    /// The feature's shape on a scrolling page: `PhotoShape.feature`, but no taller than 420 points with the crease
+    /// across. On a cover screen it runs under the status strip as wide as the window, but only as tall as that shape
+    /// across the width left of the strip, so its name and pill are on the first screen.
     private var featureAspect: CGFloat {
-        if duo.isAcross { return max(PhotoShape.plate, duo.size.width / 420) }
+        if duo.isAcross { return max(PhotoShape.feature, duo.size.width / 420) }
         if duo.statusStrip > 0, duo.size.width > duo.statusStrip {
-            return PhotoShape.plate * duo.size.width / (duo.size.width - duo.statusStrip)
+            return PhotoShape.feature * duo.size.width / (duo.size.width - duo.statusStrip)
         }
-        return PhotoShape.plate
+        return PhotoShape.feature
     }
 
-    /// The feature's height on a cover screen: the plate across the width left of the status strip. Nil elsewhere.
+    /// The feature's height on a cover screen: its shape across the width left of the status strip. Nil elsewhere.
     private var coverFeatureHeight: CGFloat? {
         guard duo.posture == .folded, duo.statusStrip > 0, duo.size.width > duo.statusStrip else { return nil }
-        return (duo.size.width - duo.statusStrip) / PhotoShape.plate
+        return (duo.size.width - duo.statusStrip) / PhotoShape.feature
     }
 
     /// Edge to edge, the cover in its saved framing, the name set large over a dark fade. With no `aspect` the photo
@@ -451,7 +478,7 @@ func archiveDetail(_ watch: Watch) -> String {
     return "\(cost) · \(statusLabel(watch.status))"
 }
 
-/// Two-up tile: a square panel with the photo across the top, then the name, a spec line and the price.
+/// Two-up tile: the cover in the plate shape across the top, then the name, a spec line and the price.
 struct WatchTile: View {
     let store: AppStore
     let watch: Watch

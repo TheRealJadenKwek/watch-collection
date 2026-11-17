@@ -32,8 +32,13 @@ final class SyncStatus: ObservableObject {
     @Published var isSyncing = false
     @Published var message = "Waiting to sync"
     @Published var conflicts: [SyncConflict] = []
+    /// The choices made so far for `conflicts`, by conflict id. A conflict with a choice no longer holds sync up.
+    @Published var resolutions: [String: String] = [:]
     @Published var lastSync: Date?
     @Published var lastPhoneSync: Date?
+    /// Why an attempt of this session did not finish; nil once one reaches the Mac. The store's `SyncFailureLog`
+    /// sets it, and `SyncHealth` reads it.
+    @Published var failure: SyncFailure?
 }
 
 @MainActor
@@ -66,6 +71,14 @@ final class AppStore: ObservableObject {
         get { status.lastPhoneSync }
         set { if status.lastPhoneSync != newValue { status.lastPhoneSync = newValue } }
     }
+    private var syncResolutions: [String: String] {
+        get { status.resolutions }
+        set { if status.resolutions != newValue { status.resolutions = newValue } }
+    }
+    /// When the failure the sync notice reads is set and cleared; `status.failure` follows it.
+    private var syncFailures = SyncFailureLog() {
+        didSet { if status.failure != syncFailures.failure { status.failure = syncFailures.failure } }
+    }
     @Published private(set) var syncEnabled = UserDefaults.standard.object(forKey: "syncEnabled") as? Bool ?? true
     /// Wishlist watches being tried in a box, on this device only (never in the document).
     @Published private(set) var boxTrial = BoxTrial.load()
@@ -79,7 +92,8 @@ final class AppStore: ObservableObject {
     private var editGeneration = 0
     private var connectionMonitor: NWPathMonitor?
     private var syncTimer: Task<Void, Never>?
-    private var syncResolutions: [String: String] = [:]
+    /// The app has been in the background since the last visit began (true at launch, so the first visit starts one).
+    private var returningFromBackground = true
     // What the last full sync settled on. If neither side has moved since, there is nothing to do.
     private var syncedRevision: String?
     private var syncedGeneration = -1
@@ -155,6 +169,8 @@ final class AppStore: ObservableObject {
         }
         syncAddress = clean
         syncEnabled = enabled
+        // The next attempt speaks for the new settings, and one still running for the old ones cannot fail over it.
+        syncFailures.startSession()
         editGeneration += 1
         UserDefaults.standard.set(clean, forKey: "syncAddress")
         UserDefaults.standard.set(enabled, forKey: "syncEnabled")
@@ -186,6 +202,14 @@ final class AppStore: ObservableObject {
         #else
         syncTimer?.cancel()
         if phase == .active {
+            // A new visit. What failed before (an earlier visit, the overnight refresh) says nothing about now: the
+            // notice waits for an attempt of this visit to fail. An attempt still running from before, which turns
+            // away the timer's first one, cannot bring the old failure back. Only after the background: a glance at
+            // Control Center or a system alert is the same visit, and a notice already up stays up.
+            if returningFromBackground {
+                syncFailures.startSession()
+                returningFromBackground = false
+            }
             syncTimer = Task { [weak self] in
                 while !Task.isCancelled {
                     await self?.syncNow()
@@ -193,6 +217,7 @@ final class AppStore: ObservableObject {
                 }
             }
         } else if phase == .background {
+            returningFromBackground = true
             scheduleBackgroundSync()
         }
         #endif
@@ -232,12 +257,16 @@ final class AppStore: ObservableObject {
         isSyncing = true
         defer { isSyncing = false }
         let address = syncAddress
+        let session = syncFailures.session
         do {
             let client = try CollectionSyncClient(address: address)
             for _ in 0..<3 {
                 let generation = editGeneration
                 let local = data
                 let remote = try await client.snapshot()
+                // The Mac answered: an earlier failure does not hold, even if every round below is overtaken by
+                // edits and the attempt runs out without finishing.
+                syncFailures.reachedMac()
                 if let stamp = remote.lastRemoteSync { lastPhoneSync = ISO8601DateFormatter().date(from: stamp) }
                 // Neither side changed: skip the upload, the disk writes and the redraw.
                 if generation == syncedGeneration, remote.revision == syncedRevision,
@@ -294,6 +323,7 @@ final class AppStore: ObservableObject {
             syncMessage = "Saved on this \(Platform.deviceName); sync will resume"
         } catch {
             syncMessage = "Saved on this \(Platform.deviceName). \(error.localizedDescription)"
+            syncFailures.failed(error, in: session)
             // Keep local editing enabled when the sync server is unreachable.
         }
         return false
