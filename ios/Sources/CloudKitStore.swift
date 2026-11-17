@@ -270,6 +270,15 @@ final class CloudKitStore: CloudStore, @unchecked Sendable {
         }
     }
 
+    /// Saves the zone, which brings back one he erased. Only the Mac's "Sync through iCloud again" calls this.
+    func prepareZone() async throws {
+        do {
+            try await saveZone()
+        } catch {
+            throw fail("prepareZone", error)
+        }
+    }
+
     // MARK: Calls
 
     private static func configuration(_ timeout: TimeInterval) -> CKOperation.Configuration {
