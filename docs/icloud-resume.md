@@ -1,5 +1,24 @@
-# Watch Collection: resume note (lead, 2026-11-17 12:05 PM CST)
+# Watch Collection: resume note (lead, 2026-11-17 5:20 PM CST)
 
+## State now: nothing in flight, nothing running
+- Wishlist 120 Hz scrolling on the Mac shipped: main d8caa11 (pushed). Mac 5.1 (5) in /Applications, upToDate at
+  22:32Z (349 photos, none missing). TestFlight 5.1 (35) VALID 22:34Z. Rollback: Mac copy
+  ~/Offload/watch-collection/releases/mac-backup-5.1-4-20261117-1632.app; TestFlight 34.
+- Mac only: VStack page, AdaptiveCardGrid with `.geometryGroup()`, cards built a row at a time, one screen-level delete
+  confirmation; iPhone path unchanged. Bench (load ~290): 291 ms/s of hitches before, 0.5 to 1 after; look A/B: all 35
+  card frames identical. Review: ~/Offload/watch-collection/review/perf/round1-findings.md (all fixed).
+- Wishlist: 9 watches added today (5 Xeric, 2 Baltic, Zelos Comet 39 MOP, D1 Milano White Sketch), tiles rendered,
+  fitted, published, in iCloud. Render ledger $9.90 of $15 (q216 closed).
+
+## Next (no approvals needed)
+1. Open item: the first-open stall of the Mac window is worse (worst frame 0.75 to 1.0 s against 0.26 s); the main
+   thread is idle then, so likely the window server drawing every card. Measure on a quiet Mac with the bench
+   (~/Offload/watch-collection/derived/perf/: exp.sh, launch-bg.sh uses `open -g`; throwaway hub
+   scratchpad perf/run_hub.py on 8957; bundle id ...mac.perfcheck), then fix. Worktree ~/watch-collection-perf
+   (branch perf/wishlist-scroll, merged) can be reused or removed.
+2. Never put a test window in front of Jaden during a meeting; GUI runs launch with `open -g`.
+
+## Earlier (12:05 PM)
 ## State now: nothing in flight
 - iCloud polish round 2 shipped: main 449f299 (pushed). TestFlight 5.1 (34) in beta testing 18:01Z. Mac 5.1 (4) in
   /Applications, upToDate, revision fd26977f, 277/277 photos. Rollback: TestFlight 33; Mac copy
