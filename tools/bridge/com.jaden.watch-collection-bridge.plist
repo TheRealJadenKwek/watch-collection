@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+The Watch Collection bridge (docs/icloud-plan.md section 11 P5): the app's own binary runs one headless sync tick
+(hub, iCloud, hub again if iCloud brought something in) every 60 s and whenever the hub's data folder changes, so the
+hub and iCloud stay linked while the app is closed. With the app open a tick exits at once.
+WatchPaths is the folder, not watches.json, because the hub replaces the file by rename.
+Install and remove it with tools/bridge/install.sh, which also sets the binary and the log path.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>com.jaden.watch-collection-bridge</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Applications/Watch Collection.app/Contents/MacOS/Watch Collection</string>
+		<string>-WCBridge</string>
+		<string>1</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>StartInterval</key>
+	<integer>60</integer>
+	<key>WatchPaths</key>
+	<array>
+		<string>/Users/jadenkwek/watch-collection/data</string>
+	</array>
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+	<key>ProcessType</key>
+	<string>Background</string>
+	<key>StandardOutPath</key>
+	<string>/Users/jadenkwek/Library/Logs/watch-collection-bridge.log</string>
+	<key>StandardErrorPath</key>
+	<string>/Users/jadenkwek/Library/Logs/watch-collection-bridge.log</string>
+</dict>
+</plist>

@@ -1,15 +1,29 @@
 import AppKit
 import SwiftUI
 
+/// Decides what this launch is before SwiftUI starts: the DEBUG CloudKit check, one headless bridge tick for the
+/// LaunchAgent (`-WCBridge 1`), or the app. The app first takes the sync lock and holds it for life, so a bridge tick
+/// never writes the library while the app is open (docs/icloud-plan.md section 11 P5).
 @main
+enum Entry {
+    static func main() {
+        #if DEBUG
+        if let folder = CloudKitCheck.folder { CloudKitCheck.runAndExit(folder) }
+        #endif
+        if Bridge.requested { Bridge.runAndExit() }
+        // Before anything reads `sync.json`. It waits briefly for a running tick to step aside, and never stops the
+        // app: past its patience, or with no lock file, the app carries on (and says so in the log).
+        let lock = SyncLock(url: SyncLock.appURL)
+        lock.holdForApp()
+        withExtendedLifetime(lock) { WatchCollectionMacApp.main() }
+    }
+}
+
 struct WatchCollectionMacApp: App {
     @StateObject private var store = AppStore()
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
-        #if DEBUG
-        if let folder = CloudKitCheck.folder { CloudKitCheck.runAndExit(folder) }
-        #endif
         // Graphite as this app's system accent, so controls stay monochrome with contrast the system
         // has tuned. The white Dark Mode accent made selected sidebar rows white on white.
         UserDefaults.standard.register(defaults: ["AppleAccentColor": -1])
