@@ -84,6 +84,9 @@ actor FakeCloudStore: CloudStore {
 
     // Hooks, each run once.
     private var afterDocument: (@Sendable () async -> Void)?
+    /// Runs inside the next document save once it has landed, before it answers (a test copies `cloud.json` here, as
+    /// a process that died at that moment would leave it).
+    private var afterWrite: (@Sendable () async -> Void)?
     private var afterUpload: (count: Int, run: @Sendable () async -> Void)?
     /// Runs inside every upload that makes a photo record (a test moves its clock here).
     private var everyUpload: (@Sendable () -> Void)?
@@ -141,6 +144,10 @@ actor FakeCloudStore: CloudStore {
         store(db)
         writes.append(device)
         log.append("document \(device)")
+        if let hook = afterWrite {
+            afterWrite = nil
+            await hook()
+        }
         if loseWriteResponse {
             loseWriteResponse = false
             throw CloudFailure.network
@@ -277,6 +284,9 @@ actor FakeCloudStore: CloudStore {
     }
 
     func onNextDocument(_ hook: @escaping @Sendable () async -> Void) { afterDocument = hook }
+
+    /// Runs `hook` once, inside the next document save that lands, right after it lands and before it answers.
+    func onNextWrite(_ hook: @escaping @Sendable () async -> Void) { afterWrite = hook }
 
     /// Runs `hook` inside the upload that makes the `count`th photo record.
     func onUpload(_ count: Int, _ hook: @escaping @Sendable () async -> Void) { afterUpload = (count, hook) }

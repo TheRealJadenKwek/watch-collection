@@ -5,9 +5,12 @@ import Foundation
 /// - Right before this device's first cloud write or install (a photo, the document, or installing iCloud's
 ///   collection): a copy of `sync.json` as `sync-before-icloud-<time>.json`, and the JSON mirror once whatever
 ///   `autoBackup` says. Never deleted. A pass that writes and installs nothing makes none.
-/// - An edit that lands while a pass runs drops that pass's result and its book, and the pass goes round again;
-///   except a pure push (it wrote exactly the round's own collection), whose book is kept, so the document it wrote
-///   stays its base (docs/icloud-fixes.md D1). A dropped book still hands on its throttle, full and erase state.
+/// - An edit that lands while a pass runs: nothing is installed and the pass goes round again. If that round's
+///   document write was confirmed (`.installed` with `wroteCloud`: the store answered with the new record), its book
+///   is kept (epoch, tag, back-off) with its base set to the round's own local collection, the ancestor of both what
+///   is here now and what iCloud now holds (docs/icloud-fixes.md R1; a pure push is the case where the two are
+///   equal). Otherwise the round's result and book are dropped, and the dropped book still hands on its throttle,
+///   full and erase state. A merge with no base (D5) holds only until a round's write is confirmed (R2).
 /// - An install saves the data (`sync.json`) first and the book (`cloud.json`) second. An install that would change
 ///   nothing here (the pass only sent this device's own edits up) is skipped.
 /// - The book is saved after every pass that keeps it (an `.upToDate` can carry a newer one), and before the
@@ -30,7 +33,8 @@ final class CloudSyncSession {
         var resolutions: [String: String] = [:]
         var hubAt: Date? = nil
         var hubRevision: String? = nil
-        /// D5: the first pass after the phone's switch made iCloud its link again merges with no base.
+        /// D5: the first pass after the phone's switch made iCloud its link again merges with no base, until one of
+        /// its rounds confirms a write (R2).
         var noBase = false
         /// The hub link's changes waiting for a choice here, for this device's `Status` (C2 7).
         var hubConflicts = 0
@@ -53,6 +57,9 @@ final class CloudSyncSession {
     private var preCloudCopyMade: Bool
     /// The last pass wrote the document, or tried to and cannot know whether it landed (C1 8).
     private(set) var lastPassWrote = false
+    /// A round of the last pass confirmed a document write (R1), whether or not an edit overtook it: from then on the
+    /// book holds a base, so a pending D5 merge with no base is spent (R2, across passes).
+    private(set) var lastPassConfirmedWrite = false
     /// The last pass installed a collection that changed something here (C1 9).
     private(set) var lastPassInstalled = false
     /// Why the last pass stopped short; nil when it settled, asked, or none has run this launch.
@@ -88,6 +95,7 @@ final class CloudSyncSession {
     /// leaves `.waiting(.busy)`, for the next tick).
     func pass(_ host: Host) async -> CloudOutcome {
         lastPassWrote = false
+        lastPassConfirmedWrite = false
         lastPassInstalled = false
         roundHost = host
         defer {
@@ -98,6 +106,9 @@ final class CloudSyncSession {
             beforeWrite: { [weak self] in await self?.copyBeforeWrite() ?? false },
             persist: { [weak self] book in await self?.persist(book) ?? false }
         )
+        // R2: D5's merge with no base holds only until a round of this pass confirms a write; later rounds use the
+        // book that round kept.
+        var noBase = host.noBase
         for _ in 0..<CloudLink.maxRounds {
             let generation = host.generation()
             let local = host.local()
@@ -105,18 +116,24 @@ final class CloudSyncSession {
             let input = CloudInput(local: local, book: book, hubBase: host.hubBase,
                                    hubSettledNow: host.hubSettledAt == generation, joinedBefore: host.joinedBefore,
                                    resolutions: host.resolutions, changedSinceLastPass: host.changed(),
-                                   hubAt: host.hubAt, hubRevision: host.hubRevision, noBase: host.noBase,
+                                   hubAt: host.hubAt, hubRevision: host.hubRevision, noBase: noBase,
                                    hubConflicts: host.hubConflicts, hooks: hooks)
             let (outcome, next) = await link.pass(input)
             if await link.wroteDocument { lastPassWrote = true }
+            if case .installed(_, wroteCloud: true) = outcome { lastPassConfirmedWrite = true }
             files.saveMarks(await link.marks)
             // Step 8: an edit landed while the pass ran.
             guard host.generation() == generation else {
-                if case let .installed(installed, true) = outcome, let local,
-                   let wrote = CloudLink.projection(installed), wrote == CloudLink.projection(local) {
-                    // A pure push: iCloud now holds exactly the round's collection, an ancestor of what is here now.
-                    // Its book is kept, so that document is the next round's base (D1); nothing is installed.
-                    keep(next)
+                if case .installed(_, wroteCloud: true) = outcome, let local, let base = CloudLink.projected(local) {
+                    // R1: a confirmed write. iCloud holds the merge of this round's collection with what it had, so
+                    // this round's collection is an ancestor of both that document and what is here now. Its book is
+                    // kept (epoch, tag, back-off) with that collection as its base; nothing is installed. For a pure
+                    // push the two are the same (D1). A write that may only have landed never gets here: it throws,
+                    // and the round ends as `.waiting`.
+                    var kept = next
+                    kept.base = base
+                    keep(kept)
+                    noBase = false
                     continue
                 }
                 // Otherwise its result and its book are both dropped (iCloud may already hold that result; the kept

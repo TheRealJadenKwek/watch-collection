@@ -123,6 +123,9 @@ enum CloudOutcome: Sendable {
     /// Nothing to install. The returned book may still be newer (a new tag for the same content): save it.
     case upToDate
     /// The merged collection, before `BoxModel.installing` and this device's own settings are laid on by the caller.
+    /// `wroteCloud` is true only for a confirmed write: the store answered the document save with the saved record
+    /// and its new tag, which the returned book holds. A save that may have landed (its answer lost, the call
+    /// cancelled, a network failure after sending) throws instead, and the pass ends as `.waiting`.
     case installed(CollectionData, wroteCloud: Bool)
     /// Nothing was written; answer them by id in `CloudInput.resolutions`.
     case conflicts([CollectionMerge.Conflict])
@@ -225,8 +228,10 @@ struct CloudInput: Sendable {
 /// The caller's side of a pass (P4):
 /// - Save the returned book after every pass. On `.installed`, save the data first and the book second (section 4
 ///   step 9): a crash between them leaves an older base, which still merges cleanly.
-/// - If edits landed while the pass ran, drop the result and the book together and run again (step 8). iCloud may
-///   already hold the dropped result; the old book's base is still an ancestor of it.
+/// - If edits landed while the pass ran, install nothing and run again (step 8). After a confirmed write
+///   (`.installed` with `wroteCloud`), keep the returned book with its base set to `projected` of the pass's local
+///   input (docs/icloud-fixes.md R1). Otherwise drop the result and the book together, keeping only the back-off
+///   fields: iCloud may already hold the dropped result, and the old book's base is still an ancestor of it.
 /// - Save `marks` after each pass and each fill. One pass at a time; a second call while one runs returns `.busy`.
 actor CloudLink {
     /// After `quotaExceeded`, no retry for this long.
@@ -290,15 +295,16 @@ actor CloudLink {
 
     func pass(_ input: CloudInput) async -> (outcome: CloudOutcome, book: CloudBook) {
         var book = input.book
-        if let disabled { return (.waiting(.failed(disabled)), book) }
         guard !running else { return (.waiting(.busy), book) }
+        // Per pass, before any early return: a pass that returns at once wrote nothing (B F8).
+        wroteDocument = false
+        if let disabled { return (.waiting(.failed(disabled)), book) }
         let start = now()
         if let notBefore = book.notBefore, start < notBefore { return (.waiting(.busy), book) }
         if let full = book.quotaFullAt, start.timeIntervalSince(full) < Self.quotaRetry { return (.waiting(.full), book) }
         book.notBefore = nil
         book.quotaFullAt = nil
         running = true
-        wroteDocument = false
         passHooks = input.hooks
         writesCleared = false
         defer {
@@ -658,6 +664,13 @@ actor CloudLink {
     static func projection(_ data: CollectionData) -> String? {
         guard let value = try? JSONValue(encoding: data) else { return nil }
         return CollectionMerge.fingerprint(CollectionMerge.normalize(value))
+    }
+
+    /// A collection as a base holds it: its synced projection, decoded with this device's own settings laid back
+    /// in (what `create` writes and keeps). nil if it does not decode from its own projection.
+    static func projected(_ data: CollectionData) -> CollectionData? {
+        guard let value = try? JSONValue(encoding: data) else { return nil }
+        return try? installable(CollectionMerge.normalize(value), local: data)
     }
 
     /// Lower-case hex SHA-256, the form `revision` and a photo's `sha256` hold.

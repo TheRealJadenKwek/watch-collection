@@ -232,12 +232,17 @@ extension CloudLink {
     /// (no sooner than `missingRecheck`), and the install waits; after `damagedStrikes` such fetches over at least
     /// `damagedSpan` the photo is given up on as unreadable. Every other failure throws, so nothing is installed and
     /// the next pass tries again.
+    ///
+    /// A damaged photo does not stop the loop (R5): every one this pass meets is fetched and struck (or found still
+    /// waiting out `missingRecheck`), and the pass waits once, after the loop, so each photo's clock runs on its own.
     func pullPhotos(_ names: [String]) async throws {
+        var damaged = false
         for name in names where !files.exists(name) {
             let at = now()
             guard let file = files.url(name), wantsDownload(name, at: at) else { continue }
             if let strikes = marks.damaged[name], at.timeIntervalSince(strikes.last) < Self.missingRecheck {
-                throw CloudFailure.damagedPhoto(Self.damagedReason)
+                damaged = true
+                continue
             }
             do {
                 if try await store.downloadPhoto(name, to: file) {
@@ -249,8 +254,8 @@ extension CloudLink {
                 let strikes = marks.strike(name, at: at)
                 guard strikes.count >= Self.damagedStrikes,
                       strikes.last.timeIntervalSince(strikes.first) >= Self.damagedSpan else {
-                    // One wording for every pass it holds up (the store has logged which check failed).
-                    throw CloudFailure.damagedPhoto(Self.damagedReason)
+                    damaged = true
+                    continue
                 }
                 marks.noteUnreadable(name, at: at)
                 Self.photoLog.error("""
@@ -259,6 +264,8 @@ extension CloudLink {
                     """)
             }
         }
+        // One wording for every pass it holds up (the store has logged which check failed).
+        if damaged { throw CloudFailure.damagedPhoto(Self.damagedReason) }
     }
 
     static let damagedReason = "a photo from iCloud did not match its record; sync will try it again"

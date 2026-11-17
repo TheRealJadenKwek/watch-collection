@@ -115,12 +115,26 @@ Per device, strictly one link at a time (the existing `isSyncing` flag), never t
    ask which exist (`records(for:desiredKeys: [])`, 100 names a call, re-asked before each batch of 10 so two
    devices uploading the same set interleave instead of both sending everything), upload the rest in saves of 5.
    "Already there" is success. The document is not written while any of these is still outstanding.
-   A file this device does not hold never blocks the write and is never dropped from the document here.
-6. Mac only: download the photos the merge introduces (referenced by merged, not by local) before installing. A
-   network failure: do not install, retry next pass. "Not in iCloud" (unknownItem): note it in the book and install.
+   A file this device does not hold never blocks the write and is never dropped from the document here. A held
+   file that cannot be read (or that CloudKit says it cannot read) counts as gone only if it no longer exists;
+   otherwise it holds the document back this pass (docs/icloud-fixes.md D2).
+6. Mac only: download the photos the merge introduces (referenced by merged, not by local) before installing. Only
+   "not in iCloud" (unknownItem) lets the install go ahead without the photo; it is noted in `cloud-photos.json`. A
+   photo whose bytes do not match its record is struck and fetched again on later passes (no sooner than 10
+   minutes); after 3 strikes spread over at least an hour it is given up on as unreadable, logged, and the install
+   goes ahead (D3). Every damaged photo a pass meets is struck in that pass, so their hours run side by side (R5).
+   Any other failure (network, cancelled, a server error, a disk that will not take the file): do not install,
+   retry next pass.
 7. If merged differs from the remote body: save with `ifServerRecordUnchanged` over the fetched system fields.
    `serverRecordChanged`: back to step 3, at most 3 rounds.
-8. If local edits landed meanwhile (`editGeneration` moved): drop the result, go round again (today's guard, AS:263).
+8. If local edits landed meanwhile (`editGeneration` moved): install nothing and go round again (today's guard,
+   AS:263). If this round's document write was confirmed (the store answered with the new record and its tag), keep
+   its book (epoch, tag, back-off) with its base set to the normalized local collection the round started from: the
+   document holds the merge of that collection with what iCloud had, so it is an ancestor of both (R1; a pure push
+   is the case where the two are equal). Otherwise drop the result and the book, keeping only `notBefore`,
+   `quotaFullAt` and `paused`. A write that may have landed but was not confirmed (its answer lost, cancelled, a
+   network failure after sending) is dropped too: until the document is known to hold the merge, that collection's
+   own additions would read as deletes in iCloud.
 9. Install. Write order is a rule: **`sync.json` (data) first, `cloud.json` (base, tag, epoch) second.** A crash
    between them leaves an older base, which is still a true ancestor and merges cleanly; the reverse order would make
    the next merge read fresh remote changes as local reverts.
@@ -134,8 +148,8 @@ second link's pass finds merged == local, installs nothing, bumps nothing.
 
 Files on each device, beside `sync.json`:
 - `cloud.json`: `{format, account, epoch, base: CollectionData?, systemFields, tag, revision, lastSuccess, paused,
-  quotaFullAt, notBefore}`. Separate from `sync.json` on purpose: an older build ignores it, so a rollback and
-  re-upgrade finds a base that is still a valid ancestor.
+  quotaFullAt, notBefore, pendingEpoch, pendingBase}` (the pending pair: section 6). Separate from `sync.json` on
+  purpose: an older build ignores it, so a rollback and re-upgrade finds a base that is still a valid ancestor.
 - `cloud-photos.json`: names confirmed in iCloud, names iCloud said it does not have (with a time), mismatches. A
   cache: losing it costs one existence check.
 - `cloud-status.json`: rewritten each pass for the lead to read (outcome, epoch, revision, photo counts, last error,
@@ -153,6 +167,13 @@ Files on each device, beside `sync.json`:
   per confirmed file). The Mac app shows "Sending 120 of 260 photos to iCloud". Roughly 2 to 20 minutes depending on
   his upload speed. The phone already holds these files (today's sync downloads them all, CS:162), so on joining it
   uploads only photos it added itself.
+- A held photo that cannot be read when it is sent is not gone while its file is still there: the document waits
+  for it (D2), and the hub exchange stops that pass with a retryable error, dropping and sending nothing, and logs
+  the path (R4). Only a file that no longer exists counts as gone.
+- Mac downloads (step 6): only "not in iCloud" is installed past. A photo iCloud hands over with bytes that do not
+  match its record is retried; after 3 such fetches over at least an hour it is given up on as unreadable and counts
+  as not in iCloud for the drop rule below (D3), with a loud log line. A pass strikes every damaged photo it meets,
+  then waits once (R5).
 - Phone downloads are lazy. `PhotoStore.load` gets a cloud source: local file, else iCloud by record name (verify
   size and `sha256`, write atomically), else a placeholder. After an install, a background fill fetches what is
   still missing, 3 at a time, only on a path that is not expensive or constrained; on cellular only what a screen
@@ -160,17 +181,24 @@ Files on each device, beside `sync.json`:
 - Bridge flow, no new code on the hub: a phone photo reaches the Mac from iCloud (step 6), then the existing hub
   exchange uploads it (`CollectionSyncClient.uploads`). A hub tile reaches the Mac by today's download, then step 5
   sends it to iCloud before the document that names it.
-- One existing rule is narrowed. The hub exchange drops references to files "gone on both sides" (CS:147-157). On a
-  Mac with the cloud link on, a reference is dropped only if iCloud has said it does not have that file
-  (`cloud-photos.json`) or the cloud link is off. Otherwise the hub exchange is skipped for this tick. Without this, a
-  photo that simply has not come down yet could lose its reference everywhere.
+- One existing rule is narrowed. The hub exchange drops references to files "gone on both sides" (CS:147-157). While
+  the cloud link can answer (link on, account available, not paused, not turned off for this launch, not a newer
+  format, and the book holds a document epoch), a reference is dropped only if iCloud has said it does not have that
+  file, or the Mac has given up on it as unreadable (`cloud-photos.json`). Otherwise the hub exchange is skipped for
+  this tick. When the cloud link cannot answer, the old rule applies, exactly as before iCloud (D4). A phone on the
+  hub link first fetches from iCloud the files the exchange would drop. Without this, a photo that simply has not
+  come down yet could lose its reference everywhere.
 
 ## 6. Who creates the document, and what base a device joins with
 
 "No document" (zone or record missing, not purged):
 - **Mac**, and the hub pass of this same tick finished clean with no conflicts and no edits since: create it. New
-  `epoch`, `origin: hub`, photos first (section 5), then the body = `normalize(local)`. If the save says a record
-  appeared meanwhile, treat it as "document exists".
+  `epoch`, `origin: hub`, photos first (section 5), then the body = `normalize(local)`. The new epoch and that body
+  are saved in `cloud.json` as `pendingEpoch` and `pendingBase` before the save goes out (D1): a save whose answer is
+  lost, or a process that dies after it lands, still finds its base. The next pass whose head shows that epoch takes
+  `pendingBase` as its base; any other head (another epoch, no document) clears the pair. The save stores the record
+  first and saves the zone only on `zoneNotFound`, never a zone he erased (D6). If the save says a record appeared
+  meanwhile, treat it as "document exists".
 - **Mac without a clean hub pass**: wait. Status: "iCloud sync starts once this Mac reaches its library."
 - **Phone**: never creates. It keeps using the hub link as today.
 
@@ -184,11 +212,18 @@ Document exists, this device has local data, and `cloud.json` has no base for th
 
 A device with no local data installs the remote as it is. That makes a new phone zero-setup: no address to type.
 
+Whatever the base, a round whose write is confirmed and then overtaken by an edit keeps its book with that round's
+own collection as base (section 4 step 8, R1). So a merge with no base (the Mac's join, the phone after an epoch
+change, the switch below) is never repeated against its own write within a pass, and a delete made during it holds.
+
 After its first successful cloud install the phone sets `cloudJoinedOnce` and its active link becomes iCloud. The
 hub address stays stored. Settings (iPhone, bottom of the sync section) keeps one switch, "Sync directly with the
-Mac instead", which only flips the active link; both bases stay valid ancestors, so flipping either way is a normal
-three-way merge. It exists so the lead can recover a phone without shipping a build if Production CloudKit
-misbehaves.
+Mac instead", which only flips the active link. It exists so the lead can recover a phone without shipping a build
+if Production CloudKit misbehaves. The first pass of the link that becomes active after a flip, either way, merges
+with no base: union, nothing deleted, differing fields ask (D5). Its base may be far behind or ahead of the other
+link's, and a three-way merge would read the gap as deletes and reverts. On the iCloud side the no-base merge holds
+only until a round of that pass confirms a write; later rounds use the book that round kept (R2). The flag itself is
+cleared when the link settles.
 
 ## 7. What he sees
 
@@ -218,17 +253,21 @@ No new choices. Copy for the existing sync line and tonight's notice (which must
 
 | Event | Rule |
 |---|---|
-| No account, restricted, could not determine | Cloud link sleeps. Nothing local is removed, ever. Mac keeps syncing with the hub. |
+| No account, restricted, could not determine | Cloud link sleeps (could not determine is a quiet network failure, D12). Nothing local is removed, ever. Mac keeps syncing with the hub, dropping gone photos by the old rule (D4). |
 | Account switched (`userRecordID` differs from `cloud.json`) | Clear base, tag, epoch and photo marks; keep all local data. Next pass is a join with no base (Mac) or per the table (phone). |
 | Signed out, then the same account again | Book still valid; carry on. |
 | `quotaExceeded` | `quotaFullAt = now`, retry no sooner than 10 minutes, banner. Edits stay local and, on the Mac, still reach the hub. |
 | `userDeletedZone` (he erased the app's iCloud data in Settings) | `paused = erased`. Do not re-upload on our own (Apple's rule, Arsenal's rule). Local and hub untouched. The Mac button clears it and the Mac creates a new document with a new epoch. A paused phone keeps reading the head only, and resumes when it sees a new epoch (join with no base). |
-| `zoneNotFound` | "No document": the Mac creates it (new epoch) after a clean hub pass. |
+| `zoneNotFound` | "No document": the Mac creates it (new epoch) after a clean hub pass. The creating save stores the record first and saves the zone only on `zoneNotFound`; `userDeletedZone` there is the erase above (D6). |
 | `serverRecordChanged` on the document | Re-fetch, re-merge, 3 rounds, then next tick. |
+| Document save's answer lost (timeout, `serverResponseLost`), cancelled, or a network failure after sending | Not a confirmed write: it may have landed. Nothing installed; the next pass's head decides. A creation finds its `pendingEpoch` and `pendingBase` on disk and adopts them if the head shows that epoch (D1). If an edit overtook the round, its result and book are dropped, keeping `notBefore`, `quotaFullAt` and `paused` (R1). |
+| An edit lands while a pass runs | Nothing installed; go round again. After a confirmed write the round's book is kept with the round's own collection as base (R1), and a no-base pass (D5) uses that book from then on (R2). |
 | `unknownItem` for a photo | Not an error. Never deletes anything. Whoever holds the file and sees it referenced uploads it. |
+| A held photo cannot be read (also `assetFileNotFound` while the file is still there) | Not gone while the file exists: the document waits this pass (D2), and the hub exchange stops with a retryable error, sending and dropping nothing, and logs the path (R4). |
+| Photo bytes do not match their record (Mac download) | Retried no sooner than 10 minutes on; the install waits. After 3 such fetches over at least an hour: given up on as unreadable, logged, and installed past; it then counts as not in iCloud for the drop rule (D3). Every damaged photo met in a pass is struck in that pass (R5). Any other download failure waits for the next pass. |
 | `requestRateLimited`, `zoneBusy`, `serviceUnavailable` | `notBefore = now + retryAfter`. |
 | Network errors | Quiet; next tick. The staleness notice covers a long gap. |
-| `assetFileNotFound` | Drop that photo's mark, next pass re-checks the file. |
+| `assetFileNotFound` | Drop that photo's mark, next pass re-checks the file (a file still there: the held-photo row above). |
 | `limitExceeded` | Halve the batch. |
 | `missingEntitlement`, `badContainer`, `permissionFailure` | Cloud link off for this launch, one loud log line. A build problem, not his. |
 | `format` too new | Cloud link off on that device, banner. |
@@ -341,7 +380,7 @@ protocol CloudStore: Sendable {
     func account() async throws -> String                                   // user record name
     func head() async throws -> (document: CloudHead?, statuses: [String: CloudStatus])   // nil document = none
     func document() async throws -> CloudDocument?
-    func write(body: Data, revision: String, epoch: String, origin: String, device: String, over systemFields: Data?) async throws -> CloudDocument  // nil = create (makes the zone); throws .changed
+    func write(body: Data, revision: String, epoch: String, origin: String, device: String, over systemFields: Data?) async throws -> CloudDocument  // nil = create (record first, zone only on zoneNotFound, D6); throws .changed
     func photosPresent(_ names: [String]) async throws -> Set<String>
     func uploadPhoto(_ name: String, file: URL, sha256: String, bytes: Int) async throws -> Bool   // false = already there with other bytes
     func downloadPhoto(_ name: String, to file: URL) async throws -> Bool                           // false = not in iCloud

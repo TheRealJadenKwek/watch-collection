@@ -501,8 +501,8 @@ final class SyncRoutingTests: XCTestCase {
         XCTAssertEqual(mac.session.book.epoch, head.epoch)
     }
 
-    /// B2: the process dies once the creation has landed (the bridge's watchdog, the app quit). What is on disk is
-    /// enough for the next launch to merge against the document it made.
+    /// B2: the creation's answer is lost and the next launch starts from what the pass left on disk. (The book saved
+    /// before the save, with nothing saved after it, is `testTheBookWithThePendingEpochIsOnDiskWhenTheCreationLands`.)
     func testACreationThatLandsBeforeTheProcessDiesKeepsItsBaseOnDisk() async throws {
         let store = makeStore()
         let mac = try makeHarness(.mac, store, sample)
@@ -827,6 +827,227 @@ final class SyncRoutingTests: XCTestCase {
         XCTAssertEqual(downloads, 2, "iCloud said it does not have b.jpg: not asked again at once")
     }
 
+    // MARK: Round 3 (docs/icloud-fixes.md R1 to R4)
+
+    /// R1 / C1 1: an ordinary push overtaken by more typing in the same field. The round's write is confirmed, so its
+    /// book is kept with the round's collection as base: he is never asked to choose between his own two values.
+    func testAnOrdinaryPushOvertakenByMoreTypingAsksNothing() async throws {
+        let (store, mac, _) = try await joined()
+        mac.edit { $0.watches[1].story = "x" }
+        await store.onNextDocument { @Sendable [mac] in
+            await MainActor.run { mac.edit { $0.watches[1].story = "xy" } }
+        }
+        let outcome = await mac.pass()
+        XCTAssertNil(outcome.conflictList, "\(outcome)")
+        let cloud = try await cloudData(store)
+        XCTAssertEqual(story(cloud, "w2"), "xy")
+        XCTAssertEqual(story(mac.data, "w2"), "xy")
+        let head = await store.currentHead
+        XCTAssertEqual(mac.session.book.tag, head?.tag)
+    }
+
+    /// R1 / B P7: a joined phone meets a new epoch and merges with no base (a union that also carries the Mac's new
+    /// watch), and its write is confirmed; a delete made during that pass then holds. Before R1 only a pure push kept
+    /// its book, so the next round was a union again and w2 came back.
+    func testADeleteDuringThePhonesFirstPassAfterAnEpochChangeHolds() async throws {
+        let (store, mac, phone) = try await joined()
+        phone.edit { $0.watches.append(self.watch("w4", "Delta")) }
+        await store.deleteZone()
+        mac.edit { $0.watches.append(self.watch("w5", "Echo")) }
+        mac.hubSettledAt = mac.generation
+        let made = await mac.pass()
+        XCTAssertEqual(made.wroteCloud, true)
+        let current = await store.currentHead
+        let epoch = try XCTUnwrap(current?.epoch)
+        XCTAssertNotEqual(phone.session.book.epoch, epoch, "a new epoch")
+
+        await store.onNextDocument { @Sendable [phone] in
+            await MainActor.run { phone.edit { $0.watches.removeAll { $0.id == "w2" } } }
+        }
+        let outcome = await phone.pass()
+        XCTAssertNil(outcome.conflictList, "\(outcome)")
+        XCTAssertEqual(Set(phone.data?.watches.map(\.id) ?? []), ["w1", "w3", "w4", "w5"], "the delete made during the pass holds")
+        let cloud = try await cloudData(store)
+        XCTAssertEqual(Set(cloud.watches.map(\.id)), ["w1", "w3", "w4", "w5"])
+        XCTAssertEqual(phone.session.book.epoch, epoch)
+    }
+
+    /// R1 / B F3: the Mac joins a document it did not make (no base: a union with a watch of each side's), and a
+    /// delete made during that pass holds.
+    func testADeleteDuringTheMacsJoinOfAnExistingDocumentHolds() async throws {
+        let store = makeStore()
+        var there = sample
+        there.watches.append(watch("w5", "Echo"))
+        let body = CollectionMerge.normalize(try JSONValue(encoding: there)).canonicalData
+        await store.setDocument(body, epoch: "made-elsewhere")
+        var here = sample
+        here.watches.append(watch("w4", "Delta"))
+        let mac = try makeHarness(.mac, store, here)
+        await store.onNextDocument { @Sendable [mac] in
+            await MainActor.run { mac.edit { $0.watches.removeAll { $0.id == "w2" } } }
+        }
+
+        let outcome = await mac.pass()
+        XCTAssertNil(outcome.conflictList, "\(outcome)")
+        XCTAssertEqual(Set(mac.data?.watches.map(\.id) ?? []), ["w1", "w3", "w4", "w5"], "the delete made during the pass holds")
+        let cloud = try await cloudData(store)
+        XCTAssertEqual(Set(cloud.watches.map(\.id)), ["w1", "w3", "w4", "w5"])
+        XCTAssertEqual(mac.session.book.epoch, "made-elsewhere")
+    }
+
+    /// R2 / C1 5: D5's merge with no base covers only the rounds before one confirms a write. Its first round here is
+    /// a union that writes (the phone's w4 up, the Mac's w5 in); a delete typed during it then holds in the next round.
+    func testADeleteDuringABaselessPassHolds() async throws {
+        let (store, mac, phone) = try await joined()
+        mac.edit { $0.watches.append(self.watch("w5", "Echo")) }
+        _ = await mac.pass()
+        phone.edit { $0.watches.append(self.watch("w4", "Delta")) }
+        phone.noBase = true
+        await store.onNextDocument { @Sendable [phone] in
+            await MainActor.run { phone.edit { $0.watches.removeAll { $0.id == "w1" } } }
+        }
+
+        let outcome = await phone.pass()
+        XCTAssertNil(outcome.conflictList, "\(outcome)")
+        XCTAssertEqual(Set(phone.data?.watches.map(\.id) ?? []), ["w2", "w3", "w4", "w5"], "the delete typed during the pass holds")
+        XCTAssertTrue(phone.session.lastPassConfirmedWrite, "AppStore clears D5's flag on this (R2 across passes)")
+        let cloud = try await cloudData(store)
+        XCTAssertEqual(Set(cloud.watches.map(\.id)), ["w2", "w3", "w4", "w5"])
+    }
+
+    /// R1, the other side: a round whose write may not have landed (here it failed before reaching iCloud) is not a
+    /// confirmed write. Its book is dropped as before, so the phone's own new watch is never read as a delete from
+    /// iCloud; once the network is back it goes up with the edit made meanwhile.
+    func testAnOvertakenRoundWhoseWriteIsNotConfirmedKeepsTheOldBook() async throws {
+        let (store, _, phone) = try await joined()
+        let before = phone.session.book
+        phone.edit { $0.watches.append(self.watch("w4", "Delta")) }
+        await store.fail(.write, with: .network)
+        await store.onNextDocument { @Sendable [phone] in
+            await MainActor.run { phone.edit { $0.watches[0].story = "typed during the pass" } }
+        }
+
+        let failed = await phone.pass()
+        XCTAssertEqual(failed.wait, .offline)
+        XCTAssertFalse(phone.session.lastPassConfirmedWrite, "a write that may only have landed spends no D5 flag")
+        XCTAssertEqual(phone.session.book.tag, before.tag, "the old book stands")
+        XCTAssertEqual(phone.session.book.base.map(CloudLink.projection), before.base.map(CloudLink.projection))
+        let writes = await store.writes
+        XCTAssertEqual(writes, ["mac"], "nothing landed")
+
+        await store.fail(.write, with: nil)
+        let sent = await phone.pass()
+        XCTAssertEqual(sent.wroteCloud, true, "\(sent)")
+        XCTAssertEqual(Set(phone.data?.watches.map(\.id) ?? []), ["w1", "w2", "w3", "w4"])
+        let cloud = try await cloudData(store)
+        XCTAssertEqual(Set(cloud.watches.map(\.id)), ["w1", "w2", "w3", "w4"], "the new watch went up")
+        XCTAssertEqual(story(cloud, "w1"), "typed during the pass")
+    }
+
+    /// R3 / C1 2 / B F4: the book carrying the pending epoch is on disk at the moment the creation lands. The process
+    /// dies right there (the bridge's watchdog), so `cloud.json` is exactly what it was then; the next launch still
+    /// merges against the document it made: a hub delete and edit go up, with no question and nothing back.
+    func testTheBookWithThePendingEpochIsOnDiskWhenTheCreationLands() async throws {
+        let store = makeStore()
+        let mac = try makeHarness(.mac, store, sample)
+        mac.hubSettledAt = mac.generation
+        let bookURL = mac.files.bookURL
+        let atLanding = DataStash()
+        await store.onNextWrite { atLanding.set(try? Data(contentsOf: bookURL)) }
+
+        let created = await mac.pass()
+        XCTAssertEqual(created.wroteCloud, true)
+        let current = await store.currentHead
+        let head = try XCTUnwrap(current)
+        let bytes = try XCTUnwrap(atLanding.value, "cloud.json was on disk when the document landed")
+        try bytes.write(to: bookURL)
+        let saved = mac.files.loadBook()
+        XCTAssertEqual(saved.pendingEpoch, head.epoch)
+        XCTAssertNil(saved.tag, "saved before the save answered")
+
+        var after = try XCTUnwrap(mac.data)
+        after.watches.removeAll { $0.id == "w3" }
+        after.watches[1].story = "hub edit"
+        let relaunched = try makeHarness(.mac, store, after, folder: mac.files.folder)
+        let next = await relaunched.pass()
+        XCTAssertNil(next.conflictList, "\(next)")
+        let cloud = try await cloudData(store)
+        XCTAssertEqual(Set(cloud.watches.map(\.id)), ["w1", "w2"], "the hub's delete is not undone")
+        XCTAssertEqual(story(cloud, "w2"), "hub edit")
+        XCTAssertEqual(relaunched.session.book.epoch, head.epoch)
+    }
+
+    /// R4: a held photo the hub exchange cannot read is not gone. Whatever iCloud's drop rule says, the exchange
+    /// stops before sending anything (the readable photo before it included) and drops nothing; once the file reads
+    /// again the exchange goes ahead. The address answers nothing, so reaching the network would throw `URLError`.
+    func testTheHubExchangeStopsAtAHeldPhotoItCannotRead() async throws {
+        let id = "r4-\(UUID().uuidString.prefix(8))"
+        var local = sample
+        local.wishlist.append(WishlistItem(id: id, name: "Held", brand: "Brand", priceNote: "", notes: "", status: "radar",
+                                           added: "2026-11-01", photos: ["a.jpg", "b.jpg"]))
+        let assets = CollectionSyncClient.uploads(from: local, hub: sample, hubFiles: [])
+        XCTAssertEqual(assets.map(\.filename), ["a.jpg", "b.jpg"])
+        let a = try XCTUnwrap(PhotoStore.localURL(for: assets[0]))
+        let b = try XCTUnwrap(PhotoStore.localURL(for: assets[1]))
+        let folder = a.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: b.path)
+            try? FileManager.default.removeItem(at: folder)
+        }
+        try Data("a".utf8).write(to: a)
+        try Data("b".utf8).write(to: b)
+        try FileManager.default.setAttributes([.posixPermissions: 0], ofItemAtPath: b.path)
+        let client = try CollectionSyncClient(address: "http://127.0.0.1:9")
+        let remote = SyncSnapshot(data: sample, revision: "r1", photos: [], conflicts: [])
+        XCTAssertEqual(CollectionSyncClient.goneFiles(local: local, remote: remote), [], "held, so not gone")
+
+        for dropping: Set<String>? in [nil, [], ["wl-\(id)/b.jpg"]] {
+            do {
+                _ = try await client.exchange(base: sample, local: local, resolutions: [:], remote: remote, dropping: dropping)
+                XCTFail("the exchange went ahead past a photo it could not read")
+            } catch let error as UnreadablePhotoError {
+                XCTAssertEqual(error.name, "wl-\(id)/b.jpg")
+            } catch {
+                XCTFail("\(String(describing: dropping)): reached for the hub instead of stopping: \(error)")
+            }
+        }
+        XCTAssertTrue(FileManager.default.fileExists(atPath: b.path))
+        XCTAssertNotNil(SyncFailure.classify(UnreadablePhotoError(name: "x/b.jpg")), "a failure the notice can show")
+
+        try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: b.path)
+        do {
+            _ = try await client.exchange(base: sample, local: local, resolutions: [:], remote: remote, dropping: nil)
+            XCTFail("expected the exchange to reach for the hub")
+        } catch {
+            XCTAssertNotNil(error as? URLError, "\(error)")
+        }
+    }
+
+    /// R4: a held file whose read fails during the exchange itself (here a folder where the photo should be, which
+    /// passes the check before sending) is not dropped either.
+    func testTheHubExchangeKeepsAHeldFileWhoseReadFails() async throws {
+        let id = "r4-\(UUID().uuidString.prefix(8))"
+        var local = sample
+        local.wishlist.append(WishlistItem(id: id, name: "Held", brand: "Brand", priceNote: "", notes: "", status: "radar",
+                                           added: "2026-11-01", photos: ["c.jpg"]))
+        let assets = CollectionSyncClient.uploads(from: local, hub: sample, hubFiles: [])
+        let c = try XCTUnwrap(PhotoStore.localURL(for: try XCTUnwrap(assets.first)))
+        let folder = c.deletingLastPathComponent()
+        try FileManager.default.createDirectory(at: c, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let client = try CollectionSyncClient(address: "http://127.0.0.1:9")
+        let remote = SyncSnapshot(data: sample, revision: "r1", photos: [], conflicts: [])
+        do {
+            _ = try await client.exchange(base: sample, local: local, resolutions: [:], remote: remote, dropping: nil)
+            XCTFail("the exchange went ahead past a photo it could not read")
+        } catch let error as UnreadablePhotoError {
+            XCTAssertEqual(error.name, "wl-\(id)/c.jpg")
+        } catch {
+            XCTFail("dropped the reference and reached for the hub: \(error)")
+        }
+    }
+
     // MARK: Fixtures
 
     private var allOutcomes: [CloudOutcome] {
@@ -1036,6 +1257,24 @@ final class CopyCount: @unchecked Sendable {
     func set(_ count: Int) {
         lock.lock()
         seen = count
+        lock.unlock()
+    }
+}
+
+/// Bytes a store hook read, read back on the test's side.
+final class DataStash: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: Data?
+
+    var value: Data? {
+        lock.lock()
+        defer { lock.unlock() }
+        return stored
+    }
+
+    func set(_ data: Data?) {
+        lock.lock()
+        stored = data
         lock.unlock()
     }
 }

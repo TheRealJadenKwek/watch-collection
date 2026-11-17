@@ -578,6 +578,9 @@ final class AppStore: ObservableObject {
             mirror: { _ = try? AppPaths.mirrorJSON(from: $0) }
         )
         let outcome = await cloud.pass(host)
+        // R2 across passes: once a round confirmed a write, the book holds a base and D5's merge with no base is
+        // spent, even if this pass then asked or waited.
+        if cloud.lastPassConfirmedWrite { clearBaseless(.cloud) }
         let tick = CloudTick(outcome, installed: cloud.lastPassInstalled, wrote: cloud.lastPassWrote)
         let join = CloudPassEffects.of(outcome, role: role, joinedBefore: joinedBefore, speaksForCloud: false)
         switch outcome {

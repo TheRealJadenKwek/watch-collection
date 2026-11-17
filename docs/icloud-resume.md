@@ -53,3 +53,15 @@ WATCH_BOX_KEY_FILE. Personal project: review on opus xhigh, not Fable.
 3. Re-rehearse create and join on Development (fresh zone: erase the rehearsal document first, or use a new zone).
 4. P9 rollout per plan section 9 and 13 C/D (backups first; fastlane AppStore profile must be regenerated).
 5. Remove ~/watch-collection-icloud-review, -u, -m worktrees after merge.
+
+## State (2026-11-17 ~2 AM CST)
+- Fix round merged (E 4308314, U 2ee0dea, M eb91fcd), lead follow-ups a968b18 and 32c7bc9. 358 tests green.
+- Round-two reviews (opus xhigh): B ship, C2 ship, C1 ship after two tests. Rehearsal 2 (Development, fresh zone)
+  passed all six 13 B steps plus D1/D7/no-ping-pong/log-line checks (evidence test-evidence/icloud-rehearsal2/).
+- Round 3 builder running: docs/icloud-fixes.md "Round 3" (R1 overtaken-round rule for confirmed writes, R2 D5 only
+  until a base exists, R3 missing tests, R4 hub-link unreadable photo, R5 damaged photos together, R6 plan wording).
+- After R3: lead reads the diff (third review round, no more reviewer loops), full suite, then P9 rollout:
+  scratchpad rollout/backup.sh (section 9 step 1), merge icloud-sync into main (stash the 7 old local edits across
+  the merge, as at v5.0), Mac Release signed (Production) installed, P6 check in Production, 13 C, LaunchAgent via
+  tools/bridge/install.sh, fastlane beta (LC_ALL=en_US.UTF-8; sigh regenerates the AppStore profile), 13 D needs him
+  to open the TestFlight build once (ask-jaden).

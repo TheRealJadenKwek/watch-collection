@@ -1,4 +1,5 @@
 import Foundation
+import os
 
 // The baseline and visible collection share one atomic file. A crash can never
 // acknowledge a server revision without also saving the matching local data.
@@ -153,6 +154,15 @@ enum CollectionSyncError: LocalizedError {
     }
 }
 
+/// A photo the exchange would send is on this device but could not be read (docs/icloud-fixes.md R4). It is not
+/// gone, so its reference is kept and nothing is sent; the next pass tries again. Kept apart from
+/// `CollectionSyncError`, whose cases `SyncFailure.classify` lists.
+struct UnreadablePhotoError: LocalizedError {
+    /// "dir/file".
+    var name: String
+    var errorDescription: String? { "A photo on this device could not be read. Sync will retry." }
+}
+
 actor CollectionSyncClient {
     let baseURL: URL
     let session: URLSession
@@ -176,16 +186,22 @@ actor CollectionSyncClient {
     ///   them all, as before iCloud; on a Mac with the cloud link on it is the names iCloud has said it does not
     ///   have, and any other such file skips this exchange (nil is returned) until the cloud link has fetched it or
     ///   heard it is not there (docs/icloud-plan.md section 5).
+    ///
+    /// A file still on this device that cannot be read is not gone (R4): the exchange throws
+    /// `UnreadablePhotoError` with nothing dropped, and, when the check before sending finds it, nothing sent.
     func exchange(base: CollectionData?, local: CollectionData, resolutions: [String: String], remote: SyncSnapshot,
                   dropping: Set<String>? = nil) async throws -> SyncSnapshot? {
         var local = local
         let assets = Self.uploads(from: local, hub: remote.data, hubFiles: remote.photos)
         let gone = Set(Self.goneFiles(assets))
         if let dropping, !gone.isSubset(of: dropping) { return nil }
+        if let asset = assets.first(where: Self.isUnreadable) { throw Self.unreadable(asset) }
         var lost: Set<String> = []
         for asset in assets {
             try Task.checkCancellation()
             guard let file = PhotoStore.localURL(for: asset), let bytes = try? Data(contentsOf: file) else {
+                // Still here but it would not read (it changed since the check above): not gone, as above.
+                if Self.isHeld(asset) { throw Self.unreadable(asset) }
                 // Gone on both sides (e.g. a partial restore): drop the reference instead of blocking sync forever.
                 let key = asset.directory + "/" + asset.filename
                 if let dropping, !dropping.contains(key) { return nil }
@@ -209,6 +225,27 @@ actor CollectionSyncClient {
         assets.filter { asset in
             PhotoStore.localURL(for: asset).map { !FileManager.default.fileExists(atPath: $0.path) } ?? true
         }.map { $0.directory + "/" + $0.filename }
+    }
+
+    static let log = Logger(subsystem: "com.jadenkwek.watchcollection", category: "hub-sync")
+
+    private static func isHeld(_ asset: PhotoAsset) -> Bool {
+        PhotoStore.localURL(for: asset).map { FileManager.default.fileExists(atPath: $0.path) } ?? false
+    }
+
+    /// On this device, but this process may not read it.
+    private static func isUnreadable(_ asset: PhotoAsset) -> Bool {
+        guard let file = PhotoStore.localURL(for: asset), FileManager.default.fileExists(atPath: file.path) else {
+            return false
+        }
+        return !FileManager.default.isReadableFile(atPath: file.path)
+    }
+
+    private static func unreadable(_ asset: PhotoAsset) -> UnreadablePhotoError {
+        let name = asset.directory + "/" + asset.filename
+        let path = PhotoStore.localURL(for: asset)?.path ?? name
+        log.error("could not read \(path, privacy: .public); the hub exchange keeps its reference and waits")
+        return UnreadablePhotoError(name: name)
     }
 
     func downloadPhotos(_ data: CollectionData) async throws {

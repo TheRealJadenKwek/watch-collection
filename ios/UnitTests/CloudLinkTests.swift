@@ -1215,6 +1215,90 @@ final class CloudLinkTests: XCTestCase {
         XCTAssertTrue(marks.unreadable.isEmpty)
     }
 
+    // MARK: Round 3 (docs/icloud-fixes.md R5, B F8)
+
+    /// R5 (B F2): two damaged photos are fetched and struck in the same passes, so their hours run side by side: the
+    /// Mac gives up on both, and installs, 66 minutes after the first pass instead of 132.
+    func test38DamagedPhotosAreStruckTogether() async throws {
+        let (store, mac, phone) = try await joined(sample)
+        for name in ["p1.jpg", "p2.jpg"] { try phone.files.put("wl-i9/\(name)", bytes(name)) }
+        phone.edit { $0.wishlist.append(item("i9", "Nine", photos: ["p1.jpg", "p2.jpg"])) }
+        _ = await phone.pass()
+        try await store.damagePhoto("wl-i9/p1.jpg")
+        try await store.damagePhoto("wl-i9/p2.jpg")
+
+        let first = await mac.pass()
+        XCTAssertEqual(first.wait, .failed(CloudLink.damagedReason))
+        var marks = await mac.link.marks
+        XCTAssertEqual(marks.damaged["wl-i9/p1.jpg"]?.count, 1)
+        XCTAssertEqual(marks.damaged["wl-i9/p2.jpg"]?.count, 1, "the second is fetched in the same pass")
+
+        var minutes = 0
+        var installed = false
+        while minutes < 180, !installed {
+            clock.advance(11 * 60)
+            minutes += 11
+            let out = await mac.pass()
+            if out.installedData != nil {
+                installed = true
+            } else {
+                XCTAssertEqual(out.wait, .failed(CloudLink.damagedReason), "at \(minutes) min")
+            }
+        }
+        XCTAssertTrue(installed)
+        XCTAssertEqual(minutes, 66, "both given up on after one hour of strikes")
+        marks = await mac.link.marks
+        XCTAssertNotNil(marks.unreadable["wl-i9/p1.jpg"])
+        XCTAssertNotNil(marks.unreadable["wl-i9/p2.jpg"])
+        XCTAssertTrue(wishlistIDs(mac.data).contains("i9"))
+    }
+
+    /// R5: a damaged photo still waiting out its 10 minutes does not keep the pass from fetching, and striking, a
+    /// damaged photo it has not tried yet.
+    func test38bAPhotoWaitingOutItsRecheckDoesNotHoldUpTheNext() async throws {
+        let (store, mac, phone) = try await joined(sample)
+        try phone.files.put("wl-i9/p1.jpg", bytes("p1"))
+        phone.edit { $0.wishlist.append(item("i9", "Nine", photos: ["p1.jpg"])) }
+        _ = await phone.pass()
+        try await store.damagePhoto("wl-i9/p1.jpg")
+        let first = await mac.pass()
+        XCTAssertEqual(first.wait, .failed(CloudLink.damagedReason))
+
+        clock.advance(5 * 60)
+        try phone.files.put("wl-i9/p2.jpg", bytes("p2"))
+        phone.edit { data in
+            if let index = data.wishlist.firstIndex(where: { $0.id == "i9" }) { data.wishlist[index].photos.append("p2.jpg") }
+        }
+        let up = await phone.pass()
+        XCTAssertEqual(up.wroteCloud, true)
+        try await store.damagePhoto("wl-i9/p2.jpg")
+        let downloads = await store.count(.download)
+
+        let second = await mac.pass()
+        XCTAssertEqual(second.wait, .failed(CloudLink.damagedReason))
+        let after = await store.count(.download)
+        XCTAssertEqual(after - downloads, 1, "p2 fetched; p1 not asked again 5 minutes on")
+        let marks = await mac.link.marks
+        XCTAssertEqual(marks.damaged["wl-i9/p1.jpg"]?.count, 1)
+        XCTAssertEqual(marks.damaged["wl-i9/p2.jpg"]?.count, 1)
+    }
+
+    /// B F8: `wroteDocument` speaks for the last pass only, one that returned at once included.
+    func test39APassThatReturnsAtOnceWroteNothing() async throws {
+        let (_, mac, _) = try await joined(sample)
+        mac.edit { $0.watches[0].story = "mac" }
+        let wrote = await mac.pass()
+        XCTAssertEqual(wrote.wroteCloud, true)
+        var flag = await mac.link.wroteDocument
+        XCTAssertTrue(flag)
+
+        mac.book.notBefore = clock.now().addingTimeInterval(60)
+        let throttled = await mac.pass()
+        XCTAssertEqual(throttled.wait, .busy)
+        flag = await mac.link.wroteDocument
+        XCTAssertFalse(flag, "the throttled pass wrote nothing")
+    }
+
     // MARK: Fixtures
 
     private var sample: CollectionData {

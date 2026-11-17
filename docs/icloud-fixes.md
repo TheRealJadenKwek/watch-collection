@@ -89,3 +89,33 @@ the same .app while it runs. Never quit, open or touch his installed Watch Colle
 No git writes (the lead commits and merges). No emojis or em-dashes. Never touch the Arsenal Duo, Dentiza Duo, iPhone
 Duo or Arc Records simulators. Report: files and line counts, tests and result, each item done with its test, any
 departure with the reason, three spots for the re-review.
+
+## Round 3 (after the second review; findings in ~/Offload/watch-collection/review/icloud-p8/round2/)
+One builder, files: CloudSyncSession, CloudSync, CloudPhotos, CollectionSync, FakeCloudStore, CloudLinkTests,
+SyncRoutingTests, docs/icloud-plan.md (wording only). Reviews B and C2 said ship; C1 said ship after two tests.
+
+- **R1 Overtaken round that wrote (B F3, C1 5; replaces D1's pure-push special case).** When an edit overtakes a
+  round whose document write is CONFIRMED (the store answered success with the new record tag), keep that round's
+  book (epoch, tag, back-off) but set its base to `CloudLink.projection` of that round's local input, and go round
+  again; nothing is installed. A pure push is the case where the two are equal, so D1's branch folds into this.
+  When the write is not confirmed (the answer was lost, cancelled, or a network failure after sending), keep today's
+  rule: drop result and book, keep back-off. Reason: base = local input is only an ancestor of the cloud document if
+  the document is known to hold the merge; with an unconfirmed write, items added here and never written would read
+  as remote deletes.
+- **R2 D5 only until a base exists (C1 5).** The no-base flag applies to the first round of the pass only, and is
+  cleared as soon as a round's write is confirmed (overtaken or not) or the link settles. Later rounds use the book.
+- **R3 Tests that fail without their fix (C1 1, C1 2, B F4).** The pure-push probe ("x" then "xy": no question asked)
+  and the B P7 / C1 5 probes (a delete made during the first pass after an epoch change, a Mac join of an existing
+  document, and a D5 baseless pass, does not come back) as tests. A FakeCloudStore hook that copies `cloud.json` at
+  the moment the document lands, so a test proves the book with the pending epoch is on disk before the create
+  (fails with the persist hook's save removed). Prove each new test fails with its fix reverted (say how).
+- **R4 Hub link: unreadable held photo (B note on CollectionSync.swift:189-191).** Same rule as D2: a file that cannot
+  be read counts as gone only if it does not exist; otherwise the exchange stops this pass with a retryable error
+  (no drop, nothing sent) and logs the path.
+- **R5 Damaged photos struck together (B F2).** A pass marks every damaged download it met, then waits once; the
+  one-hour, three-tries clock runs per photo in parallel, not one photo after another.
+- **R6 Plan wording (B F8, C1 8).** docs/icloud-plan.md sections 5, 6 and 8 say what D1 to D5 and R1 to R2 decided.
+- **Later, not now (list them in docs/icloud-polish.md):** B F1 (a give-up on the Mac drops a reference the phone
+  still holds a good copy of), F5 (name the unreadable photo's watch in the message), F6, F7 / C1 6 (the phone never
+  gives up on a damaged photo), F8 small items; C1 3 (no-document memory lost at each bridge launch), C1 4, C1 7;
+  C2 round 2 items 2 (gate test) and the notes.
