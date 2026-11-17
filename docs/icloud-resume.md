@@ -1,3 +1,22 @@
+# Watch Collection: resume note (lead, 2026-11-17 9:25 AM CST, account switch checkpoint)
+
+## State now: nothing in flight
+- Renders-first shipped and verified: main 23d8467 (pushed). TestFlight 5.1 (33) VALID 15:03Z. Mac 5.1 (3) installed
+  in /Applications 15:05Z, cloud-status upToDate, photos 277/277 in iCloud, revision fd26977f.
+  Rollback: TestFlight 32; Mac copy in ~/Offload/watch-collection/releases/mac-before-v5.1b3-20261117-0905.
+- Wishlist adds, rendered both finishes and published: AP 15707CB white ceramic (C$70,299 grey) and JLC Master Ultra
+  Thin Moon Q1368430 (C$14,605 grey; prices are always grey market, never retail). Render ledger $8.28 of the $9 cap.
+- Release worktree ~/watch-collection-rel removed. No agents, builds, hubs or wake-ups running; none to re-create.
+
+## Next (no approvals needed)
+1. 13 D second check: once the phone updates to 33 and syncs, status-iphone in the Mac cloud-status.json
+   (~/Library/Containers/com.jadenkwek.watchcollection.mac/Data/Library/Application Support/WatchCollection/)
+   should show build 5.1 (33) and revision fd26977f (it was 5.1 (32), fae23061, at 13:25Z).
+2. Optional polish: docs/icloud-polish.md items 8 to 17.
+3. More renders need a raised cap (only $0.72 left): his word on the amount.
+
+---
+
 # iCloud sync: resume note (lead, 2026-11-16 ~10:40 PM CST, account switch checkpoint)
 
 ## Done
