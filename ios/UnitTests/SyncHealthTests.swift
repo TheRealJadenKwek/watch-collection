@@ -448,9 +448,56 @@ extension SyncHealthTests {
         XCTAssertEqual(CloudSyncCopy.sentence(cloud(.needsHubFirst, role: .mac, active: .hub), device: "Mac"),
                        "iCloud sync starts once this Mac reaches its library.")
         XCTAssertEqual(CloudSyncCopy.sentence(cloud(otherConflicts: 1), device: "iPhone"), "1 change needs your choice on your Mac.")
-        for quiet: CloudWait? in [nil, .noDocument, .offline, .busy, .failed("x")] {
+        for quiet: CloudWait? in [nil, .offline, .busy, .failed("x")] {
             XCTAssertNil(CloudSyncCopy.sentence(cloud(quiet), device: "iPhone"), "\(String(describing: quiet))")
         }
+    }
+
+    /// docs/icloud-fixes.md D10: a joined phone that finds no iCloud copy says so; one not joined yet, and the Mac,
+    /// have nothing to say (the phone keeps its hub link; the Mac makes the document).
+    func testAJoinedPhoneWithNoICloudCopySaysItIsMissing() {
+        XCTAssertEqual(CloudSyncCopy.missing,
+                       "The iCloud copy is missing. Open Watch Collection on your Mac to start iCloud sync again.")
+        XCTAssertEqual(CloudSyncCopy.sentence(cloud(.noDocument), device: "iPhone"), CloudSyncCopy.missing)
+        let notJoined = CloudDisplay(role: .phone, active: .hub, joined: false, preferHub: false, wait: .noDocument)
+        XCTAssertNil(CloudSyncCopy.sentence(notJoined, device: "iPhone"))
+        XCTAssertNil(CloudSyncCopy.sentence(cloud(.noDocument, role: .mac, active: .hub), device: "Mac"))
+        checkCopyRules(CloudSyncCopy.missing)
+    }
+
+    /// C2#6: with "Sync directly with the Mac instead" on, no cloud pass runs, so Settings shows no iCloud sentence
+    /// (it would be frozen where the last pass left it). Off again, it speaks for iCloud.
+    func testSettingsShowsNoFrozenICloudSentenceWithTheSwitchOn() {
+        var phone = CloudDisplay(role: .phone, active: .hub, joined: true, preferHub: true, wait: .full, otherConflicts: 1)
+        XCTAssertNil(CloudSyncCopy.settingsSentence(phone, device: "iPhone"))
+        phone.wait = .noDocument
+        XCTAssertNil(CloudSyncCopy.settingsSentence(phone, device: "iPhone"))
+        phone.preferHub = false
+        phone.active = .cloud
+        phone.wait = .full
+        XCTAssertEqual(CloudSyncCopy.settingsSentence(phone, device: "iPhone"),
+                       "iCloud storage is full, so changes stay on this iPhone.")
+        // A phone joining for the first time, its switch off, still says how the photos are going.
+        let joining = CloudDisplay(role: .phone, active: .hub, joined: false, preferHub: false,
+                                   wait: .sendingPhotos(done: 3, of: 9))
+        XCTAssertEqual(CloudSyncCopy.settingsSentence(joining, device: "iPhone"), "Sending 3 of 9 photos to iCloud.")
+        // The Mac has no switch.
+        XCTAssertEqual(CloudSyncCopy.settingsSentence(cloud(.erased, role: .mac, active: .hub), device: "Mac"),
+                       "The iCloud copy was erased. Nothing on this Mac was removed.")
+    }
+
+    /// Polish 1: the iCloud rows are label and value, like the hub's.
+    func testTheICloudRowsInSettings() {
+        let locale = Locale(identifier: "en_US")
+        XCTAssertEqual(CloudSyncCopy.throughICloud, "Through iCloud")
+        XCTAssertEqual(CloudSyncCopy.ago(now.addingTimeInterval(-120), now: now), "2 min ago")
+        XCTAssertEqual(plain(CloudSyncCopy.checkedIn(date(2026, 11, 6, 21, 41), now: date(2026, 11, 6, 23, 0),
+                                                     calendar: calendar, locale: locale)), "Checked in 9:41 PM")
+        XCTAssertEqual(plain(CloudSyncCopy.checkedIn(date(2026, 11, 5, 21, 41), now: now, calendar: calendar, locale: locale)),
+                       "Checked in yesterday at 9:41 PM")
+        XCTAssertEqual(plain(CloudSyncCopy.checkedIn(date(2026, 11, 3, 21, 41), now: now, calendar: calendar, locale: locale)),
+                       "Checked in on Nov 3")
+        XCTAssertNil(CloudSyncCopy.checkedIn(nil, now: now, calendar: calendar, locale: locale))
     }
 
     /// Once iCloud carries the phone, the notice speaks for it: the hub's address means nothing.
@@ -519,7 +566,87 @@ extension SyncHealthTests {
                       CloudSyncCopy.newerFormat(device: device), CloudSyncCopy.choiceWaiting(2, device: device)]
         }
         words += [CloudSyncCopy.restartButton, CloudSyncCopy.needsHubFirst, CloudSyncCopy.sending(1, of: 2),
-                  "Sync directly with the Mac instead", "Waiting for your collection from iCloud\u{2026}"]
+                  "Sync directly with the Mac instead", "Waiting for your collection from iCloud\u{2026}",
+                  CloudSyncCopy.missing, CloudSyncCopy.throughICloud, CloudSyncCopy.notSettled(since: nil, now: now),
+                  CloudSyncCopy.notSettled(since: now.addingTimeInterval(-3600), now: now)]
         for line in words { checkCopyRules(line) }
+    }
+}
+
+// MARK: The Mac's sidebar line (docs/icloud-fixes.md D11, polish 2, C2#5)
+
+extension SyncHealthTests {
+    private func mac(_ wait: CloudWait? = nil, lastSync: Date?? = nil, otherConflicts: Int = 0) -> CloudDisplay {
+        CloudDisplay(role: .mac, active: .hub, joined: false, preferHub: false, wait: wait,
+                     lastSync: lastSync ?? now.addingTimeInterval(-60), macHubAt: nil, otherConflicts: otherConflicts)
+    }
+
+    private func line(_ cloud: CloudDisplay?, hub: String = "Up to date", conflicts: Int = 0) -> MacSyncLine {
+        MacSyncLine.evaluate(hubMessage: hub, conflicts: conflicts, cloud: cloud, now: now)
+    }
+
+    func testTheMacLineIsTheHubsWhenICloudIsFine() {
+        XCTAssertEqual(line(nil), MacSyncLine(headline: "Up to date", settled: true))
+        XCTAssertEqual(line(mac()), MacSyncLine(headline: "Up to date", settled: true))
+        XCTAssertEqual(line(nil, hub: "Saved on this Mac; sync will resume"),
+                       MacSyncLine(headline: "Saved on this Mac; sync will resume", settled: false))
+        XCTAssertEqual(line(nil, conflicts: 2), MacSyncLine(headline: "2 changes need a choice", settled: false))
+        // Progress is not a problem: the dot stays green and the line says how it is going.
+        XCTAssertEqual(line(mac(.sendingPhotos(done: 120, of: 260))),
+                       MacSyncLine(headline: "Up to date", settled: true, cloudLine: "Sending 120 of 260 photos to iCloud."))
+        XCTAssertEqual(line(mac(.needsHubFirst)).cloudLine, "iCloud sync starts once this Mac reaches its library.")
+    }
+
+    /// Paused, stopped, signed out, full, or a choice on the iPhone: at once, by name, amber, the hub's line below.
+    func testICloudStatesThatNeedHimTakeTheHeadlineAtOnce() {
+        let expected: [(CloudDisplay, String, String)] = [
+            (mac(.erased), "iCloud paused", "The iCloud copy was erased. Nothing on this Mac was removed."),
+            (mac(.newerFormat), "iCloud sync stopped", "Update Watch Collection on this Mac to keep syncing."),
+            (mac(.noAccount), "Signed out of iCloud", "Sign in to iCloud to sync with your iPhone."),
+            (mac(.full), "iCloud is full", "iCloud storage is full, so changes stay on this Mac."),
+            (mac(otherConflicts: 1), "Choice waiting", "1 change needs your choice on your iPhone."),
+        ]
+        for (cloud, headline, sentence) in expected {
+            // A pass that settled a moment ago changes nothing: these do not wait.
+            XCTAssertEqual(line(cloud), MacSyncLine(headline: headline, settled: false, hubLine: "Up to date", cloudLine: sentence))
+            checkCopyRules("\(headline) \(sentence)")
+        }
+        // The iPhone's choice waits behind the link's own state.
+        XCTAssertEqual(line(mac(.erased, otherConflicts: 1)).headline, "iCloud paused")
+    }
+
+    /// Offline, failed or throttled: quiet until the link has not settled for three minutes, then by name.
+    func testQuietICloudFailuresWaitForTheStaleThreshold() {
+        for wait: CloudWait in [.offline, .busy, .failed("x")] {
+            XCTAssertEqual(line(mac(wait, lastSync: now.addingTimeInterval(-60))), MacSyncLine(headline: "Up to date", settled: true),
+                           "\(wait) a minute after a settled pass")
+            XCTAssertEqual(line(mac(wait, lastSync: now.addingTimeInterval(-SyncHealth.staleAfter + 1))).settled, true)
+            let stale = line(mac(wait, lastSync: now.addingTimeInterval(-3 * 3600)))
+            XCTAssertEqual(stale.headline, wait == .offline ? "Can't reach iCloud" : "iCloud sync did not finish")
+            XCTAssertFalse(stale.settled)
+            XCTAssertEqual(stale.hubLine, "Up to date")
+            XCTAssertEqual(stale.cloudLine, "Last synced through iCloud 3 hr ago. It will keep trying.")
+            // Never settled at all: it shows at once.
+            XCTAssertEqual(line(mac(wait, lastSync: .some(nil))).cloudLine, "Not synced through iCloud yet. It will keep trying.")
+            // A clock set back reads as recent.
+            XCTAssertTrue(line(mac(wait, lastSync: now.addingTimeInterval(600))).settled)
+            checkCopyRules("\(stale.headline) \(stale.cloudLine ?? "")")
+        }
+    }
+
+    /// The worse of the two wins; on a tie the hub keeps the headline and iCloud keeps its line.
+    func testTheWorseOfTheTwoLinksHasTheHeadline() {
+        // A choice on this Mac outranks every iCloud state.
+        XCTAssertEqual(line(mac(.erased), hub: "2 changes need your choice in Settings", conflicts: 2),
+                       MacSyncLine(headline: "2 changes need a choice", settled: false,
+                                   cloudLine: "The iCloud copy was erased. Nothing on this Mac was removed."))
+        // A hub that has not finished outranks a stale iCloud (a tie), but not iCloud needing him.
+        let stale = mac(.offline, lastSync: now.addingTimeInterval(-3600))
+        XCTAssertEqual(line(stale, hub: "Saved on this Mac; sync will resume"),
+                       MacSyncLine(headline: "Saved on this Mac; sync will resume", settled: false,
+                                   cloudLine: "Last synced through iCloud 1 hr ago. It will keep trying."))
+        XCTAssertEqual(line(mac(.full), hub: "Saved on this Mac; sync will resume"),
+                       MacSyncLine(headline: "iCloud is full", settled: false, hubLine: "Saved on this Mac; sync will resume",
+                                   cloudLine: "iCloud storage is full, so changes stay on this Mac."))
     }
 }

@@ -106,40 +106,117 @@ final class SyncLockTests: XCTestCase {
         XCTAssertTrue(holder.isWanted)
     }
 
-    // MARK: The app
+    // MARK: The app (docs/icloud-fixes.md D9)
 
-    func testTheAppTakesAFreeLockAtOnce() throws {
+    func testTheAppTakesAFreeLockAtOnce() async throws {
         let app = SyncLock(url: url)
-        XCTAssertEqual(app.holdForApp(patience: 1), .held)
+        XCTAssertEqual(app.holdForApp(), .held)
         XCTAssertTrue(app.isHeld)
         XCTAssertFalse(try SyncLock(url: url).tryLock())
+        let ready = await app.whenReady()
+        XCTAssertEqual(ready, .held)
     }
 
-    func testTheAppCarriesOnWhenTheLockFileCannotBeOpened() throws {
+    func testTheAppAsksAgainEveryHalfSecond() {
+        XCTAssertEqual(SyncLock.appRetry, 0.5)
+    }
+
+    func testTheAppCarriesOnWhenTheLockFileCannotBeOpened() async throws {
         // A file where the folder should be: neither the folder nor the lock can be made.
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         let blocked = folder.appendingPathComponent("WatchCollection")
         FileManager.default.createFile(atPath: blocked.path, contents: Data("not a folder".utf8))
         let app = SyncLock(url: url)
         let start = Date()
-        guard case .unavailable = app.holdForApp(patience: 5) else { return XCTFail("expected .unavailable") }
+        guard case .unavailable = app.holdForApp() else { return XCTFail("expected .unavailable") }
         XCTAssertLessThan(Date().timeIntervalSince(start), 1)
         XCTAssertFalse(app.isHeld)
+        // The library opens at once, without the lock.
+        guard case .unavailable = await app.whenReady() else { return XCTFail("expected .unavailable") }
     }
 
-    func testTheAppCarriesOnPastItsPatienceAndTakesTheLockOnceFree() throws {
+    /// The `.late` path is gone: while a tick has the lock the app never opens the library, however long it takes,
+    /// keeps its want up the whole time, and opens it as soon as the lock is its.
+    func testTheAppNeverOpensTheLibraryWithoutTheLock() throws {
         let bridge = SyncLock(url: url)
         XCTAssertTrue(try bridge.tryLock())
         let app = SyncLock(url: url)
-        XCTAssertEqual(app.holdForApp(patience: 0.2, retry: 0.05), .late)
+        let start = Date()
+        XCTAssertEqual(app.holdForApp(retry: 0.05), .waiting)
+        XCTAssertLessThan(Date().timeIntervalSince(start), 0.5, "the window is not held up")
+        let hold = HoldBox()
+        Task { hold.value = await app.whenReady() }
+        // Many retries pass (the old code gave up waiting after its patience here and opened the library anyway).
+        Thread.sleep(forTimeInterval: 1)
+        XCTAssertNil(hold.value, "the library stays closed while the tick has the lock")
         XCTAssertFalse(app.isHeld)
-        // Still asking: a bridge tick that gets in now reads the want and leaves.
-        XCTAssertTrue(bridge.isWanted)
+        XCTAssertTrue(bridge.isWanted, "still asking: a tick that starts now leaves at once")
+        // A new tick in the meantime reads the want and leaves.
         bridge.unlock()
+        let newTick = SyncLock(url: url)
+        if try newTick.tryLock() {
+            XCTAssertTrue(newTick.isWanted)
+            newTick.unlock()
+        }
         let deadline = Date().addingTimeInterval(3)
-        while !app.isHeld, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
+        while hold.value == nil, Date() < deadline { Thread.sleep(forTimeInterval: 0.02) }
+        XCTAssertEqual(hold.value, .held)
         XCTAssertTrue(app.isHeld)
         XCTAssertFalse(FileManager.default.fileExists(atPath: app.wantURL.path))
         XCTAssertFalse(try SyncLock(url: url).tryLock())
+    }
+
+    /// Everyone waiting goes on together, and a late caller returns at once.
+    func testEveryWaiterOpensOnceTheLockIsHeld() throws {
+        let bridge = SyncLock(url: url)
+        XCTAssertTrue(try bridge.tryLock())
+        let app = SyncLock(url: url)
+        XCTAssertEqual(app.holdForApp(retry: 0.05), .waiting)
+        let both = expectation(description: "both opened")
+        both.expectedFulfillmentCount = 2
+        for _ in 0..<2 {
+            Task {
+                if await app.whenReady() == .held { both.fulfill() }
+            }
+        }
+        Thread.sleep(forTimeInterval: 0.2)
+        bridge.unlock()
+        wait(for: [both], timeout: 3)
+        let late = expectation(description: "a late caller")
+        Task {
+            if await app.whenReady() == .held { late.fulfill() }
+        }
+        wait(for: [late], timeout: 1)
+    }
+
+    /// The lock file goes while the app waits: it carries on without it, as it does when it cannot open it at launch.
+    func testTheAppCarriesOnIfTheLockFileGoesWhileItWaits() throws {
+        let bridge = SyncLock(url: url)
+        XCTAssertTrue(try bridge.tryLock())
+        let app = SyncLock(url: url)
+        XCTAssertEqual(app.holdForApp(retry: 0.05), .waiting)
+        let opened = expectation(description: "the library opened")
+        let hold = HoldBox()
+        Task {
+            hold.value = await app.whenReady()
+            opened.fulfill()
+        }
+        let lockFolder = url.deletingLastPathComponent()
+        try FileManager.default.removeItem(at: lockFolder)
+        FileManager.default.createFile(atPath: lockFolder.path, contents: Data("not a folder".utf8))
+        wait(for: [opened], timeout: 3)
+        guard case .unavailable? = hold.value else { return XCTFail("expected .unavailable, got \(String(describing: hold.value))") }
+        XCTAssertFalse(app.isHeld)
+        bridge.unlock()
+    }
+}
+
+/// Carries a hold out of a task, for the tests.
+private final class HoldBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: SyncLock.Hold?
+    var value: SyncLock.Hold? {
+        get { lock.lock(); defer { lock.unlock() }; return stored }
+        set { lock.lock(); stored = newValue; lock.unlock() }
     }
 }

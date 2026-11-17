@@ -194,8 +194,10 @@ misbehaves.
 
 No new choices. Copy for the existing sync line and tonight's notice (which must speak for the active link):
 
-- iPhone, joined: "Syncs with your Mac through iCloud." then "Last synced 2 min ago" and "Mac's library checked in
-  9:41 PM" (from `status-mac.hubAt`; plain information, no warning: the MacBook sleeping overnight is normal).
+- iPhone, joined: "Syncs with your Mac through iCloud." then the hub mode's label and value rows: Status "Through
+  iCloud", Last synced "2 min ago", Mac's library "Checked in 9:41 PM" (from `status-mac.hubAt`; plain information,
+  no warning: the MacBook sleeping overnight is normal). With "Sync directly with the Mac instead" on, Settings shows
+  the hub's rows only, never an iCloud sentence frozen where the last cloud pass left it.
 - Mac: "iPhone, 2 min ago" now reads `status-iphone.at`.
 - Sending: "Sending 120 of 260 photos to iCloud."
 - Signed out: "Sign in to iCloud to sync with your Mac." (banner)
@@ -204,6 +206,13 @@ No new choices. Copy for the existing sync line and tonight's notice (which must
 - Newer format: "Update Watch Collection on this iPhone to keep syncing." (banner)
 - Erased: "The iCloud copy was erased. Nothing on this Mac was removed." with one button on the Mac, "Sync through
   iCloud again". On the phone: "...Open Watch Collection on your Mac to start iCloud sync again."
+- A joined phone finds no iCloud copy: "The iCloud copy is missing. Open Watch Collection on your Mac to start iCloud
+  sync again." (docs/icloud-fixes.md D10)
+- Mac sidebar: the headline is the worse of the hub and iCloud states, with the hub's own line kept below it when
+  iCloud takes it (docs/icloud-fixes.md D11). At once, amber dot: "iCloud paused" (erased), "iCloud sync stopped"
+  (newer format), "Signed out of iCloud", "iCloud is full", "Choice waiting" (the iPhone's). Only once the cloud link
+  has not settled for 3 minutes: "Can't reach iCloud" (offline) or "iCloud sync did not finish" (failed, throttled),
+  with "Last synced through iCloud 3 hr ago. It will keep trying." A tie goes to the hub.
 
 ## 8. Failures
 
@@ -246,12 +255,15 @@ Why nothing can be lost: no rule in this design removes local data or a local fi
 document before its photos; a device writes to iCloud only merged output and only when nobody wrote in between; every
 hub write that results still gets the hub's own sync-history snapshot (server.py:753).
 
-Rollback: reinstall the previous Mac build and the previous TestFlight build. They ignore `cloud.json`, the hub path
+Rollback: first `tools/bridge/install.sh remove` (a build from before the bridge ignores `-WCBridge` and would open
+its whole window from launchd every minute; install.sh also refuses to install one), then reinstall the previous Mac
+build and the previous TestFlight build. They ignore `cloud.json`, the hub path
 is untouched, the cloud data just sits there. Coming forward again needs no reset.
 
 Debug builds can never touch his data: Debug is pinned to the Development environment, and in DEBUG the cloud link
 is off unless the run was given `-WCDataRoot <folder>` (which also moves `sync.json` and the photo folder there) or
-`-WCCloudKitCheck`.
+`-WCCloudKitCheck`. The one sanctioned exception to the Development pin is the P6 check's Production run (section 13
+C), a Debug build with `WC_CLOUDKIT_ENV=Production`: it opens no collection and never the `Collection` zone.
 
 ## 10. Later, not in this job
 - **Photo cleanup.** Rule when built: Mac only, at most daily, list the zone with no assets, delete a `Photo` record
@@ -433,15 +445,19 @@ Files: `ios/Mac/MacApp.swift` (entry), new `ios/Mac/Bridge.swift`, new `ios/Sour
 - Entry: `@main enum Entry` decides before SwiftUI starts: `-WCCloudKitCheck` (DEBUG) -> check; `-WCBridge` ->
   `Bridge.runAndExit()`; else `WatchCollectionMacApp.main()`. Same pattern as Arsenal `CloudKitCheck.runAndExit`.
 - `SyncLock`: an exclusive `flock` on `Application Support/WatchCollection/sync.lock`. The GUI takes it before it
-  reads `sync.json` and holds it for life; while waiting it drops a `sync.lock.want` file. The bridge tries without
+  reads `sync.json` and holds it for life; while waiting it drops a `sync.lock.want` file. It never syncs without it
+  (docs/icloud-fixes.md D9): the window opens at once and the collection opens once the lock is held, asking again
+  every 0.5 s; only a lock file that cannot be opened at all lets it carry on without (logged). The bridge tries without
   blocking and exits 0 if it is taken; between network calls it checks for `want` and exits early.
-- `Bridge`: no window (`NSApp` never activates), one tick (hub pass, cloud pass, hub pass again if the cloud pass
+- `Bridge`: no `NSApplication` at all (docs/icloud-fixes.md D7: one checks the process in with LaunchServices as a
+  running copy of the app, and opening the app during a tick then fails with -600), so no window and no Dock icon; one tick (hub pass, cloud pass, hub pass again if the cloud pass
   installed), `Status` write, `cloud-status.json`, exit 0. Watchdog exits at 50 s whatever is running; every step is
   resumable. Conflicts are not answerable here: they are counted into `status-mac.conflicts` and wait for a screen.
 - LaunchAgent: `ProgramArguments` = the app's binary in `/Applications/Watch Collection.app/Contents/MacOS/` with
   `-WCBridge 1`; `StartInterval` 60; `RunAtLoad`; `WatchPaths` = the hub's `data` folder (the folder, not
   `watches.json`, because the hub replaces the file by rename); `ThrottleInterval` 10; `ProcessType` Background;
-  logs to `~/Library/Logs/watch-collection-bridge.log`. `install.sh` writes it to `~/Library/LaunchAgents` and
+  logs to `~/Library/Logs/watch-collection-bridge.log`. `install.sh` refuses a binary without the marker `WCBridgeEntry-v1` that `Entry` carries (found with
+  `grep -a`, never by running it; `--dry-run` checks and prints the plist only), writes it to `~/Library/LaunchAgents` and
   bootstraps it; `install.sh remove` undoes that.
 Tests: lock taken twice in one process fails the second time without blocking; released on close; the `want` file
 makes a holder that polls it give up.
@@ -524,7 +540,17 @@ build headless against each in turn and check, from `cloud-status.json` and the 
 5. One tick driven by the real LaunchAgent pointed at the debug build and the Mac root: exits 0, did the work.
 6. All three fingerprints equal at the end: throwaway hub projection, cloud `revision`, both roots.
 
-C. Production, Mac (lead): P6 check `roundTrip: true` in Production. Backups made. Install the Release build, open
+C. Production, Mac (lead): P6 check `roundTrip: true` in Production. Debug is pinned to Development, so this run
+overrides it on the command line (section 9's one exception), signed as usual (the check needs the container):
+```
+cd ios && xcodebuild -project WatchCollection.xcodeproj -scheme WatchCollectionMac -configuration Debug \
+  -derivedDataPath ~/Offload/watch-collection/derived/cloudkit-check-production WC_CLOUDKIT_ENV=Production build
+"$HOME/Offload/watch-collection/derived/cloudkit-check-production/Build/Products/Debug/Watch Collection.app/Contents/MacOS/Watch Collection" \
+  -WCCloudKitCheck "$HOME/Library/Containers/com.jadenkwek.watchcollection.mac/Data/cloudkit-check-production"
+```
+Its `cloudkit-check.json` must say `"environment" : "Production"` (read from the signed entitlement) as well as
+`roundTrip` and `conflictSeen` true. A run cut off by its watchdog leaves `CollectionCheck` behind; the next run
+deletes it first. Backups made. Install the Release build, open
 it once. Read `cloud-status.json` and the `cloud-sync` log: photos N of N, document created, epoch set,
 `revision` equal to the fingerprint of the hub's projection. Quit the app; install the LaunchAgent; add a test
 wishlist item through the hub; within 70 s `cloud-status.json` shows a new `revision` written by the bridge.
@@ -553,3 +579,8 @@ your Mac through iCloud."
    resumable; the phone keeps its hub path until it is done.
 8. **A conflict raised in the headless bridge** waits for a screen. The phone says so, but it can only be answered on
    the Mac in v1.
+9. **A photo that takes more than about 45 s to send cannot finish in the bridge** (C2#11, unproven): the 50 s
+   watchdog ends every tick in the middle of it (the deadline is checked only between photos) and the next tick starts
+   it again, so the document waits on that photo until the app is opened, which has no watchdog. The largest hub photo
+   today is 3.1 MB, so this needs an uplink below about 0.6 Mbps. Other photos' progress is kept (`photosPresent` asks
+   iCloud first).

@@ -4,9 +4,10 @@ import os
 /// One writer at a time for this device's library (`sync.json`, the cloud files, the photo folder): the Mac app and
 /// its headless bridge (docs/icloud-plan.md section 11 P5). An exclusive `flock` on `WatchCollection/sync.lock`.
 ///
-/// - The app takes it before it reads `sync.json` and holds it for as long as it runs (`holdForApp`). While it waits
-///   it leaves `sync.lock.want` and holds a lock on that file too, so the want reads as live only while a waiter is
-///   alive: a waiter that died leaves a file nobody holds, which reads as not wanted.
+/// - The app takes it before it reads `sync.json` and holds it for as long as it runs (`holdForApp`), and nothing
+///   reads or syncs the library until it holds it (docs/icloud-fixes.md D9). While it waits it leaves
+///   `sync.lock.want` and holds a lock on that file too, so the want reads as live only while a waiter is alive: a
+///   waiter that died leaves a file nobody holds, which reads as not wanted.
 /// - The bridge only ever tries (`tryLock`), never waits: it leaves at once when the lock is taken, and stops between
 ///   steps when `isWanted` says the app is waiting.
 ///
@@ -27,20 +28,21 @@ final class SyncLock: @unchecked Sendable {
         }
     }
 
-    /// What `holdForApp` came to.
+    /// Where the app's hold stands.
     enum Hold: Equatable {
         /// The lock is the app's.
         case held
-        /// A bridge tick kept it past the app's patience. The app carries on, still asking, and takes it once free.
-        case late
-        /// The lock file could not be opened. The app carries on without it.
+        /// A bridge tick has it. The want is up, so the tick stops at its next step (its watchdog ends it at 50 s
+        /// whatever it is doing), and the app asks again every `appRetry` until the lock is its.
+        case waiting
+        /// The lock file could not be opened at all. The app carries on without it, and says so in the log.
         case unavailable(String)
     }
 
     /// The app's lock, in the folder `sync.json` is in (a DEBUG `-WCDataRoot` run has its own).
     static var appURL: URL { AppPaths.collectionFolder.appendingPathComponent("sync.lock") }
-    /// How long the app waits at launch for a bridge tick to step aside. A tick checks every 200 ms.
-    static let appPatience: TimeInterval = 5
+    /// How often the app asks again while a bridge tick has the lock. A tick checks for the want every 200 ms.
+    static let appRetry: TimeInterval = 0.5
     static let log = Logger(subsystem: "com.jadenkwek.watchcollection", category: "sync-lock")
 
     let url: URL
@@ -50,6 +52,10 @@ final class SyncLock: @unchecked Sendable {
     private let state = NSLock()
     private var descriptor: Int32 = -1
     private var wantDescriptor: Int32 = -1
+    /// The app's hold: nil before `holdForApp`, then `.waiting` until it settles as `.held` or `.unavailable`.
+    private var appHold: Hold?
+    /// `whenReady` callers still waiting for the hold to settle.
+    private var readyWaiters: [CheckedContinuation<Hold, Never>] = []
 
     init(url: URL) {
         self.url = url
@@ -127,20 +133,42 @@ final class SyncLock: @unchecked Sendable {
     }
 
     /// The app at launch, before anything reads `sync.json`: takes the lock and keeps it for the life of the process.
-    /// If a bridge tick has it, the want makes the tick stop at its next step; past `patience` (a tick that cannot
-    /// stop) the app carries on and keeps asking every `retry` until it gets it. If the file cannot be opened the app
-    /// carries on without it. Either way it is logged: a lock problem never stops him using the app.
+    /// It never waits and never gives up (docs/icloud-fixes.md D9). If a bridge tick has the lock, the want makes the
+    /// tick stop at its next step, and the app asks again every `retry` on a queue of its own for as long as it takes;
+    /// the window opens meanwhile and the library opens once `whenReady` returns. If the lock file cannot be opened at
+    /// all the app carries on without it, logged: a lock problem never stops him using the app.
     @discardableResult
-    func holdForApp(patience: TimeInterval = SyncLock.appPatience, retry: TimeInterval = 0.5) -> Hold {
+    func holdForApp(retry: TimeInterval = SyncLock.appRetry) -> Hold {
         do {
-            if try acquire(patience: patience) { return .held }
+            if try tryLock() {
+                settleApp(.held)
+                return .held
+            }
         } catch {
-            Self.log.error("sync lock unavailable, the app carries on without it: \(String(describing: error), privacy: .public)")
-            return .unavailable(String(describing: error))
+            return unavailableForApp(error)
         }
-        Self.log.error("a bridge tick still held the sync lock after \(patience, privacy: .public) s; the app carries on and takes it once free")
-        keepAsking(every: retry, on: DispatchQueue(label: "watch-collection.sync-lock", qos: .utility))
-        return .late
+        state.lock()
+        appHold = .waiting
+        state.unlock()
+        raiseWant()
+        Self.log.notice("a bridge tick has the sync lock; the app asks every \(retry, privacy: .public) s and opens the library once it is free")
+        keepAsking(every: retry, on: DispatchQueue(label: "watch-collection.sync-lock", qos: .userInitiated))
+        return .waiting
+    }
+
+    /// Returns once the app may open the library: `.held`, or `.unavailable` when the lock file cannot be opened.
+    /// Waits while a bridge tick has the lock, and before `holdForApp` has been called.
+    func whenReady() async -> Hold {
+        await withCheckedContinuation { (continuation: CheckedContinuation<Hold, Never>) in
+            state.lock()
+            if let hold = appHold, hold != .waiting {
+                state.unlock()
+                continuation.resume(returning: hold)
+            } else {
+                readyWaiters.append(continuation)
+                state.unlock()
+            }
+        }
     }
 
     private func keepAsking(every retry: TimeInterval, on queue: DispatchQueue) {
@@ -149,14 +177,32 @@ final class SyncLock: @unchecked Sendable {
             do {
                 if try tryLock() {
                     Self.log.notice("the app took the sync lock")
+                    settleApp(.held)
                 } else {
                     keepAsking(every: retry, on: queue)
                 }
             } catch {
                 lowerWant()
-                Self.log.error("sync lock unavailable, the app carries on without it: \(String(describing: error), privacy: .public)")
+                _ = unavailableForApp(error)
             }
         }
+    }
+
+    private func unavailableForApp(_ error: Error) -> Hold {
+        Self.log.error("sync lock unavailable, the app carries on without it: \(String(describing: error), privacy: .public)")
+        let hold = Hold.unavailable(String(describing: error))
+        settleApp(hold)
+        return hold
+    }
+
+    /// The hold settled: everyone waiting in `whenReady` goes on.
+    private func settleApp(_ hold: Hold) {
+        state.lock()
+        appHold = hold
+        let waiting = readyWaiters
+        readyWaiters = []
+        state.unlock()
+        for continuation in waiting { continuation.resume(returning: hold) }
     }
 
     /// Leaves the want file and holds a lock on it. A probe that holds it at this moment makes this a no-op; the

@@ -118,6 +118,9 @@ enum CloudKitCheck {
                 run.update { $0.add("no iCloud account to check with") }
                 return
             }
+            // A run cut off by its watchdog leaves the zone and its `Collection` behind, and saving the zone again
+            // keeps them, so this run's first save would come back `.changed`. Start from no zone at all.
+            try await deleteZone(in: database, missingIsFine: true)
             let zones = try await database.modifyRecordZones(saving: [CKRecordZone(zoneID: zoneID)], deleting: []).saveResults
             if case .failure(let error)? = zones[zoneID] { throw error }
             zoneSaved = true
@@ -231,11 +234,20 @@ enum CloudKitCheck {
         }
         if zoneSaved {
             do {
-                let deleted = try await database.modifyRecordZones(saving: [], deleting: [zoneID]).deleteResults
-                if case .failure(let error)? = deleted[zoneID] { throw error }
+                try await deleteZone(in: database, missingIsFine: false)
             } catch {
                 run.update { $0.add("zone not deleted: \(describe(error))") }
             }
+        }
+    }
+
+    /// Deletes `CollectionCheck`, never any other zone. At the start a zone that is not there is fine.
+    private static func deleteZone(in database: CKDatabase, missingIsFine: Bool) async throws {
+        do {
+            let deleted = try await database.modifyRecordZones(saving: [], deleting: [zoneID]).deleteResults
+            if case .failure(let error)? = deleted[zoneID] { throw error }
+        } catch let error as CKError where missingIsFine && error.code == .zoneNotFound {
+            return
         }
     }
 

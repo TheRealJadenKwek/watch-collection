@@ -6,22 +6,32 @@ import SwiftUI
 /// never writes the library while the app is open (docs/icloud-plan.md section 11 P5).
 @main
 enum Entry {
+    /// `tools/bridge/install.sh` looks for this string in the binary (it never runs it) and refuses a build without
+    /// it: an older build ignores `-WCBridge` and would open its whole window from launchd (docs/icloud-fixes.md D8).
+    /// Change it only together with install.sh.
+    static let bridgeMarker = "WCBridgeEntry-v1"
+
+    /// The app's hold on the library, for the life of the process.
+    static let library = SyncLock(url: SyncLock.appURL)
+
     static func main() {
         #if DEBUG
         if let folder = CloudKitCheck.folder { CloudKitCheck.runAndExit(folder) }
         #endif
-        if Bridge.requested { Bridge.runAndExit() }
-        // Before anything reads `sync.json`. It waits briefly for a running tick to step aside, and never stops the
-        // app: past its patience, or with no lock file, the app carries on (and says so in the log).
-        let lock = SyncLock(url: SyncLock.appURL)
-        lock.holdForApp()
-        withExtendedLifetime(lock) { WatchCollectionMacApp.main() }
+        if Bridge.requested { Bridge.runAndExit(entry: bridgeMarker) }
+        // Before anything reads `sync.json`. It never waits: with a bridge tick running, the window opens at once and
+        // the library opens once the tick has stepped aside (docs/icloud-fixes.md D9). With no lock file at all the
+        // app carries on without it (and says so in the log).
+        library.holdForApp()
+        WatchCollectionMacApp.main()
     }
 }
 
 struct WatchCollectionMacApp: App {
     @StateObject private var store = AppStore()
     @Environment(\.scenePhase) private var scenePhase
+    /// The app holds the library (or there is no lock file to hold): the store may read and sync it.
+    @State private var libraryOpen = false
 
     init() {
         // Graphite as this app's system accent, so controls stay monochrome with contrast the system
@@ -31,9 +41,15 @@ struct WatchCollectionMacApp: App {
 
     var body: some Scene {
         Window("Watch Collection", id: "main") {
-            MacRootView(store: store)
+            MacRootView(store: store, opening: !libraryOpen)
                 .frame(minWidth: 980, minHeight: 640)
-                .task { await store.start() }
+                .task { @MainActor in
+                    // Nothing reads or syncs the library until the app holds it: a bridge tick still running steps
+                    // aside at its next step, and its watchdog ends it at 50 s whatever it is doing.
+                    await Entry.library.whenReady()
+                    libraryOpen = true
+                    await store.start()
+                }
                 .onChange(of: scenePhase, initial: true) { _, phase in store.sceneChanged(phase) }
         }
         .defaultSize(width: 1360, height: 880)
@@ -54,6 +70,8 @@ struct WatchCollectionMacApp: App {
 /// Desktop shell: a sidebar in place of the phone's tab bar, sync state always in view.
 struct MacRootView: View {
     @ObservedObject var store: AppStore
+    /// The app is still waiting to hold the library (a bridge tick is stepping aside).
+    var opening = false
     @AppStorage("selectedTabV4") private var selectedTab = AppTab.collection.rawValue
     @Environment(\.openSettings) private var openSettings
     @State private var mounted: Set<String> = []
@@ -64,10 +82,10 @@ struct MacRootView: View {
         Group {
             if store.data != nil {
                 sections
-            } else if store.isRefreshing || store.waitsForICloud {
+            } else if opening || store.isRefreshing || store.waitsForICloud {
                 VStack(spacing: 14) {
                     ProgressView()
-                    Text(store.isRefreshing ? "Opening the collection…" : "Waiting for your collection from iCloud…")
+                    Text(opening || store.isRefreshing ? "Opening the collection…" : "Waiting for your collection from iCloud…")
                         .foregroundStyle(.secondary)
                 }
             } else {
@@ -266,7 +284,9 @@ private struct MacSidebar: View {
     }
 }
 
-/// Watches only the sync status, so a sync tick redraws this line and nothing else.
+/// Watches only the sync status, so a sync tick redraws this line and nothing else. The headline is the worse of the
+/// hub and iCloud states (`MacSyncLine`, docs/icloud-fixes.md D11); it is worked out again every 30 s as well, since
+/// a quiet iCloud failure only shows once it is old enough.
 private struct SyncStatusBar: View {
     @ObservedObject var status: SyncStatus
     let syncNow: () -> Void
@@ -274,56 +294,55 @@ private struct SyncStatusBar: View {
     let restartCloud: () -> Void
 
     var body: some View {
-        let cloudLine = status.cloud.flatMap { CloudSyncCopy.sentence($0, device: Platform.deviceName) }
-        VStack(alignment: .leading, spacing: 6) {
-            Button(action: syncNow) {
-                HStack(spacing: 8) {
-                    Circle()
-                        .fill(status.message == "Up to date" && !cloudNeedsAttention ? Color.green : Color.yellow)
-                        .frame(width: 7, height: 7)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(status.conflicts.isEmpty ? status.message : "\(status.conflicts.count) changes need a choice")
-                            .lineLimit(2)
-                        if let lastSync = status.lastSync {
-                            Text("Synced \(lastSync.formatted(.relative(presentation: .named)))")
-                                .foregroundStyle(.secondary)
+        TimelineView(.periodic(from: .now, by: 30)) { context in
+            let line = MacSyncLine.evaluate(hubMessage: status.message, conflicts: status.conflicts.count,
+                                            cloud: status.cloud, now: context.date)
+            VStack(alignment: .leading, spacing: 6) {
+                Button(action: syncNow) {
+                    HStack(spacing: 8) {
+                        Circle()
+                            .fill(line.settled ? Color.green : Color.yellow)
+                            .frame(width: 7, height: 7)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(line.headline)
+                                .lineLimit(2)
+                            if let hub = line.hubLine {
+                                Text(hub)
+                                    .lineLimit(2)
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let lastSync = status.lastSync {
+                                Text("Synced \(lastSync.formatted(.relative(presentation: .named)))")
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let phone = status.lastPhoneSync {
+                                // With iCloud on, the iPhone's own Status record says when it last synced.
+                                Text(status.cloud == nil
+                                     ? "iPhone \(phone.formatted(.relative(presentation: .named)))"
+                                     : CloudSyncCopy.phoneSeen(phone, now: context.date))
+                                    .foregroundStyle(.secondary)
+                            }
+                            if let cloudLine = line.cloudLine {
+                                Text(cloudLine)
+                                    .foregroundStyle(.secondary)
+                            }
                         }
-                        if let phone = status.lastPhoneSync {
-                            // With iCloud on, the iPhone's own Status record says when it last synced.
-                            Text(status.cloud == nil
-                                 ? "iPhone \(phone.formatted(.relative(presentation: .named)))"
-                                 : CloudSyncCopy.phoneSeen(phone, now: Date()))
-                                .foregroundStyle(.secondary)
-                        }
-                        if let cloudLine {
-                            Text(cloudLine)
-                                .foregroundStyle(.secondary)
-                        }
+                        .font(.caption)
+                        Spacer(minLength: 0)
                     }
-                    .font(.caption)
-                    Spacer(minLength: 0)
+                    .contentShape(Rectangle())
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .help("Sync with the iPhone now")
+                if status.cloud?.wait == .erased {
+                    Button(CloudSyncCopy.restartButton, action: restartCloud)
+                        .controlSize(.small)
+                        .disabled(status.isSyncing)
+                        .padding(.leading, 15)
+                }
             }
-            .buttonStyle(.plain)
-            .help("Sync with the iPhone now")
-            if status.cloud?.wait == .erased {
-                Button(CloudSyncCopy.restartButton, action: restartCloud)
-                    .controlSize(.small)
-                    .disabled(status.isSyncing)
-                    .padding(.leading, 15)
-            }
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
-    }
-
-    /// An iCloud state that needs him (the photo upload and the wait for the library are only progress).
-    private var cloudNeedsAttention: Bool {
-        guard let cloud = status.cloud else { return false }
-        switch cloud.wait {
-        case .noAccount?, .full?, .newerFormat?, .erased?: return true
-        default: return cloud.otherConflicts > 0
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
         }
     }
 }
