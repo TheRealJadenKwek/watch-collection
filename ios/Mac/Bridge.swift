@@ -1,4 +1,3 @@
-import AppKit
 import Foundation
 import os
 
@@ -6,7 +5,10 @@ import os
 /// changes, so the hub and iCloud stay linked while the app is closed (docs/icloud-plan.md section 1 decision 4,
 /// section 11 P5; `tools/bridge/`).
 ///
-/// - No window, no Dock icon, and `NSApp` is never activated or run.
+/// - No `NSApplication`, ever (docs/icloud-fixes.md D7). Making one checks the process in with LaunchServices as a
+///   running copy of the app, so opening the app while a tick runs was handed to the tick, which never answers
+///   (error -600), and the app could not start. With no app object there is no window, no menu bar and no Dock icon,
+///   and nothing in a tick needs one (the CloudKit check runs the same way).
 /// - It takes `SyncLock` without waiting: with the app open it leaves at once, and when the app starts during a tick
 ///   it stops at its next step. Every step is resumable, so stopping anywhere costs only time.
 /// - The tick is the app's own: `AppStore.start()` reads the library and runs `syncNow` once, which on the Mac is the
@@ -36,16 +38,8 @@ enum Bridge {
         }
     }
 
-    static func runAndExit() -> Never {
-        // Before anything else: no Dock icon and no menu bar, and nothing can activate the app. Making
-        // `NSApplication` registers the process with LaunchServices as the Info.plist says (a Foreground app, which
-        // the Dock shows) and the policy only lands after that; marking this process background-only first makes it
-        // register as one, so the Dock never sees it. CFBundle keeps its Info dictionary mutable (it edits it itself
-        // while loading), and nothing here is written to disk.
-        if let info = CFBundleGetInfoDictionary(CFBundleGetMainBundle()) {
-            unsafeBitCast(info, to: NSMutableDictionary.self)["LSBackgroundOnly"] = true
-        }
-        NSApplication.shared.setActivationPolicy(.prohibited)
+    /// - Parameter entry: `Entry.bridgeMarker`, which the tick's summary line names, so the log says which build ran.
+    static func runAndExit(entry: String) -> Never {
         let began = Date()
         let limit = watchdogLimit
         DispatchQueue.global().asyncAfter(deadline: .now() + limit) {
@@ -78,22 +72,38 @@ enum Bridge {
             }
         }
         Task { @MainActor in
-            await tick(began: began)
+            #if DEBUG
+            await holdForProof()
+            #endif
+            await tick(began: began, entry: entry)
             exit(0)
         }
         dispatchMain()
     }
 
     @MainActor
-    private static func tick(began: Date) async {
+    private static func tick(began: Date, entry: String) async {
         let store = AppStore()
         await store.start()
         let cloudOn = store.status.cloud != nil
         if !cloudOn { writeOffReport(store.data) }
         let cloud = cloudOn ? (CloudFiles.app.loadReport()?.outcome ?? "no report") : "off"
-        log("tick done in \(seconds(since: began)): \(store.syncMessage); iCloud \(cloud); "
-            + "\(store.syncConflicts.count) waiting for a choice")
+        log("tick done in \(seconds(since: began)) (\(entry), build \(CloudLink.currentBuild)): \(store.syncMessage); "
+            + "iCloud \(cloud); \(store.syncConflicts.count) waiting for a choice")
     }
+
+    #if DEBUG
+    /// DEBUG `-WCBridgeHold <seconds>` holds the tick open that long before it starts, waiting as a slow network call
+    /// does (the want poll keeps running), so a proof can open the app while a tick runs (docs/icloud-fixes.md D7).
+    /// The watchdog still ends the process at 50 s.
+    @MainActor
+    private static func holdForProof() async {
+        let hold = UserDefaults.standard.double(forKey: "WCBridgeHold")
+        guard hold > 0 else { return }
+        log("holding the tick open for \(Int(min(hold, watchdog))) s (-WCBridgeHold)")
+        try? await Task.sleep(for: .seconds(min(hold, watchdog)))
+    }
+    #endif
 
     /// `cloud-status.json` when this build has no iCloud link (`CloudKitStore.live()` is nil), which the cloud pass
     /// would otherwise write: the link is off, with what the book and the marks on disk say.

@@ -364,9 +364,26 @@ enum CloudSyncCopy {
         case .erased?: return erased(device: device)
         case let .sendingPhotos(done, total)?: return sending(done, of: total)
         case .needsHubFirst?: return needsHubFirst
-        case .noDocument?, .offline?, .busy?, .failed?, nil: break
+        // A phone that has joined finds no copy: not settled, it says so (docs/icloud-fixes.md D10). One that has
+        // not joined keeps its hub link and has nothing to say.
+        case .noDocument?: if cloud.role == .phone, cloud.joined { return missing }
+        case .offline?, .busy?, .failed?, nil: break
         }
         return cloud.otherConflicts > 0 ? choiceWaiting(cloud.otherConflicts, device: device) : nil
+    }
+
+    /// Settings' iCloud sentence. With the phone's "Sync directly with the Mac instead" on, no cloud pass runs, so the
+    /// iCloud state is frozen where it was: Settings then shows the hub's lines only (C2#6).
+    static func settingsSentence(_ cloud: CloudDisplay, device: String) -> String? {
+        if cloud.role == .phone, cloud.preferHub { return nil }
+        return sentence(cloud, device: device)
+    }
+
+    /// The Mac sidebar's line when the iCloud link has not settled for `SyncHealth.staleAfter`: "Last synced
+    /// through iCloud 3 hr ago. It will keep trying."
+    static func notSettled(since date: Date?, now: Date) -> String {
+        let last = date.map { "Last synced through iCloud \(ago($0, now: now))." } ?? "Not synced through iCloud yet."
+        return "\(last) It will keep trying."
     }
 
     /// "Last synced 2 min ago".
@@ -377,21 +394,33 @@ enum CloudSyncCopy {
     /// "Mac's library checked in 9:41 PM": when the Mac last reached the hub (`status-mac.hubAt`). Information only;
     /// the MacBook sleeping overnight is normal.
     static func macCheckedIn(_ date: Date?, now: Date, calendar: Calendar = .current, locale: Locale = .current) -> String? {
-        guard let date else { return nil }
+        date.map { "Mac's library checked in \(checkedInTime($0, now: now, calendar: calendar, locale: locale))" }
+    }
+
+    /// The same as the value of Settings' "Mac's library" row: "Checked in 9:41 PM".
+    static func checkedIn(_ date: Date?, now: Date, calendar: Calendar = .current, locale: Locale = .current) -> String? {
+        date.map { "Checked in \(checkedInTime($0, now: now, calendar: calendar, locale: locale))" }
+    }
+
+    /// "9:41 PM" today, "yesterday at 9:41 PM", else "on Nov 3".
+    private static func checkedInTime(_ date: Date, now: Date, calendar: Calendar, locale: Locale) -> String {
         var time = Date.FormatStyle(date: .omitted, time: .shortened)
         time.locale = locale
         time.calendar = calendar
         time.timeZone = calendar.timeZone
-        if calendar.isDate(date, inSameDayAs: now) { return "Mac's library checked in \(date.formatted(time))" }
+        if calendar.isDate(date, inSameDayAs: now) { return date.formatted(time) }
         if let dayBefore = calendar.date(byAdding: .day, value: -1, to: now), calendar.isDate(date, inSameDayAs: dayBefore) {
-            return "Mac's library checked in yesterday at \(date.formatted(time))"
+            return "yesterday at \(date.formatted(time))"
         }
         var day = Date.FormatStyle().month(.abbreviated).day()
         day.locale = locale
         day.calendar = calendar
         day.timeZone = calendar.timeZone
-        return "Mac's library checked in on \(date.formatted(day))"
+        return "on \(date.formatted(day))"
     }
+
+    /// The value of Settings' "Status" row while iCloud carries the phone.
+    static let throughICloud = "Through iCloud"
 
     /// The Mac's line for the phone: "iPhone, 2 min ago".
     static func phoneSeen(_ date: Date, now: Date) -> String { "iPhone, \(ago(date, now: now))" }
@@ -406,5 +435,62 @@ enum CloudSyncCopy {
         if hours < 24 { return "\(hours) hr ago" }
         let days = hours / 24
         return days == 1 ? "1 day ago" : "\(days) days ago"
+    }
+}
+
+/// The Mac sidebar's sync line (docs/icloud-fixes.md D11): the worse of the hub link and the iCloud link. iCloud
+/// paused (erased), stopped (a newer format), signed out, full, or a choice waiting on the iPhone shows at once;
+/// offline, failed or throttled only once the iCloud link has not settled for `SyncHealth.staleAfter`, the same wait
+/// the phone's notice has. A tie goes to the hub: the Mac's own library first.
+struct MacSyncLine: Equatable {
+    /// The first line, by the dot.
+    var headline: String
+    /// Green dot: the hub is up to date and iCloud has nothing to say. Amber otherwise.
+    var settled: Bool
+    /// The hub's own words, kept on the line under the headline when iCloud has taken it.
+    var hubLine: String?
+    /// The iCloud sentence, under the times.
+    var cloudLine: String?
+
+    /// What the hub link says today, as it always has.
+    static let hubSettledMessage = "Up to date"
+
+    static func evaluate(hubMessage: String, conflicts: Int, cloud: CloudDisplay?, now: Date) -> MacSyncLine {
+        let hubHeadline = conflicts == 0 ? hubMessage : "\(conflicts) changes need a choice"
+        let hubSettled = conflicts == 0 && hubMessage == hubSettledMessage
+        guard let cloud else { return MacSyncLine(headline: hubHeadline, settled: hubSettled) }
+        guard let alert = alert(cloud, now: now) else {
+            return MacSyncLine(headline: hubHeadline, settled: hubSettled,
+                               cloudLine: CloudSyncCopy.sentence(cloud, device: "Mac"))
+        }
+        // 2: a choice waits on this Mac. 1: the hub has not finished. 0: settled.
+        let hubRank = conflicts > 0 ? 2 : (hubSettled ? 0 : 1)
+        if hubRank >= alert.rank {
+            return MacSyncLine(headline: hubHeadline, settled: false, cloudLine: alert.line)
+        }
+        return MacSyncLine(headline: alert.headline, settled: false, hubLine: hubHeadline, cloudLine: alert.line)
+    }
+
+    /// The iCloud state that needs a word in the headline, with its rank: 2 needs him now, 1 has not settled for too
+    /// long. nil while the link is settled, sending photos, or in a pause the next tick deals with quietly.
+    private static func alert(_ cloud: CloudDisplay, now: Date) -> (rank: Int, headline: String, line: String)? {
+        switch cloud.wait {
+        case .erased?: return (2, "iCloud paused", CloudSyncCopy.erased(device: "Mac"))
+        case .newerFormat?: return (2, "iCloud sync stopped", CloudSyncCopy.newerFormat(device: "Mac"))
+        case .noAccount?: return (2, "Signed out of iCloud", CloudSyncCopy.signedOut(device: "Mac"))
+        case .full?: return (2, "iCloud is full", CloudSyncCopy.full(device: "Mac"))
+        default: break
+        }
+        if cloud.otherConflicts > 0 {
+            return (2, "Choice waiting", CloudSyncCopy.choiceWaiting(cloud.otherConflicts, device: "Mac"))
+        }
+        switch cloud.wait {
+        case .offline?, .busy?, .failed?:
+            if let last = cloud.lastSync, now.timeIntervalSince(last) < SyncHealth.staleAfter { return nil }
+            let headline = cloud.wait == .offline ? "Can't reach iCloud" : "iCloud sync did not finish"
+            return (1, headline, CloudSyncCopy.notSettled(since: cloud.lastSync, now: now))
+        default:
+            return nil
+        }
     }
 }

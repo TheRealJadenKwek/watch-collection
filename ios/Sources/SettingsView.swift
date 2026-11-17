@@ -143,7 +143,7 @@ struct SettingsView: View {
                         .foregroundStyle(Color.secondary)
                 }
             }
-            if let cloud = status.cloud, let sentence = CloudSyncCopy.sentence(cloud, device: Platform.deviceName) {
+            if let cloud = status.cloud, let sentence = CloudSyncCopy.settingsSentence(cloud, device: Platform.deviceName) {
                 Text(sentence)
                     .font(.caption)
                 if Platform.isMac, cloud.wait == .erased {
@@ -186,22 +186,23 @@ struct SettingsView: View {
         }
     }
 
-    /// The phone's sync line once iCloud carries it: "Syncs with your Mac through iCloud.", when it last synced,
-    /// and when the Mac's library last checked in (plain information: the MacBook asleep overnight is normal).
+    /// The phone's sync lines once iCloud carries it: "Syncs with your Mac through iCloud.", then the same label and
+    /// value rows the hub's lines use: Status, Last synced, and when the Mac's library last checked in (plain
+    /// information: the MacBook asleep overnight is normal).
     @ViewBuilder
     private var cloudLines: some View {
         let now = Date()
         Text(CloudSyncCopy.carrier(device: Platform.deviceName))
             .font(.caption)
-        if let last = CloudSyncCopy.lastSynced(status.cloud?.lastSync ?? store.lastSync, now: now) {
-            Text(last)
+        LabeledContent("Status", value: CloudSyncCopy.throughICloud)
+            .font(.caption)
+        if let date = status.cloud?.lastSync ?? store.lastSync {
+            LabeledContent("Last synced", value: CloudSyncCopy.ago(date, now: now))
                 .font(.caption)
-                .foregroundStyle(Color.secondary)
         }
-        if let mac = CloudSyncCopy.macCheckedIn(status.cloud?.macHubAt, now: now) {
-            Text(mac)
+        if let mac = CloudSyncCopy.checkedIn(status.cloud?.macHubAt, now: now) {
+            LabeledContent("Mac's library", value: mac)
                 .font(.caption)
-                .foregroundStyle(Color.secondary)
         }
     }
 
