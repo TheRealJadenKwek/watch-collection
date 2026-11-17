@@ -96,29 +96,41 @@ final class WatchCoverTests: XCTestCase {
         return (min(1, frame.width / layout.size.width), min(1, frame.height / layout.size.height), layout.coversFrame)
     }
 
-    func testTheShapesCardsAndTilesUseAreFilledWithTheWholeWatchInside() {
-        // The wishlist card's thumbnail, a collection tile, the watch page's hero, a square chip or grid cell.
-        for frame in [CGSize(width: 96, height: 120), CGSize(width: 180, height: 225), CGSize(width: 393, height: 504),
-                      CGSize(width: 64, height: 64), CGSize(width: 170, height: 170)] {
+    func testEveryFrameShowsTheWholeTileStrapToStrap() {
+        // The wishlist row's thumbnail, a collection card, the feature, the watch page's hero, a chip, a grid cell,
+        // and a wide and a very tall frame.
+        for frame in [CGSize(width: 80, height: 120), CGSize(width: 208, height: 312), CGSize(width: 393, height: 491),
+                      CGSize(width: 393, height: 504), CGSize(width: 64, height: 64), CGSize(width: 170, height: 170),
+                      CGSize(width: 720, height: 380), CGSize(width: 350, height: 760)] {
             let part = shown(frame)
-            XCTAssertTrue(part.covers, "\(frame)")
-            XCTAssertGreaterThanOrEqual(part.width, RenderLayout.keep.width - 0.001, "\(frame)")
-            XCTAssertGreaterThanOrEqual(part.height, RenderLayout.keep.height - 0.001, "\(frame)")
-            // The pillow's edge (about 4% in from each side) is outside the frame.
-            XCTAssertLessThanOrEqual(part.width, 0.92, "\(frame)")
+            XCTAssertEqual(part.width, 1, accuracy: 0.001, "\(frame)")
+            XCTAssertEqual(part.height, 1, accuracy: 0.001, "\(frame)")
+            // As large as it goes: it touches the frame on one axis.
+            let layout = RenderLayout(imageSize: tile, frame: frame)
+            XCTAssertTrue(abs(layout.size.width - frame.width) < 0.01 || abs(layout.size.height - frame.height) < 0.01, "\(frame)")
         }
     }
 
-    func testAWideOrAVeryTallFrameKeepsTheWholeWatchAndLeavesTheRestToTheGround() {
+    func testOnlyACardInTheTilesOwnShapeIsFilled() {
+        for width in [80.0, 208, 393] {
+            let frame = CGSize(width: width, height: width / PhotoShape.plate)
+            XCTAssertTrue(RenderLayout(imageSize: tile, frame: frame).coversFrame, "\(frame)")
+        }
+        // The wishlist card's thumbnail, 80 by 120, is in the tile's shape like every other card picture.
+        XCTAssertEqual(WishlistCard.photoAspect, PhotoShape.plate)
+        XCTAssertTrue(RenderLayout(imageSize: tile, frame: CGSize(width: 80, height: 120)).coversFrame)
+        XCTAssertFalse(RenderLayout(imageSize: tile, frame: CGSize(width: 96, height: 120)).coversFrame, "the old 0.8 thumbnail")
         let wide = RenderLayout(imageSize: tile, frame: CGSize(width: 720, height: 380))
         XCTAssertFalse(wide.coversFrame)
-        XCTAssertEqual(wide.size.height * RenderLayout.keep.height, 380, accuracy: 0.01)
+        XCTAssertEqual(wide.size.height, 380, accuracy: 0.01)
         XCTAssertLessThan(wide.size.width, 720)
 
         let tall = RenderLayout(imageSize: tile, frame: CGSize(width: 350, height: 760))
         XCTAssertFalse(tall.coversFrame)
-        XCTAssertEqual(tall.size.width * RenderLayout.keep.width, 350, accuracy: 0.01)
+        XCTAssertEqual(tall.size.width, 350, accuracy: 0.01)
         XCTAssertLessThan(tall.size.height, 760)
+
+        XCTAssertFalse(RenderLayout(imageSize: tile, frame: CGSize(width: 208, height: 260)).coversFrame, "the old 0.8 card")
     }
 
     func testAnEmptyFrameOrImageIsLeftAlone() {

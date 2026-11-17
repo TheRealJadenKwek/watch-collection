@@ -100,14 +100,10 @@ struct CoverPages: Equatable {
     }
 }
 
-/// How a rendered tile sits in a frame of any shape: centred, as large as it goes with the whole watch still inside.
-/// In the shapes the app's cards and tiles use the leather fills the frame and the pillow's edge falls outside it;
-/// in a wide or a very tall frame the tile cannot reach the edges, and `RenderImage` fades it into a dark ground.
+/// How a rendered tile sits in a frame of any shape: centred and whole, so the strap or bracelet shows from the top
+/// of the pillow to the bottom. A frame in the tile's own shape (`PhotoShape.plate`) is filled exactly; in any other
+/// shape the tile falls short of two edges, and `RenderImage` fades it into a dark ground there.
 struct RenderLayout: Equatable {
-    /// The middle of the tile that always stays in the frame, as fractions of its width and height: the case with
-    /// its crown and pushers, and the first links of the strap above and below.
-    static let keep = CGSize(width: 0.91, height: 0.58)
-
     /// The tile's drawn size. It is centred in the frame.
     let size: CGSize
     /// Whether the tile reaches every edge of the frame.
@@ -119,10 +115,7 @@ struct RenderLayout: Equatable {
             coversFrame = true
             return
         }
-        let scale = min(
-            frame.width / (imageSize.width * Self.keep.width),
-            frame.height / (imageSize.height * Self.keep.height)
-        )
+        let scale = min(frame.width / imageSize.width, frame.height / imageSize.height)
         size = CGSize(width: imageSize.width * scale, height: imageSize.height * scale)
         // Half a point of slack, so rounding never calls a filled frame bare.
         coversFrame = size.width >= frame.width - 0.5 && size.height >= frame.height - 0.5

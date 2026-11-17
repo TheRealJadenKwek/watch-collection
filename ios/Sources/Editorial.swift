@@ -13,7 +13,10 @@ struct WatchRoute: Hashable {
 /// Photo shapes shared by the views and the framing editor so a framed cover
 /// looks the same everywhere it appears.
 enum PhotoShape {
-    static let plate: CGFloat = 0.8
+    /// A card's picture: the rendered tile's own shape (1024 by 1536), so a render fills it whole, strap to strap.
+    static let plate: CGFloat = 2.0 / 3.0
+    /// The phone's "Latest arrival" feature. It stays wider than a card so the grid still starts on the first screen.
+    static let feature: CGFloat = 0.8
     static let dossier: CGFloat = 0.78
     static let square: CGFloat = 1
 }

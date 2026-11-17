@@ -18,24 +18,69 @@ struct WishlistScreen: View {
     @Environment(\.sectionIsActive) private var sectionIsActive
     @Environment(\.pageMargin) private var margin
     @Environment(\.duo) private var duo
+    @AppStorage("wishlistSort") private var sort = Sort.fit.rawValue
+
+    enum Sort: String, CaseIterable { case fit = "Best Fit", lowest = "Lowest Price", highest = "Highest Price" }
 
     private var ranked: [WishlistItem] {
         Self.ranked(store.data?.wishlist ?? [], scores: store.scores)
+    }
+
+    /// Every candidate, in the order the sort menu asks for.
+    private var shown: [WishlistItem] {
+        switch Sort(rawValue: sort) ?? .fit {
+        case .fit: ranked
+        case .lowest: Self.byPrice(ranked, highestFirst: false)
+        case .highest: Self.byPrice(ranked, highestFirst: true)
+        }
+    }
+
+    /// The best-fitting candidate, shown large above the rest. Only in Best Fit order: sorted by price, every
+    /// candidate is a card in its place.
+    private var topPick: WishlistItem? {
+        guard (Sort(rawValue: sort) ?? .fit) == .fit, let first = ranked.first, first.status == "considering" else { return nil }
+        return first
+    }
+
+    /// The cards under the top pick.
+    private var cards: [WishlistItem] { topPick == nil ? shown : Array(shown.dropFirst()) }
+
+    /// Considering, then passed, then bought.
+    private static func statusRank(_ status: String) -> Int {
+        ["considering": 0, "passed": 1, "bought": 2][status] ?? 3
     }
 
     /// The wishlist's order: considering, then passed, then bought; the best score first; then the lower price.
     /// The Boxes tray lists candidates in the same order.
     static func ranked(_ items: [WishlistItem], scores: [String: WishlistScore]) -> [WishlistItem] {
         items.sorted { left, right in
-            let statusRank = ["considering": 0, "passed": 1, "bought": 2]
-            let leftStatus = statusRank[left.status] ?? 3
-            let rightStatus = statusRank[right.status] ?? 3
+            let leftStatus = statusRank(left.status)
+            let rightStatus = statusRank(right.status)
             if leftStatus != rightStatus { return leftStatus < rightStatus }
             let leftScore = scores[left.id]?.total ?? Int.min
             let rightScore = scores[right.id]?.total ?? Int.min
             if leftScore != rightScore { return leftScore > rightScore }
             return (left.priceExpected ?? .infinity) < (right.priceExpected ?? .infinity)
         }
+    }
+
+    /// The same candidates by the price each card shows, lowest or highest first, still within the status groups
+    /// (considering, then passed, then bought). Candidates without a price go last either way, and equal prices
+    /// keep the order they came in.
+    static func byPrice(_ items: [WishlistItem], highestFirst: Bool) -> [WishlistItem] {
+        items.enumerated().sorted { left, right in
+            let leftStatus = statusRank(left.element.status)
+            let rightStatus = statusRank(right.element.status)
+            if leftStatus != rightStatus { return leftStatus < rightStatus }
+            switch (left.element.wholePrice, right.element.wholePrice) {
+            case let (leftPrice?, rightPrice?) where leftPrice != rightPrice:
+                return highestFirst ? leftPrice > rightPrice : leftPrice < rightPrice
+            case (.some, nil): return true
+            case (nil, .some): return false
+            default: return left.offset < right.offset
+            }
+        }
+        .map(\.element)
     }
 
     var body: some View {
@@ -52,6 +97,8 @@ struct WishlistScreen: View {
                                 #if os(iOS)
                                 Masthead(kicker: "Wishlist", title: "Next Watch", subtitle: subtitle)
                                     .padding(.horizontal, max(margin - WatchTheme.narrowMargin, 0))
+                                // Silent while sync is healthy; it redraws on its own, never this page.
+                                SyncNoticeBar(store: store, openSettings: showSettings)
                                 #endif
                                 if ranked.isEmpty {
                                     EmptyCollectionView(title: "Wishlist empty", detail: "Add a candidate to start comparing fit.")
@@ -61,7 +108,7 @@ struct WishlistScreen: View {
                                         WishlistTotalPanel(total: total)
                                             .padding(.bottom, WatchTheme.panelPadding - WatchTheme.gridGap)
                                     }
-                                    if let top = ranked.first, top.status == "considering" {
+                                    if let top = topPick {
                                         TopPickView(
                                             store: store,
                                             item: top,
@@ -76,7 +123,7 @@ struct WishlistScreen: View {
                                     LazyVGrid(columns: Platform.isMac
                                               ? [GridItem(.adaptive(minimum: 380), spacing: WatchTheme.gridGap, alignment: .top)]
                                               : [GridItem(.flexible(), alignment: .top)], spacing: WatchTheme.gridGap) {
-                                        ForEach(ranked.first?.status == "considering" ? Array(ranked.dropFirst()) : ranked) { item in
+                                        ForEach(cards) { item in
                                             WishlistCard(
                                                 store: store,
                                                 item: item,
@@ -114,12 +161,16 @@ struct WishlistScreen: View {
             .desktopHeader("Wishlist", subtitle: subtitle) {
                 EmptyView()
             } trailing: {
+                sortMenu.menuIndicator(.hidden).fixedSize()
                 addButton
             }
             #else
             .toolbar {
                 ToolbarItem(placement: .topBarLeading) { GearToolbarButton(action: showSettings) }
-                ToolbarItem(placement: .topBarTrailing) { addButton }
+                ToolbarItemGroup(placement: .topBarTrailing) {
+                    sortMenu
+                    addButton
+                }
             }
             #endif
             .sheet(item: $editingItem) { item in
@@ -143,11 +194,12 @@ struct WishlistScreen: View {
     private func columns(scrollTo: @escaping (String) -> Void) -> some View {
         let count = duo.isBook ? duo.cardColumns : 1
         let gap = duo.isBook ? DuoLayout.creaseGap(inset: WatchTheme.narrowMargin) : WatchTheme.gridGap
-        let top = ranked.first.flatMap { $0.status == "considering" ? $0 : nil }
-        let rest = top == nil ? ranked : Array(ranked.dropFirst())
-        // Roughly in cards: the top pick is about three tall, the masthead well under one. Whatever heads the left
-        // column goes there first; the cards then fill whichever column is shorter.
-        let lead: CGFloat = (top == nil ? 0 : 3) + (duo.isBook ? 0.6 : 0) + (duo.isBook && total.count > 0 ? 0.5 : 0)
+        let top = topPick
+        let rest = cards
+        // Roughly in cards: the top pick is about 3.6 tall (its photo is in the tile's 2:3 shape, a fifth taller than
+        // the old 4:5), the masthead well under one. Whatever heads the left column goes there first; the cards then
+        // fill whichever column is shorter.
+        let lead: CGFloat = (top == nil ? 0 : 3.6) + (duo.isBook ? 0.6 : 0) + (duo.isBook && total.count > 0 ? 0.5 : 0)
         let placed = DuoLayout.balance((lead > 0 ? [lead] : []) + rest.map { _ in 1 }, columns: count)
         let restColumns = lead > 0 ? Array(placed.dropFirst()) : placed
         let suggestionColumns = duo.isBook ? count : 1
@@ -157,6 +209,11 @@ struct WishlistScreen: View {
                 Masthead(kicker: "Wishlist", title: "Next Watch", subtitle: subtitle)
                     .padding(.horizontal, max(margin - WatchTheme.narrowMargin, 0))
                     .padding(.bottom, WatchTheme.gridGap)
+                SyncNoticeBar(
+                    store: store,
+                    insets: EdgeInsets(top: 0, leading: 0, bottom: WatchTheme.gridGap, trailing: 0),
+                    openSettings: showSettings
+                )
             }
             #endif
             if ranked.isEmpty, !duo.isBook {
@@ -172,6 +229,10 @@ struct WishlistScreen: View {
                 if duo.isBook {
                     Masthead(kicker: "Wishlist", title: "Next Watch", subtitle: subtitle)
                         .padding(.horizontal, max(margin - WatchTheme.narrowMargin, 0))
+                        .cardColumn(0, of: count)
+                    // Heads the left page under the masthead. The columns are balanced without it: it is not
+                    // there on a healthy day, and this screen does not watch the sync status to know.
+                    SyncNoticeBar(store: store, openSettings: showSettings)
                         .cardColumn(0, of: count)
                 }
                 #endif
@@ -239,13 +300,32 @@ struct WishlistScreen: View {
             .accessibilityLabel("Add candidate")
     }
 
+    /// The same control as the collection's sort menu.
+    private var sortMenu: some View {
+        Menu {
+            Section("Sort By") {
+                Picker("Sort By", selection: $sort) {
+                    ForEach(Sort.allCases, id: \.self) { Text($0.rawValue).tag($0.rawValue) }
+                }
+            }
+        } label: {
+            Image(systemName: "line.3.horizontal.decrease")
+        }
+        .accessibilityLabel("Sort options")
+    }
+
     /// What the candidates still being considered would cost. The page has no status filter; passed and bought
     /// candidates are listed under the rest but are not part of the figure.
     private var total: WishlistTotal { WishlistTotal(store.data?.wishlist ?? []) }
 
     private var subtitle: String {
         let count = ranked.filter { $0.status == "considering" }.count
-        return "\(count) candidate\(count == 1 ? "" : "s"), ranked for your collection"
+        let order = switch Sort(rawValue: sort) ?? .fit {
+        case .fit: "ranked for your collection"
+        case .lowest: "lowest price first"
+        case .highest: "highest price first"
+        }
+        return "\(count) candidate\(count == 1 ? "" : "s"), \(order)"
     }
 
     private var radarStrip: some View {
@@ -440,8 +520,9 @@ struct WishlistCard: View {
     @Binding var showsLenses: Bool
     @State private var confirmDelete = false
 
-    /// Width / height of the wishlist thumbnail. The framing editor uses the same ratio.
-    static let photoAspect: CGFloat = 96.0 / 120.0
+    /// Width / height of the wishlist thumbnail: the tile's own shape, like every other card picture, so a render
+    /// fills it strap to strap. The framing editor frames at this ratio, the top pick's (`PhotoShape.plate`).
+    static let photoAspect: CGFloat = PhotoShape.plate
 
     private let lensOrder = ["category", "brand", "price", "dial", "size", "material"]
     /// Category and diameter, as "Dive, 40 mm".
@@ -458,7 +539,7 @@ struct WishlistCard: View {
                 // The render where there is one (a little larger than a photo thumbnail is decoded, so the dial stays
                 // sharp), else the photo.
                 RemoteWatchImage(cover: cover, allowsRemoteFetch: !store.isOffline, maxPixel: cover?.isRender == true ? DisplayImageCache.thumb : DisplayImageCache.icon)
-                    .frame(width: 96, height: 120)
+                    .frame(width: 80, height: 120)
                     .clipped()
                 VStack(alignment: .leading, spacing: 5) {
                     Text(item.name)
