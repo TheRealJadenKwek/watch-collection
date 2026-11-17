@@ -41,16 +41,9 @@ enum LocalBackup {
         return folder
     }
 
+    /// Documents' `Watch Collection Backup/`, or a DEBUG data root's (`AppPaths.backupFolder`).
     private static func backupFolder() throws -> URL {
-        let documents = try FileManager.default.url(
-            for: .documentDirectory,
-            in: .userDomainMask,
-            appropriateFor: nil,
-            create: true
-        )
-        let folder = documents.appendingPathComponent("Watch Collection Backup", isDirectory: true)
-        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        return folder
+        try AppPaths.backupFolder()
     }
 
     private static func removeUnreferencedPhotos(in root: URL, keeping referenced: Set<PhotoKey>) {

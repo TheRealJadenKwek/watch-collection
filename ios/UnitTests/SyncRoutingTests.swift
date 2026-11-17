@@ -57,6 +57,70 @@ final class SyncRoutingTests: XCTestCase {
                        "what came from iCloud goes on to the hub in the same tick")
     }
 
+    /// C1 8: once a cloud pass has written the document in any round (one it then dropped for an edit, or whose
+    /// later step failed), the phone does not run the hub in that tick.
+    func testThePhoneNeverRunsTheHubAfterAPassThatWrote() {
+        for wait in [CloudWait.busy, .failed("x"), .offline] {
+            XCTAssertEqual(tick(.cloudElseHub, cloud: CloudTick(.waiting(wait), wrote: true)), [.cloud], "\(wait)")
+            XCTAssertEqual(tick(.cloudElseHub, cloud: CloudTick(.waiting(wait))), [.cloud, .hub],
+                           "\(wait), nothing written")
+        }
+    }
+
+    /// C1 9: the Mac runs the hub again only after a cloud pass that brought something in, not after one that only
+    /// sent the Mac's own collection up.
+    func testTheMacRunsTheHubAgainOnlyAfterARealInstall() {
+        XCTAssertEqual(tick(.hubThenCloud, cloud: CloudTick(.installed(sample, wroteCloud: true), installed: false)),
+                       [.hub, .cloud])
+        XCTAssertEqual(tick(.hubThenCloud, cloud: CloudTick(.installed(sample, wroteCloud: true), installed: true)),
+                       [.hub, .cloud, .hub])
+        XCTAssertEqual(tick(.hubThenCloud, cloud: CloudTick(.installed(sample, wroteCloud: false))),
+                       [.hub, .cloud, .hub])
+    }
+
+    /// D10, C1 5 and C1 7: what a cloud pass does to the sync notice and to the hub's waiting changes.
+    func testWhatACloudPassMeansForTheNoticeAndTheHub() {
+        func notice(_ outcome: CloudOutcome, joined: Bool = true, speaks: Bool = true) -> CloudPassEffects.Notice {
+            CloudPassEffects.of(outcome, role: .phone, joinedBefore: joined, speaksForCloud: speaks).notice
+        }
+        XCTAssertEqual(notice(.waiting(.noDocument)), .record(.other(CloudSyncCopy.missing)),
+                       "a joined phone whose document is gone says so once it lasts")
+        XCTAssertEqual(notice(.waiting(.noDocument), joined: false, speaks: false), .keep,
+                       "a phone not joined yet keeps using the hub, as today")
+        XCTAssertEqual(notice(.waiting(.offline)), .record(.offline))
+        XCTAssertEqual(notice(.waiting(.failed("x"))), .record(.other("x")))
+        XCTAssertEqual(notice(.waiting(.busy)), .keep, "a pass cut short or throttled is not a failure")
+        XCTAssertEqual(notice(.upToDate), .clear)
+        XCTAssertEqual(notice(.installed(sample, wroteCloud: false)), .clear)
+        XCTAssertEqual(notice(.waiting(.offline), speaks: false), .keep, "only the link the screens speak for")
+        let mac = CloudPassEffects.of(.waiting(.failed("x")), role: .mac, joinedBefore: false, speaksForCloud: false)
+        XCTAssertEqual(mac.notice, .keep)
+        XCTAssertFalse(mac.joins)
+
+        let join = CloudPassEffects.of(.upToDate, role: .phone, joinedBefore: false, speaksForCloud: false)
+        XCTAssertTrue(join.joins)
+        XCTAssertTrue(join.clearsHubConflicts, "the join's merge asks again about anything real")
+        let again = CloudPassEffects.of(.upToDate, role: .phone, joinedBefore: true, speaksForCloud: true)
+        XCTAssertFalse(again.joins)
+        XCTAssertFalse(again.clearsHubConflicts)
+        let asked = CloudPassEffects.of(.conflicts([]), role: .phone, joinedBefore: false, speaksForCloud: false)
+        XCTAssertFalse(asked.joins)
+    }
+
+    /// D5: the link that becomes active when the switch flips owes a pass with no base; a flip that leaves the same
+    /// link active (a phone not joined yet) owes none.
+    func testTheLinkThatBecomesActiveAfterTheSwitchMergesWithNoBase() {
+        func route(joined: Bool, preferHub: Bool) -> SyncRoute {
+            SyncRoute.plan(role: .phone, cloudLink: true, joined: joined, preferHub: preferHub)
+        }
+        XCTAssertEqual(SyncRoute.baselessAfterFlip(from: route(joined: true, preferHub: false),
+                                                   to: route(joined: true, preferHub: true)), .hub)
+        XCTAssertEqual(SyncRoute.baselessAfterFlip(from: route(joined: true, preferHub: true),
+                                                   to: route(joined: true, preferHub: false)), .cloud)
+        XCTAssertNil(SyncRoute.baselessAfterFlip(from: route(joined: false, preferHub: false),
+                                                 to: route(joined: false, preferHub: true)))
+    }
+
     /// Section 1, Rejected: two live links on the phone make a cycle. In no tick does the phone run the hub after a
     /// cloud pass that installed, wrote, asked or sent anything; and it never runs the hub first.
     func testThePhoneNeverRunsBothLinksInOneTick() {
@@ -191,7 +255,7 @@ final class SyncRoutingTests: XCTestCase {
 
     // MARK: The caller's side of a pass (section 4 steps 8 and 9, section 9 step 2)
 
-    func testTheCopyBeforeICloudIsMadeOnceBeforeTheFirstCloudPass() async throws {
+    func testTheCopyBeforeICloudIsMadeOnceBeforeTheFirstCloudWrite() async throws {
         let store = makeStore()
         var data = sample
         data.watches[0].photos = ["a.jpg"]
@@ -210,9 +274,11 @@ final class SyncRoutingTests: XCTestCase {
         XCTAssertEqual(seen.value, 1, "made before the first cloud write")
         XCTAssertEqual(mac.files.preCloudCopies.count, 1)
         XCTAssertEqual(try Data(contentsOf: mac.files.preCloudCopies[0]), syncBytes,
-                       "a copy of sync.json as it was before the install rewrote it")
+                       "a copy of sync.json as it was before iCloud sync began")
         XCTAssertEqual(mac.mirrors, 1, "the JSON mirror once, whatever autoBackup says")
-        XCTAssertEqual(mac.events, ["mirror", "install"])
+        // The creation only sent the Mac's own collection up: nothing to install (C1 9). Before the P8 fix round a
+        // no-op install followed, which this line recorded as ["mirror", "install"].
+        XCTAssertEqual(mac.events, ["mirror"])
 
         mac.edit { $0.watches[0].story = "edited" }
         mac.hubSettledAt = mac.generation
@@ -363,6 +429,346 @@ final class SyncRoutingTests: XCTestCase {
         XCTAssertEqual(mac.files.loadReport()?.outcome, "upToDate")
     }
 
+    // MARK: The book of a fresh document (docs/icloud-fixes.md D1)
+
+    /// C1 2 (B2): he deletes a watch on the Mac while its creating pass is sending photos. The round is dropped for
+    /// the edit, but its book is kept (it only sent this Mac's own collection up), so the next round merges against
+    /// the document it made and the delete goes up instead of coming back.
+    func testADeleteDuringTheCreatingPassSurvives() async throws {
+        let store = makeStore()
+        var data = sample
+        data.watches[0].photos = ["a.jpg"]
+        let mac = try makeHarness(.mac, store, data)
+        try mac.photos.put("w1/a.jpg", Data("photo a".utf8))
+        await store.onUpload(1) { @Sendable [mac] in
+            await MainActor.run { mac.edit { $0.watches.removeAll { $0.id == "w2" } } }
+        }
+        mac.hubSettledAt = mac.generation
+
+        let outcome = await mac.pass()
+        XCTAssertNil(outcome.conflictList, "\(outcome)")
+        XCTAssertFalse(mac.data?.watches.contains { $0.id == "w2" } ?? true, "the delete made during the pass holds")
+        let cloud = try await cloudData(store)
+        XCTAssertFalse(cloud.watches.contains { $0.id == "w2" }, "and went up in the next round")
+        let head = await store.currentHead
+        XCTAssertEqual(mac.session.book.epoch, head?.epoch)
+        XCTAssertEqual(mac.session.book.tag, head?.tag)
+    }
+
+    /// The same with a field: he is not asked to choose between his own old and new value.
+    func testAnEditDuringTheCreatingPassIsNotAskedAbout() async throws {
+        let store = makeStore()
+        var data = sample
+        data.watches[0].photos = ["a.jpg"]
+        let mac = try makeHarness(.mac, store, data)
+        try mac.photos.put("w1/a.jpg", Data("photo a".utf8))
+        await store.onUpload(1) { @Sendable [mac] in
+            await MainActor.run { mac.edit { $0.watches[1].story = "typed during the first sync" } }
+        }
+        mac.hubSettledAt = mac.generation
+
+        let outcome = await mac.pass()
+        XCTAssertNil(outcome.conflictList, "\(outcome)")
+        let cloud = try await cloudData(store)
+        XCTAssertEqual(story(cloud, "w2"), "typed during the first sync")
+        XCTAssertEqual(story(mac.data, "w2"), "typed during the first sync")
+    }
+
+    /// B2: the creation lands but its answer is lost. The next pass still knows the document it made (its epoch and
+    /// body were kept before the save), so a hub delete and edit that follow go up as such: no question, no
+    /// resurrection.
+    func testACreationWhoseAnswerIsLostKeepsItsBase() async throws {
+        let store = makeStore()
+        let mac = try makeHarness(.mac, store, sample)
+        mac.hubSettledAt = mac.generation
+        await store.loseNextWriteResponse()
+
+        let lost = await mac.pass()
+        XCTAssertEqual(lost.wait, .offline)
+        let made = await store.currentHead
+        let head = try XCTUnwrap(made, "the document landed")
+        mac.edit {
+            $0.watches.removeAll { $0.id == "w3" }
+            $0.watches[1].story = "hub edit"
+        }
+
+        let next = await mac.pass()
+        XCTAssertNil(next.conflictList, "\(next)")
+        XCTAssertEqual(next.wroteCloud, true)
+        let cloud = try await cloudData(store)
+        XCTAssertEqual(Set(cloud.watches.map(\.id)), ["w1", "w2"], "the hub's delete is not undone")
+        XCTAssertEqual(story(cloud, "w2"), "hub edit")
+        XCTAssertEqual(mac.session.book.epoch, head.epoch)
+    }
+
+    /// B2: the process dies once the creation has landed (the bridge's watchdog, the app quit). What is on disk is
+    /// enough for the next launch to merge against the document it made.
+    func testACreationThatLandsBeforeTheProcessDiesKeepsItsBaseOnDisk() async throws {
+        let store = makeStore()
+        let mac = try makeHarness(.mac, store, sample)
+        mac.hubSettledAt = mac.generation
+        await store.loseNextWriteResponse()
+        _ = await mac.pass()
+
+        var after = try XCTUnwrap(mac.data)
+        after.watches.removeAll { $0.id == "w3" }
+        after.watches[1].story = "hub edit"
+        let relaunched = try makeHarness(.mac, store, after, folder: mac.files.folder)
+        let next = await relaunched.pass()
+        XCTAssertNil(next.conflictList, "\(next)")
+        let cloud = try await cloudData(store)
+        XCTAssertEqual(Set(cloud.watches.map(\.id)), ["w1", "w2"])
+        XCTAssertEqual(story(cloud, "w2"), "hub edit")
+    }
+
+    /// C1 6: the one-time copy is taken right before this device's first cloud write or install, not on a pass that
+    /// finds nothing to do (a phone whose build arrived before the Mac's document, a Mac waiting for its hub).
+    func testThePreCloudCopyWaitsForTheFirstCloudWriteOrInstall() async throws {
+        let store = makeStore()
+        let phone = try makeHarness(.phone, store, sample)
+        let none = await phone.pass()
+        XCTAssertEqual(none.wait, .noDocument)
+        XCTAssertTrue(phone.files.preCloudCopies.isEmpty, "a pass that finds no document changes nothing here")
+        XCTAssertEqual(phone.mirrors, 0)
+
+        let mac = try makeHarness(.mac, store, sample)
+        let early = await mac.pass()
+        XCTAssertEqual(early.wait, .needsHubFirst)
+        XCTAssertTrue(mac.files.preCloudCopies.isEmpty)
+        mac.hubSettledAt = mac.generation
+        let created = await mac.pass()
+        XCTAssertEqual(created.wroteCloud, true)
+        XCTAssertEqual(mac.files.preCloudCopies.count, 1)
+
+        let joined = await phone.pass()
+        XCTAssertTrue(joined.isUpToDate, "\(joined)")
+        XCTAssertTrue(phone.files.preCloudCopies.isEmpty, "nothing written or installed yet")
+        mac.edit { $0.watches[0].story = "mac edit" }
+        _ = await mac.pass()
+        let installed = await phone.pass()
+        XCTAssertNotNil(installed.installedData)
+        XCTAssertEqual(phone.files.preCloudCopies.count, 1, "taken right before the phone's first install")
+        XCTAssertEqual(phone.mirrors, 1)
+        XCTAssertEqual(phone.events, ["mirror", "install"])
+    }
+
+    /// C1 9: a pass that only sent this device's own collection up installs nothing (no `sync.json` rewrite, no
+    /// redraw); one that brought something in installs it.
+    func testAPurePushIsNotInstalledAgain() async throws {
+        let (_, mac, phone) = try await joined()
+        mac.edit { $0.watches[1].story = "mac edit" }
+        let installs = mac.installs
+        let up = await mac.pass()
+        XCTAssertEqual(up.wroteCloud, true)
+        XCTAssertEqual(mac.installs, installs, "nothing came in: nothing to install")
+        XCTAssertTrue(mac.session.lastPassWrote)
+        XCTAssertFalse(mac.session.lastPassInstalled)
+        XCTAssertEqual(story(mac.data, "w2"), "mac edit")
+
+        let down = await phone.pass()
+        XCTAssertNotNil(down.installedData)
+        XCTAssertTrue(phone.session.lastPassInstalled)
+        XCTAssertFalse(phone.session.lastPassWrote)
+    }
+
+    /// B6 / C1 11: a throttle met by a pass that an edit then overtook still holds: the next tick waits for it.
+    func testAThrottleMetDuringAnEditIsKept() async throws {
+        let (store, mac, phone) = try await joined()
+        mac.edit { $0.watches[1].story = "mac edit" }
+        _ = await mac.pass()
+        phone.edit { $0.watches[2].story = "phone edit" }
+        await store.onNextDocument { @Sendable [phone, store] in
+            await MainActor.run { phone.edit { $0.watches[0].story = "typed during the pass" } }
+            await store.setRetryAfter(120)
+        }
+
+        let throttled = await phone.pass()
+        XCTAssertEqual(throttled.wait, .busy)
+        XCTAssertNotNil(phone.session.book.notBefore, "the throttle is kept with the dropped result")
+        XCTAssertNotNil(phone.files.loadBook().notBefore, "and saved")
+        await store.setRetryAfter(nil)
+        let heads = await store.count(.head)
+        let waited = await phone.pass()
+        XCTAssertEqual(waited.wait, .busy)
+        let headsAfter = await store.count(.head)
+        XCTAssertEqual(headsAfter, heads, "iCloud is not asked again before the throttle ends")
+        clock.advance(121)
+        let sent = await phone.pass()
+        XCTAssertNotNil(sent.installedData, "\(sent)")
+        XCTAssertEqual(story(phone.data, "w1"), "typed during the pass")
+    }
+
+    /// D4 (C1 1): the narrowed drop rule holds only while iCloud can answer for the photos. Without a document behind
+    /// the book, signed out, or erased, the hub exchange drops what is gone on both sides, as before iCloud.
+    func testTheNarrowedDropRuleAppliesOnlyWhileICloudCanAnswer() async throws {
+        let store = makeStore()
+        let mac = try makeHarness(.mac, store, sample)
+        var names = await mac.session.namesNotInCloud()
+        XCTAssertNil(names, "no document behind the book yet")
+        let early = await mac.pass()
+        XCTAssertEqual(early.wait, .needsHubFirst)
+        names = await mac.session.namesNotInCloud()
+        XCTAssertNil(names, "waiting for a hub pass: the hub pass must not wait for iCloud in turn")
+
+        mac.hubSettledAt = mac.generation
+        _ = await mac.pass()
+        names = await mac.session.namesNotInCloud()
+        XCTAssertEqual(names, [])
+
+        await store.signIn(nil)
+        let signedOut = await mac.pass()
+        XCTAssertEqual(signedOut.wait, .noAccount)
+        names = await mac.session.namesNotInCloud()
+        XCTAssertNil(names, "signed out")
+        await store.signIn("account-A")
+        _ = await mac.pass()
+        names = await mac.session.namesNotInCloud()
+        XCTAssertEqual(names, [])
+
+        await store.deleteZone()
+        mac.hubSettledAt = nil
+        let gone = await mac.pass()
+        XCTAssertEqual(gone.wait, .needsHubFirst)
+        names = await mac.session.namesNotInCloud()
+        XCTAssertNil(names, "the document has gone: its marks speak for nothing")
+
+        mac.hubSettledAt = mac.generation
+        _ = await mac.pass()
+        await store.eraseByUser()
+        let erased = await mac.pass()
+        XCTAssertEqual(erased.wait, .erased)
+        names = await mac.session.namesNotInCloud()
+        XCTAssertNil(names, "erased")
+    }
+
+    /// C1 10: a phone syncing with the hub asks iCloud for the photos it lacks before an exchange; the exchange then
+    /// drops only what iCloud does not have, and with iCloud signed out the rule is today's.
+    func testAPhoneOnTheHubAsksICloudBeforeDroppingAPhoto() async throws {
+        let (store, _, phone) = try await joined()
+        try await store.putPhoto("w1/there.jpg", Data("there".utf8))
+        await phone.session.fetch(["w1/there.jpg", "w1/never.jpg"])
+        XCTAssertTrue(phone.photos.exists("w1/there.jpg"))
+        var names = await phone.session.namesNotInCloud()
+        XCTAssertEqual(names, ["w1/never.jpg"])
+        XCTAssertEqual(Array(phone.files.loadMarks().notInCloud.keys), ["w1/never.jpg"], "saved")
+
+        await store.signIn(nil)
+        await phone.session.fetch(["w1/other.jpg"])
+        names = await phone.session.namesNotInCloud()
+        XCTAssertNil(names, "signed out: as before iCloud")
+    }
+
+    /// D5 through the session: the host's `noBase` reaches the link.
+    func testTheSessionHandsTheBaselessPassToTheLink() async throws {
+        let (_, mac, phone) = try await joined()
+        mac.edit { $0.watches.removeAll { $0.id == "w3" } }
+        _ = await mac.pass()
+        phone.noBase = true
+        let union = await phone.pass()
+        XCTAssertNil(union.conflictList, "\(union)")
+        XCTAssertEqual(Set(phone.data?.watches.map(\.id) ?? []), ["w1", "w2", "w3"], "nothing deleted without a base")
+    }
+
+    /// C2 7 through the session: the host's hub count reaches `status-mac`.
+    func testTheMacsStatusCountsItsHubChoices() async throws {
+        let (store, mac, _) = try await joined()
+        mac.hubConflicts = 1
+        _ = await mac.pass()
+        let status = await store.status("status-mac")
+        XCTAssertEqual(status?.conflicts, 1)
+    }
+
+    // MARK: Files and settings (C2 10, C1 3, polish 3 and 6)
+
+    /// C2 10: the copy is written whole under a hidden name and linked into place; nothing else is left behind, and
+    /// a hidden file a stopped process left never counts as the copy.
+    func testThePreCloudCopyIsWrittenWhole() throws {
+        let folder = root.appendingPathComponent("copy", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        let files = CloudFiles(folder: folder)
+        let bytes = Data("{\"sync\":\"as it was\"}".utf8)
+        try bytes.write(to: files.syncURL)
+        try Data("trunc".utf8).write(to: folder.appendingPathComponent(".\(CloudFiles.preCloudPrefix)left.partial"))
+        XCTAssertTrue(files.preCloudCopies.isEmpty, "a partial file never counts as made")
+
+        let copy = try files.writePreCloudCopy(of: sample, at: Date(timeIntervalSince1970: 0))
+        XCTAssertEqual(try Data(contentsOf: copy), bytes)
+        XCTAssertEqual(files.preCloudCopies, [copy])
+        let names = try FileManager.default.contentsOfDirectory(atPath: folder.path)
+        XCTAssertEqual(names.filter { $0.hasSuffix(".partial") }, [".\(CloudFiles.preCloudPrefix)left.partial"],
+                       "this write left nothing of its own")
+        let second = try files.writePreCloudCopy(of: sample, at: Date(timeIntervalSince1970: 0))
+        XCTAssertNotEqual(second, copy, "never over an earlier copy")
+    }
+
+    /// C1 3: a run with its own data root keeps its hub address, sync switch, box trials and backup apart from his
+    /// real ones; `-WCHub` without a data root is ignored.
+    func testADataRootRunKeepsItsSettingsApart() throws {
+        let rootPath = root.appendingPathComponent("data-root", isDirectory: true).path
+        let defaults = UserDefaults.standard
+        try withArguments(["WCDataRoot": rootPath]) {
+            for key in ["syncAddress", "syncEnabled", "cloudJoinedOnce", "cloudPreferHub", "cloudSwitchBaseless"] {
+                XCTAssertNotEqual(AppPaths.defaultsKey(key), key)
+            }
+            XCTAssertNotEqual(BoxTrial.storageKey, BoxTrial.defaultsKey)
+            XCTAssertTrue(try AppPaths.backupFolder().path.hasPrefix(rootPath), "the backup stays in the root")
+
+            let key = AppPaths.defaultsKey("syncAddress")
+            defaults.set("http://127.0.0.1:9", forKey: key)
+            defaults.set(false, forKey: AppPaths.defaultsKey("syncEnabled"))
+            defer {
+                defaults.removeObject(forKey: key)
+                defaults.removeObject(forKey: AppPaths.defaultsKey("syncEnabled"))
+            }
+            XCTAssertEqual(AppStore.initialSyncAddress, "http://127.0.0.1:9")
+            XCTAssertFalse(AppStore.initialSyncEnabled)
+
+            let suite = try XCTUnwrap(UserDefaults(suiteName: "SyncRoutingTests-\(UUID().uuidString)"))
+            BoxTrial(["black": ["0": "nomos"]]).save(to: suite)
+            XCTAssertNil(suite.object(forKey: BoxTrial.defaultsKey), "the real trials key is untouched")
+            XCTAssertEqual(BoxTrial.load(from: suite), BoxTrial(["black": ["0": "nomos"]]))
+        }
+        XCTAssertEqual(AppPaths.defaultsKey("syncAddress"), "syncAddress", "without a root, the real keys")
+        XCTAssertEqual(BoxTrial.storageKey, BoxTrial.defaultsKey)
+        XCTAssertFalse(try AppPaths.backupFolder().path.hasPrefix(rootPath))
+
+        try withArguments(["WCHub": "http://127.0.0.1:9"]) {
+            XCTAssertNil(AppPaths.hub, "a throwaway hub never reaches his real sync.json")
+        }
+        try withArguments(["WCHub": "http://127.0.0.1:9", "WCDataRoot": rootPath]) {
+            XCTAssertEqual(AppPaths.hub, "http://127.0.0.1:9")
+            XCTAssertEqual(AppStore.initialSyncAddress, "http://127.0.0.1:9")
+        }
+    }
+
+    /// Polish 3: a bridge tick does not rewrite the JSON mirror at launch; its installs mirror what they install.
+    func testABridgeTickMirrorsOnlyWhatItInstalls() {
+        XCTAssertTrue(AppStore.mirrorsAtLaunch(autoBackup: true, bridge: false), "the app as today")
+        XCTAssertFalse(AppStore.mirrorsAtLaunch(autoBackup: true, bridge: true))
+        XCTAssertFalse(AppStore.mirrorsAtLaunch(autoBackup: false, bridge: false))
+    }
+
+    /// Polish 6: a bridge tick starts on the hub's fast path when `sync.json` was last written by a settled hub pass
+    /// for this address; anything else (the app, an edit, an iCloud install) writes no revision.
+    func testABridgeTickStartsOnTheHubFastPathWhenNothingMoved() throws {
+        let settled = SyncCheckpoint(data: sample, base: sample, server: "http://127.0.0.1:9", lastSuccess: nil,
+                                     revision: "r7")
+        XCTAssertEqual(AppStore.hubRevisionAtLaunch(settled, address: "http://127.0.0.1:9", bridge: true), "r7")
+        XCTAssertNil(AppStore.hubRevisionAtLaunch(settled, address: "http://127.0.0.1:9", bridge: false),
+                     "the app as today")
+        XCTAssertNil(AppStore.hubRevisionAtLaunch(settled, address: "http://127.0.0.1:10", bridge: true))
+        XCTAssertNil(AppStore.hubRevisionAtLaunch(nil, address: "http://127.0.0.1:9", bridge: true))
+        let other = SyncCheckpoint(data: sample, base: sample, server: "http://127.0.0.1:9", lastSuccess: nil)
+        XCTAssertNil(AppStore.hubRevisionAtLaunch(other, address: "http://127.0.0.1:9", bridge: true))
+
+        // A sync.json from before the field reads as no revision.
+        let old = try JSONEncoder().encode(other)
+        let read = try JSONDecoder().decode(SyncCheckpoint.self, from: old)
+        XCTAssertNil(read.revision)
+        let round = try JSONDecoder().decode(SyncCheckpoint.self, from: try JSONEncoder().encode(settled))
+        XCTAssertEqual(round.revision, "r7")
+    }
+
     // MARK: The narrowed drop rule (section 5)
 
     /// With iCloud on, a file gone here and on the hub is not dropped while iCloud may still have it: the exchange
@@ -375,6 +781,8 @@ final class SyncRoutingTests: XCTestCase {
         let client = try CollectionSyncClient(address: "http://127.0.0.1:9")
         let remote = SyncSnapshot(data: sample, revision: "r1", photos: [], conflicts: [])
 
+        XCTAssertEqual(CollectionSyncClient.goneFiles(local: local, remote: remote), keys,
+                       "what the phone asks iCloud for")
         let skipped = try await client.exchange(base: sample, local: local, resolutions: [:], remote: remote, dropping: [])
         XCTAssertNil(skipped, "skipped for this tick, before anything is sent")
 
@@ -440,16 +848,31 @@ final class SyncRoutingTests: XCTestCase {
         return false
     }
 
-    /// The links a tick on this route runs, its cloud pass returning `outcome`.
+    /// The links a tick on this route runs, its cloud pass returning `outcome` (installed and wrote read from it).
     private func tick(_ route: SyncRoute, _ outcome: CloudOutcome?) -> [SyncLinkKind] {
+        tick(route, cloud: outcome.map { CloudTick($0) })
+    }
+
+    /// The links a tick on this route runs, its cloud pass doing `cloud`.
+    private func tick(_ route: SyncRoute, cloud: CloudTick?) -> [SyncLinkKind] {
         var ran: [SyncLinkKind] = []
-        var seen: CloudOutcome?
+        var seen: CloudTick?
         while let link = route.next(after: ran, cloud: seen) {
-            if link == .cloud { seen = outcome }
+            if link == .cloud { seen = cloud }
             ran.append(link)
             if ran.count > 5 { XCTFail("a tick that does not end"); break }
         }
         return ran
+    }
+
+    /// Runs `body` with these launch arguments (`-Key value`) added to the argument domain, then puts it back.
+    private func withArguments(_ arguments: [String: String], _ body: () throws -> Void) throws {
+        let defaults = UserDefaults.standard
+        let domain = UserDefaults.argumentDomain
+        let saved = defaults.volatileDomain(forName: domain)
+        defaults.setVolatileDomain(saved.merging(arguments) { $1 }, forName: domain)
+        defer { defaults.setVolatileDomain(saved, forName: domain) }
+        try body()
     }
 
     private func hubConflict(_ id: String) throws -> SyncConflict {
@@ -529,6 +952,8 @@ final class Harness {
     var versions = SyncVersions()
     var hubSettledAt: Int?
     var joined = false
+    var noBase = false
+    var hubConflicts = 0
     private(set) var installs = 0
     private(set) var mirrors = 0
     /// "mirror" and "install", in the order the session called them.
@@ -563,6 +988,8 @@ final class Harness {
             changed: { [unowned self] in !self.versions.isCurrent(.cloud) },
             hubSettledAt: hubSettledAt,
             joinedBefore: joined,
+            noBase: noBase,
+            hubConflicts: hubConflicts,
             activeLink: joined ? .cloud : .hub,
             install: { [unowned self] installed, local in
                 self.events.append("install")

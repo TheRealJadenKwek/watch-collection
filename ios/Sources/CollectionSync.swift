@@ -7,6 +7,9 @@ struct SyncCheckpoint: Codable {
     var base: CollectionData?
     var server: String
     var lastSuccess: Date?
+    /// The hub revision a bridge run's settled hub pass took `data` from; nil once anything else wrote this file.
+    /// A bridge run that finds it starts on the hub's fast path (polish 6).
+    var revision: String? = nil
 }
 
 enum SyncDisk {
@@ -177,9 +180,7 @@ actor CollectionSyncClient {
                   dropping: Set<String>? = nil) async throws -> SyncSnapshot? {
         var local = local
         let assets = Self.uploads(from: local, hub: remote.data, hubFiles: remote.photos)
-        let gone = Set(assets.filter { asset in
-            PhotoStore.localURL(for: asset).map { !FileManager.default.fileExists(atPath: $0.path) } ?? true
-        }.map { $0.directory + "/" + $0.filename })
+        let gone = Set(Self.goneFiles(assets))
         if let dropping, !gone.isSubset(of: dropping) { return nil }
         var lost: Set<String> = []
         for asset in assets {
@@ -197,6 +198,17 @@ actor CollectionSyncClient {
         if !lost.isEmpty { local = Self.removingPhotos(lost, from: local) }
         let body = try JSONEncoder().encode(SyncRequest(base: base, local: local, resolutions: resolutions))
         return try JSONDecoder().decode(SyncSnapshot.self, from: await request("api/sync", body: body))
+    }
+
+    /// The files an exchange would send that are on neither side, as "dir/file": the ones its drop rule decides on.
+    static func goneFiles(local: CollectionData, remote: SyncSnapshot) -> [String] {
+        goneFiles(uploads(from: local, hub: remote.data, hubFiles: remote.photos))
+    }
+
+    private static func goneFiles(_ assets: [PhotoAsset]) -> [String] {
+        assets.filter { asset in
+            PhotoStore.localURL(for: asset).map { !FileManager.default.fileExists(atPath: $0.path) } ?? true
+        }.map { $0.directory + "/" + $0.filename }
     }
 
     func downloadPhotos(_ data: CollectionData) async throws {

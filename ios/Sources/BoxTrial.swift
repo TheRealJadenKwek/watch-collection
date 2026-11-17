@@ -21,8 +21,11 @@ struct BoxTrial: Hashable, Sendable {
 
     // MARK: Storage
 
+    /// The key it is kept under: `defaultsKey`, or in a DEBUG run with its own data root one apart from it (C1 3).
+    static var storageKey: String { AppPaths.defaultsKey(defaultsKey) }
+
     static func load(from defaults: UserDefaults = .standard) -> BoxTrial {
-        guard let stored = defaults.dictionary(forKey: defaultsKey) else { return BoxTrial() }
+        guard let stored = defaults.dictionary(forKey: storageKey) else { return BoxTrial() }
         var boxes: [String: [String: String]] = [:]
         for (boxID, value) in stored {
             if let slots = value as? [String: String] { boxes[boxID] = slots }
@@ -32,9 +35,9 @@ struct BoxTrial: Hashable, Sendable {
 
     func save(to defaults: UserDefaults = .standard) {
         if boxes.isEmpty {
-            defaults.removeObject(forKey: Self.defaultsKey)
+            defaults.removeObject(forKey: Self.storageKey)
         } else {
-            defaults.set(boxes, forKey: Self.defaultsKey)
+            defaults.set(boxes, forKey: Self.storageKey)
         }
     }
 

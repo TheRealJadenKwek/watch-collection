@@ -291,6 +291,27 @@ final class CloudRecordsTests: XCTestCase {
         }
     }
 
+    /// C1 7: a cancelled call (the app left the screen, a background task ran out) is `.cancelled`, which the link
+    /// reads as a quiet `.busy`, never a failure; in a partial failure it says the least.
+    func testACancelledCallIsCancelledNotAFailure() {
+        XCTAssertEqual(CloudRecords.failure(CKError(.operationCancelled)), .cancelled)
+        XCTAssertEqual(CloudRecords.failure(CancellationError()), .cancelled)
+        XCTAssertEqual(CloudRecords.failure(URLError(.cancelled)), .cancelled)
+        XCTAssertEqual(CloudRecords.failure(URLError(.timedOut)), .network)
+        XCTAssertEqual(CloudLink.failure(CancellationError()), .cancelled)
+        XCTAssertEqual(CloudRecords.failure(partial([.operationCancelled, .networkFailure])), .network)
+    }
+
+    /// D12: "could not determine" is a passing failure to ask, like the network (quiet until it lasts); the states
+    /// that need him read as no account.
+    func testAccountStatesMapAsD12Says() {
+        XCTAssertNil(CloudRecords.accountFailure(.available))
+        XCTAssertEqual(CloudRecords.accountFailure(.couldNotDetermine), .network)
+        XCTAssertEqual(CloudRecords.accountFailure(.noAccount), .noAccount)
+        XCTAssertEqual(CloudRecords.accountFailure(.restricted), .noAccount)
+        XCTAssertEqual(CloudRecords.accountFailure(.temporarilyUnavailable), .noAccount)
+    }
+
     func testThrottlesWaitAsLongAsCloudKitSays() {
         for code in [CKError.Code.requestRateLimited, .zoneBusy, .serviceUnavailable] {
             let error = CKError(code, userInfo: [CKErrorRetryAfterKey: 7.5])

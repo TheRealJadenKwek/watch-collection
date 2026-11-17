@@ -32,9 +32,9 @@ enum SyncRoute: Equatable, Sendable {
         }
     }
 
-    /// The tick's next link, given the links it has run so far and what its cloud pass returned; nil when the tick
-    /// is done. `AppStore.syncNow` runs exactly this sequence.
-    func next(after ran: [SyncLinkKind], cloud outcome: CloudOutcome?) -> SyncLinkKind? {
+    /// The tick's next link, given the links it has run so far and what its cloud pass did; nil when the tick is
+    /// done. `AppStore.syncNow` runs exactly this sequence.
+    func next(after ran: [SyncLinkKind], cloud tick: CloudTick?) -> SyncLinkKind? {
         switch self {
         case .hubOnly:
             return ran.isEmpty ? .hub : nil
@@ -42,12 +42,13 @@ enum SyncRoute: Equatable, Sendable {
             return ran.isEmpty ? .cloud : nil
         case .cloudElseHub:
             if ran.isEmpty { return .cloud }
-            return ran == [.cloud] && Self.hubFollows(outcome) ? .hub : nil
+            return ran == [.cloud] && Self.hubFollows(tick) ? .hub : nil
         case .hubThenCloud:
             if ran.isEmpty { return .hub }
             if ran == [.hub] { return .cloud }
-            // What came in from iCloud goes on to the hub in the same tick.
-            if ran == [.hub, .cloud], case .installed? = outcome { return .hub }
+            // What came in from iCloud goes on to the hub in the same tick; a pass that only sent this Mac's own
+            // collection up brought nothing in (C1 9).
+            if ran == [.hub, .cloud], tick?.installed == true { return .hub }
             return nil
         }
     }
@@ -60,12 +61,14 @@ enum SyncRoute: Equatable, Sendable {
         }
     }
 
-    /// `cloudElseHub`: whether the hub runs after this cloud outcome. Only when the cloud pass changed nothing here
+    /// `cloudElseHub`: whether the hub runs after this cloud pass. Only when the cloud pass changed nothing here
     /// and wrote no document: there was none, or iCloud could not be used. Once a document is being joined
-    /// (photos going up, a choice to make, an install) the tick belongs to iCloud alone.
-    static func hubFollows(_ outcome: CloudOutcome?) -> Bool {
-        guard let outcome else { return true }
-        switch outcome {
+    /// (photos going up, a choice to make, an install) the tick belongs to iCloud alone; so does a tick whose pass
+    /// wrote the document in any round, even one it then dropped for an edit or that failed afterwards (C1 8).
+    static func hubFollows(_ tick: CloudTick?) -> Bool {
+        guard let tick else { return true }
+        if tick.wrote { return false }
+        switch tick.outcome {
         case .installed, .upToDate, .conflicts:
             return false
         case let .waiting(wait):
@@ -83,6 +86,75 @@ enum SyncRoute: Equatable, Sendable {
         case .installed, .upToDate: return true
         case .conflicts, .waiting: return false
         }
+    }
+
+    /// D5: the link whose first pass after the phone's "Sync directly with the Mac instead" flipped merges with no
+    /// base (union, nothing deleted, differing fields ask); nil when the flip leaves the same link active.
+    static func baselessAfterFlip(from old: SyncRoute, to new: SyncRoute) -> SyncLinkKind? {
+        old.active == new.active ? nil : new.active
+    }
+}
+
+/// What a tick's cloud pass did, as the route reads it.
+struct CloudTick: Sendable {
+    var outcome: CloudOutcome
+    /// It installed a collection that changed something here (not one that only sent this device's own up).
+    var installed: Bool
+    /// It wrote the document in some round, or tried to and cannot know whether the save landed.
+    var wrote: Bool
+
+    /// Unless given, both are read from the outcome.
+    init(_ outcome: CloudOutcome, installed: Bool? = nil, wrote: Bool? = nil) {
+        self.outcome = outcome
+        if case let .installed(_, wroteCloud) = outcome {
+            self.installed = installed ?? true
+            self.wrote = wrote ?? wroteCloud
+        } else {
+            self.installed = installed ?? false
+            self.wrote = wrote ?? false
+        }
+    }
+}
+
+/// What a cloud pass means for the rest of the app beyond the link itself (docs/icloud-fixes.md D10, C1 5 and 7).
+struct CloudPassEffects: Equatable {
+    enum Notice: Equatable {
+        /// The failure on record stands: a pass cut short or throttled says nothing new.
+        case keep
+        /// iCloud answered: no failure holds.
+        case clear
+        /// This failure goes on record, for the notice once it lasts.
+        case record(SyncFailure)
+    }
+
+    /// The phone's first settled pass: iCloud is its link from now on (`cloudJoinedOnce`).
+    var joins: Bool
+    /// The hub link's waiting changes go with the join; its merge asks again about anything real (C1 5).
+    var clearsHubConflicts: Bool
+    /// What the pass does to the failure the sync notice reads. Only a pass the screens speak for touches it.
+    var notice: Notice
+
+    static func of(_ outcome: CloudOutcome, role: CloudRole, joinedBefore: Bool,
+                   speaksForCloud: Bool) -> CloudPassEffects {
+        let joins = role == .phone && !joinedBefore && SyncRoute.joins(outcome)
+        var notice = Notice.keep
+        if speaksForCloud {
+            switch outcome {
+            case .waiting(.offline):
+                notice = .record(.offline)
+            case let .waiting(.failed(reason)):
+                notice = .record(.other(reason))
+            case .waiting(.noDocument) where role == .phone && joinedBefore:
+                // D10: a joined phone whose document is gone syncs with nothing; say so once it lasts.
+                notice = .record(.other(CloudSyncCopy.missing))
+            case .waiting(.busy):
+                // A throttle, or a pass cut short (the app left the screen): neither a failure nor an answer.
+                notice = .keep
+            default:
+                notice = .clear
+            }
+        }
+        return CloudPassEffects(joins: joins, clearsHubConflicts: joins, notice: notice)
     }
 }
 

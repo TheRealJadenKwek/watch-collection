@@ -5,12 +5,16 @@ import Foundation
 /// document, the photos (bytes copied into the fake's own folder) and the statuses. It keeps `CloudKitStore`'s
 /// contract:
 /// - `head` and `document` report a missing zone or record as no document; a zone he erased throws `.purged` from
-///   every call until `prepareZone` or `write(over: nil)` saves the zone again (as the real store's do).
-/// - `write(over: nil)` makes the zone and creates, or throws `.changed` when a document is already there; saving over
-///   a version that is no longer the current one (or is gone) throws `.changed`.
-/// - `uploadPhoto` makes a missing zone (never an erased one), throws `.photoFileMissing` for a missing file, returns
-///   true when the name is already there with the same bytes and false when with other bytes.
-/// - `downloadPhoto` returns false when iCloud does not have the name, and writes the file atomically.
+///   every call until `prepareZone` saves the zone again (as the real store's do).
+/// - `write(over: nil)` saves the record first and makes the zone only when it is missing, never when he erased it
+///   (that throws `.purged`), or throws `.changed` when a document is already there; saving over a version that is no
+///   longer the current one (or is gone) throws `.changed`.
+/// - `uploadPhoto` makes a missing zone (never an erased one), throws `.photoFileMissing` for a file it cannot read
+///   (CloudKit's `assetFileNotFound`), returns true when the name is already there with the same bytes and false when
+///   with other bytes.
+/// - `downloadPhoto` returns false when iCloud does not have the name, checks the bytes against the record's size and
+///   sha256 as the real store does (`.damagedPhoto` when they differ), and writes the file atomically. A bulk fetch
+///   (the phone's fill) is noted in `bulkDownloads`.
 actor FakeCloudStore: CloudStore {
     enum Call: Hashable, Sendable {
         case account, head, document, write, presence, upload, download, status, zone
@@ -57,6 +61,8 @@ actor FakeCloudStore: CloudStore {
     /// Names `photosPresent` does not report although they are there (as if another device sent them a moment after).
     private var hiddenFromPresence: Set<String> = []
     private var downloadDelay: UInt64 = 0
+    /// The next document save lands but its answer is lost (`serverResponseLost`, a timeout): it throws `.network`.
+    private var loseWriteResponse = false
 
     // Counters.
     private(set) var calls: [Call: Int] = [:]
@@ -67,6 +73,8 @@ actor FakeCloudStore: CloudStore {
     /// Photo records created, in order.
     private(set) var photoSaves: [String] = []
     private(set) var downloads: [String] = []
+    /// Fetches asked for as the phone's background fill (`bulk`: never over a cellular connection).
+    private(set) var bulkDownloads: [String] = []
     private(set) var statusWrites: [String] = []
     /// "zone", "photo <name>" and "document <device>" in the order they landed.
     private(set) var log: [String] = []
@@ -112,8 +120,8 @@ actor FakeCloudStore: CloudStore {
     func write(body: Data, revision: String, epoch: String, origin: String, device: String,
                over systemFields: Data?) async throws -> CloudDocument {
         try begin(.write)
-        // Creating saves the zone first, which is also what brings back a zone he erased.
-        var db = try database(allowErased: systemFields == nil)
+        // The record is saved first; a zone he erased answers `.purged` and stays erased. Only a missing zone is made.
+        var db = try database()
         if quotaFull { throw CloudFailure.quotaFull }
         if let systemFields {
             guard db.zone == .present, let current = db.document, Data(current.tag.utf8) == systemFields else {
@@ -133,6 +141,10 @@ actor FakeCloudStore: CloudStore {
         store(db)
         writes.append(device)
         log.append("document \(device)")
+        if loseWriteResponse {
+            loseWriteResponse = false
+            throw CloudFailure.network
+        }
         return Self.document(stored)
     }
 
@@ -169,8 +181,9 @@ actor FakeCloudStore: CloudStore {
         return true
     }
 
-    func downloadPhoto(_ name: String, to file: URL) async throws -> Bool {
+    func downloadPhoto(_ name: String, to file: URL, bulk: Bool) async throws -> Bool {
         try begin(.download)
+        if bulk { bulkDownloads.append(name) }
         let db = try database()
         guard let photo = db.photos[name] else { return false }
         downloadsInFlight += 1
@@ -178,6 +191,9 @@ actor FakeCloudStore: CloudStore {
         if downloadDelay > 0 { try? await Task.sleep(nanoseconds: downloadDelay) }
         downloadsInFlight -= 1
         let data = try Data(contentsOf: photo.file)
+        guard data.count == photo.bytes, CloudLink.sha256(data) == photo.sha256 else {
+            throw CloudFailure.damagedPhoto("a photo from iCloud did not match its record")
+        }
         try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
         try data.write(to: file, options: .atomic)
         downloads.append(name)
@@ -211,6 +227,19 @@ actor FakeCloudStore: CloudStore {
     func fail(_ call: Call, with failure: CloudFailure?) { failing[call] = failure }
     func hideFromPresence(_ names: Set<String>) { hiddenFromPresence = names }
     func setDownloadDelay(milliseconds: UInt64) { downloadDelay = milliseconds * 1_000_000 }
+    func loseNextWriteResponse() { loseWriteResponse = true }
+
+    /// The bytes iCloud hands over for this photo no longer match its record (as a damaged asset would).
+    func damagePhoto(_ name: String) throws {
+        guard let photo = databases[key]?.photos[name] else { return }
+        try Data("damaged".utf8).write(to: photo.file)
+    }
+
+    /// The photo's bytes match its record again.
+    func repairPhoto(_ name: String, _ data: Data) throws {
+        guard let photo = databases[key]?.photos[name] else { return }
+        try data.write(to: photo.file)
+    }
 
     /// He erased the app's data in Settings: the zone and everything in it go, and the zone answers `.purged`.
     func eraseByUser() { databases[key] = Database(zone: .erased) }

@@ -22,25 +22,51 @@ enum AppPaths {
     /// `PhotoStore/`: every photo and tile, as "dir/file".
     static var photoRoot: URL { support.appendingPathComponent("PhotoStore", isDirectory: true) }
 
-    /// `LocalBackup.mirrorJSON`, except that a DEBUG run with its own data root keeps the mirror there too.
+    /// `LocalBackup.mirrorJSON`, into `backupFolder()`.
     @discardableResult
     static func mirrorJSON(from data: CollectionData) throws -> URL {
-        #if DEBUG
-        if let root = dataRoot {
-            let folder = root.appendingPathComponent("Watch Collection Backup", isDirectory: true)
-            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-            let encoder = JSONEncoder()
-            encoder.outputFormatting = [.prettyPrinted, .sortedKeys, .withoutEscapingSlashes]
-            let destination = folder.appendingPathComponent("watches.json")
-            try encoder.encode(data).write(to: destination, options: .atomic)
-            return destination
-        }
-        #endif
-        return try LocalBackup.mirrorJSON(from: data)
+        try LocalBackup.mirrorJSON(from: data)
     }
 
-    /// A key in UserDefaults for a setting that belongs with the data (the cloud link's join and its switch): in a
-    /// DEBUG run with its own data root it is kept apart from the real one.
+    /// `Watch Collection Backup/` in Documents, the JSON mirror's and the full backup's folder; in a DEBUG run with
+    /// its own data root, the one inside that root, so a run there never writes or prunes his real backup (C1 3).
+    static func backupFolder() throws -> URL {
+        let parent: URL
+        #if DEBUG
+        if let root = dataRoot {
+            parent = root
+        } else {
+            parent = try documents()
+        }
+        #else
+        parent = try documents()
+        #endif
+        let folder = parent.appendingPathComponent("Watch Collection Backup", isDirectory: true)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+
+    private static func documents() throws -> URL {
+        try FileManager.default.url(for: .documentDirectory, in: .userDomainMask, appropriateFor: nil, create: true)
+    }
+
+    /// `-WCBridge 1` (or YES) on the command line: this process is the Mac's headless bridge tick
+    /// (`Bridge.requested` reads the same). Only the command line counts. Always false on the phone.
+    static var bridgeRun: Bool {
+        #if os(macOS)
+        switch UserDefaults.standard.volatileDomain(forName: UserDefaults.argumentDomain)["WCBridge"] {
+        case let text as String: return (text as NSString).boolValue
+        case let number as NSNumber: return number.boolValue
+        default: return false
+        }
+        #else
+        return false
+        #endif
+    }
+
+    /// A key in UserDefaults for a setting that belongs with the data (the hub address and sync switch, the cloud
+    /// link's join and its switch, the box trials): in a DEBUG run with its own data root it is kept apart from the
+    /// real one.
     static func defaultsKey(_ key: String) -> String {
         #if DEBUG
         if let root = dataRoot { return "\(key)@\(root.path)" }
@@ -64,8 +90,12 @@ enum AppPaths {
         }
     }
 
-    /// `-WCHub <address>`: the hub address for this run only (empty for none). Never saved.
-    static var hub: String? { UserDefaults.standard.string(forKey: "WCHub") }
+    /// `-WCHub <address>`: the hub address for this run only (empty for none). Never saved. Honoured only with
+    /// `-WCDataRoot`: without it the run is on his real `sync.json`, which must never take a throwaway hub's merge.
+    static var hub: String? {
+        guard dataRoot != nil else { return nil }
+        return UserDefaults.standard.string(forKey: "WCHub")
+    }
 
     /// `-WCCloudStatus <case>`: the iCloud status the screens show, for screenshots. No link runs.
     static var forcedCloudStatus: String? { UserDefaults.standard.string(forKey: "WCCloudStatus") }
@@ -130,7 +160,12 @@ struct CloudFiles: Sendable {
             suffix += 1
         }
         let bytes = try (try? Data(contentsOf: syncURL)) ?? JSONEncoder().encode(data)
-        try bytes.write(to: target, options: .withoutOverwriting)
+        // Whole or not at all (C2 10): written under a hidden name that never counts as a copy, then linked into
+        // place, which fails rather than overwrite. A process stopped midway leaves only the hidden file.
+        let temp = folder.appendingPathComponent(".\(Self.preCloudPrefix)\(UUID().uuidString).partial")
+        try bytes.write(to: temp, options: .atomic)
+        defer { try? FileManager.default.removeItem(at: temp) }
+        try FileManager.default.linkItem(at: temp, to: target)
         return target
     }
 
@@ -167,6 +202,8 @@ struct CloudStatusReport: Codable, Equatable, Sendable {
         var inCloud: Int
         var notInCloud: Int
         var mismatched: Int
+        /// Given up on after their bytes kept failing their record (docs/icloud-fixes.md D3).
+        var unreadable: Int? = nil
     }
 
     var at: Date

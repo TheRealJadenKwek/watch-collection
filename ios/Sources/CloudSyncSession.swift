@@ -2,12 +2,16 @@ import Foundation
 
 /// The caller's side of a cloud pass, kept apart from `AppStore` so it is tested on the fake iCloud
 /// (docs/icloud-plan.md section 4 steps 8 and 9, section 9 step 2):
-/// - Before this device's first cloud pass (so before its first cloud write or install): a copy of `sync.json` as
-///   `sync-before-icloud-<time>.json`, and the JSON mirror once whatever `autoBackup` says. Never deleted.
-/// - An edit that lands while a pass runs drops that pass's result and its book, and the pass goes round again.
-/// - An install saves the data (`sync.json`) first and the book (`cloud.json`) second.
-/// - The book is saved after every pass that keeps it (an `.upToDate` can carry a newer one), the marks after every
-///   pass and fill, and `cloud-status.json` is rewritten each pass.
+/// - Right before this device's first cloud write or install (a photo, the document, or installing iCloud's
+///   collection): a copy of `sync.json` as `sync-before-icloud-<time>.json`, and the JSON mirror once whatever
+///   `autoBackup` says. Never deleted. A pass that writes and installs nothing makes none.
+/// - An edit that lands while a pass runs drops that pass's result and its book, and the pass goes round again;
+///   except a pure push (it wrote exactly the round's own collection), whose book is kept, so the document it wrote
+///   stays its base (docs/icloud-fixes.md D1). A dropped book still hands on its throttle, full and erase state.
+/// - An install saves the data (`sync.json`) first and the book (`cloud.json`) second. An install that would change
+///   nothing here (the pass only sent this device's own edits up) is skipped.
+/// - The book is saved after every pass that keeps it (an `.upToDate` can carry a newer one), and before the
+///   document is created; the marks after every pass and fill, and `cloud-status.json` is rewritten each pass.
 @MainActor
 final class CloudSyncSession {
     /// What `AppStore` lends one pass. The closures are read again at each round, so a round after an edit sees it.
@@ -26,6 +30,10 @@ final class CloudSyncSession {
         var resolutions: [String: String] = [:]
         var hubAt: Date? = nil
         var hubRevision: String? = nil
+        /// D5: the first pass after the phone's switch made iCloud its link again merges with no base.
+        var noBase = false
+        /// The hub link's changes waiting for a choice here, for this device's `Status` (C2 7).
+        var hubConflicts = 0
         /// For `cloud-status.json`.
         var activeLink: SyncLinkKind = .cloud
         /// Installs a merged collection (`.installed`'s, before `BoxModel.installing` and this device's own
@@ -43,6 +51,17 @@ final class CloudSyncSession {
     /// `cloud.json` as last saved (or as kept in memory when saving it failed after an install).
     private(set) var book: CloudBook
     private var preCloudCopyMade: Bool
+    /// The last pass wrote the document, or tried to and cannot know whether it landed (C1 8).
+    private(set) var lastPassWrote = false
+    /// The last pass installed a collection that changed something here (C1 9).
+    private(set) var lastPassInstalled = false
+    /// Why the last pass stopped short; nil when it settled, asked, or none has run this launch.
+    private(set) var lastWait: CloudWait?
+    /// What stopped the phone's last fetch before a hub exchange; nil when nothing did.
+    private var fetchFailure: CloudFailure?
+    /// The round in flight, for the hooks the link calls mid-pass.
+    private var roundHost: Host?
+    private var roundLocal: CollectionData?
 
     init(link: CloudLink, role: CloudRole, files: CloudFiles, book: CloudBook, now: @escaping () -> Date = Date.init) {
         self.link = link
@@ -68,30 +87,45 @@ final class CloudSyncSession {
     /// One cloud pass, with the caller's steps around it. Returns the outcome it kept (an edit during every round
     /// leaves `.waiting(.busy)`, for the next tick).
     func pass(_ host: Host) async -> CloudOutcome {
-        if !preCloudCopyMade, let local = host.local() {
-            do {
-                try files.writePreCloudCopy(of: local, at: now())
-            } catch {
-                let outcome = CloudOutcome.waiting(.failed("the copy made before iCloud sync could not be saved"))
-                await report(outcome, host)
-                return outcome
-            }
-            preCloudCopyMade = true
-            host.mirror(local)
+        lastPassWrote = false
+        lastPassInstalled = false
+        roundHost = host
+        defer {
+            roundHost = nil
+            roundLocal = nil
         }
+        let hooks = CloudHooks(
+            beforeWrite: { [weak self] in await self?.copyBeforeWrite() ?? false },
+            persist: { [weak self] book in await self?.persist(book) ?? false }
+        )
         for _ in 0..<CloudLink.maxRounds {
             let generation = host.generation()
             let local = host.local()
+            roundLocal = local
             let input = CloudInput(local: local, book: book, hubBase: host.hubBase,
                                    hubSettledNow: host.hubSettledAt == generation, joinedBefore: host.joinedBefore,
                                    resolutions: host.resolutions, changedSinceLastPass: host.changed(),
-                                   hubAt: host.hubAt, hubRevision: host.hubRevision)
+                                   hubAt: host.hubAt, hubRevision: host.hubRevision, noBase: host.noBase,
+                                   hubConflicts: host.hubConflicts, hooks: hooks)
             let (outcome, next) = await link.pass(input)
+            if await link.wroteDocument { lastPassWrote = true }
             files.saveMarks(await link.marks)
-            // Step 8: an edit landed while the pass ran. Its result and its book are both dropped (iCloud may already
-            // hold that result; the kept book's base is still an ancestor of it). A pass that settled or asked goes
-            // round again with the edit; one that waited has nothing to redo, and the next tick tries again.
+            // Step 8: an edit landed while the pass ran.
             guard host.generation() == generation else {
+                if case let .installed(installed, true) = outcome, let local,
+                   let wrote = CloudLink.projection(installed), wrote == CloudLink.projection(local) {
+                    // A pure push: iCloud now holds exactly the round's collection, an ancestor of what is here now.
+                    // Its book is kept, so that document is the next round's base (D1); nothing is installed.
+                    keep(next)
+                    continue
+                }
+                // Otherwise its result and its book are both dropped (iCloud may already hold that result; the kept
+                // book's base is still an ancestor of it), but what it learned about waiting stands (C1 11). A pass
+                // that settled or asked goes round again with the edit; one that waited has nothing to redo, and the
+                // next tick tries again.
+                var kept = book
+                kept.takeBackOff(from: next)
+                keep(kept)
                 if case .waiting = outcome {
                     await report(outcome, host)
                     return outcome
@@ -99,12 +133,22 @@ final class CloudSyncSession {
                 continue
             }
             if case let .installed(installed, _) = outcome {
-                // Step 9: the data first, then the book. A crash between them leaves an older base, still an ancestor.
-                guard host.install(installed, local) else {
-                    let failed = CloudOutcome.waiting(.failed("this collection could not be saved"))
-                    await report(failed, host)
-                    return failed
+                if local == nil || CloudLink.projection(installed) != CloudLink.projection(local!) {
+                    // Step 9: the data first, then the book. A crash between them leaves an older base, still an
+                    // ancestor. The copy made before iCloud first changes anything here comes before both.
+                    guard copyBeforeWrite() else {
+                        let failed = CloudOutcome.waiting(.failed("the copy made before iCloud sync could not be saved"))
+                        await report(failed, host)
+                        return failed
+                    }
+                    guard host.install(installed, local) else {
+                        let failed = CloudOutcome.waiting(.failed("this collection could not be saved"))
+                        await report(failed, host)
+                        return failed
+                    }
+                    lastPassInstalled = true
                 }
+                // Else the pass only sent this device's collection up: the data here already is the new base.
             }
             keep(next)
             await report(outcome, host)
@@ -115,6 +159,31 @@ final class CloudSyncSession {
         return outcome
     }
 
+    /// Section 9 step 2: the one-time copy of `sync.json`, and the mirror, right before the first cloud write or
+    /// install on this device. true when it is made (or there is no collection to copy).
+    private func copyBeforeWrite() -> Bool {
+        guard !preCloudCopyMade, let local = roundLocal ?? roundHost?.local() else { return true }
+        do {
+            try files.writePreCloudCopy(of: local, at: now())
+        } catch {
+            return false
+        }
+        preCloudCopyMade = true
+        roundHost?.mirror(local)
+        return true
+    }
+
+    /// D1: the book carrying the document about to be created, saved before the save goes out.
+    private func persist(_ pending: CloudBook) -> Bool {
+        book = pending
+        do {
+            try files.saveBook(pending)
+            return true
+        } catch {
+            return false
+        }
+    }
+
     /// The Mac's "Sync through iCloud again". nil when the restart is under way, else why it did not start.
     func restartAfterErase() async -> CloudWait? {
         let (failure, next) = await link.restartAfterErase(book)
@@ -122,9 +191,18 @@ final class CloudSyncSession {
         return failure
     }
 
-    /// Phone, after an install: fetch what is still missing, unless the network is expensive or constrained.
-    func fill(_ data: CollectionData, allowBulk: Bool) async {
-        await link.fillPhotos(for: data, allowBulk: allowBulk)
+    /// Phone, after an install: fetch what is still missing while `allowed` says the network is neither expensive
+    /// nor constrained, asked before each fetch.
+    func fill(_ data: CollectionData, while allowed: @escaping @Sendable () async -> Bool) async {
+        await link.fillPhotos(for: data, while: allowed)
+        files.saveMarks(await link.marks)
+    }
+
+    /// Phone, before a hub exchange: fetch these missing photos from iCloud now (C1 10). A phone on the hub runs no
+    /// cloud pass, so what stops this fetch is what it knows of the account.
+    func fetch(_ names: [String]) async {
+        guard !names.isEmpty else { return }
+        fetchFailure = await link.fetchPhotos(names)
         files.saveMarks(await link.marks)
     }
 
@@ -133,9 +211,24 @@ final class CloudSyncSession {
         await link.statuses
     }
 
-    /// The names iCloud has said it does not have (the Mac's narrowed drop rule).
-    func namesNotInCloud() async -> Set<String> {
-        Set(await link.marks.notInCloud.keys)
+    /// The narrowed drop rule's names (docs/icloud-fixes.md D4): those iCloud has said it does not have, and those
+    /// given up on as unreadable. nil when the cloud link cannot answer (turned off for this launch, signed out,
+    /// paused, a newer format, or no document behind the book), and then the hub exchange drops what is gone on both
+    /// sides, as it did before iCloud.
+    func namesNotInCloud() async -> Set<String>? {
+        guard await link.disabled == nil, book.paused == nil, book.epoch != nil else { return nil }
+        switch lastWait {
+        case .noAccount?, .newerFormat?, .erased?, .noDocument?, .needsHubFirst?:
+            return nil
+        default:
+            break
+        }
+        switch fetchFailure {
+        case .noAccount?, .purged?, .misconfigured?:
+            return nil
+        default:
+            return await link.marks.lost
+        }
     }
 
     private func keep(_ next: CloudBook) {
@@ -146,6 +239,7 @@ final class CloudSyncSession {
     }
 
     private func report(_ outcome: CloudOutcome, _ host: Host) async {
+        if case let .waiting(wait) = outcome { lastWait = wait } else { lastWait = nil }
         let marks = await link.marks
         let names = host.local().map(CloudLink.photoNames) ?? []
         let held = names.filter { link.files.exists($0) }.count
@@ -156,7 +250,8 @@ final class CloudSyncSession {
             epoch: book.epoch, revision: book.revision, tag: book.tag, lastSuccess: book.lastSuccess,
             paused: book.paused?.rawValue,
             photos: .init(referenced: names.count, held: held, inCloud: marks.inCloud.count,
-                          notInCloud: marks.notInCloud.count, mismatched: marks.mismatched.count),
+                          notInCloud: marks.notInCloud.count, mismatched: marks.mismatched.count,
+                          unreadable: marks.unreadable.count),
             lastError: failure.map { String(describing: $0) }, statuses: await link.statuses
         )
         files.saveReport(report)

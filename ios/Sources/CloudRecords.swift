@@ -228,12 +228,28 @@ enum CloudRecords {
     /// into results before they reach the link (`zoneNotFound` and `unknownItem`: no document, not in iCloud;
     /// `limitExceeded`: a smaller batch) come back as `.other` with the code's name. `assetFileNotFound` is
     /// `.photoFileMissing`.
+    ///
+    /// A cancelled call (a Swift `CancellationError`, `operationCancelled`, a cancelled URL load) is `.cancelled`: the
+    /// app left the screen or a background task ran out, which says nothing about iCloud.
     static func failure(_ error: Error) -> CloudFailure {
         if let failure = error as? CloudFailure { return failure }
+        if error is CancellationError { return .cancelled }
         if let error = error as? CKError { return failure(ck: error) }
         let error = error as NSError
-        if error.domain == NSURLErrorDomain { return .network }
+        if error.domain == NSURLErrorDomain { return error.code == NSURLErrorCancelled ? .cancelled : .network }
         return .other("\(error.domain) \(error.code)")
+    }
+
+    /// The account status as the link sees it (docs/icloud-fixes.md D12): nil when there is an account.
+    /// `couldNotDetermine` is a passing failure to ask, like the network (quiet until it lasts); signed out,
+    /// restricted and temporarily unavailable all need him, and read as no account.
+    static func accountFailure(_ status: CKAccountStatus) -> CloudFailure? {
+        switch status {
+        case .available: return nil
+        case .couldNotDetermine: return .network
+        case .noAccount, .restricted, .temporarilyUnavailable: return .noAccount
+        @unknown default: return .noAccount
+        }
     }
 
     private static func failure(ck error: CKError) -> CloudFailure {
@@ -255,6 +271,8 @@ enum CloudRecords {
             return .retryAfter(error.retryAfterSeconds ?? defaultRetryAfter)
         case .networkUnavailable, .networkFailure, .serverResponseLost:
             return .network
+        case .operationCancelled:
+            return .cancelled
         case .missingEntitlement, .badContainer, .permissionFailure, .badDatabase:
             return .misconfigured(name(error.code))
         default:
@@ -361,14 +379,15 @@ enum CloudRecords {
             case .quotaFull: 4
             case .retryAfter: 3
             case .changed: 2
-            case .photoFileMissing, .network: 1
-            case .other: 0
+            case .photoFileMissing, .network, .damagedPhoto: 1
+            case .other, .cancelled: 0
             }
         }
         if rank(a) != rank(b) { return rank(a) < rank(b) }
         switch (a, b) {
         case let (.retryAfter(x), .retryAfter(y)): return x < y
-        case let (.other(x), .other(y)), let (.misconfigured(x), .misconfigured(y)): return x < y
+        case let (.other(x), .other(y)), let (.misconfigured(x), .misconfigured(y)),
+             let (.damagedPhoto(x), .damagedPhoto(y)): return x < y
         default: return false
         }
     }

@@ -37,3 +37,19 @@
 No git add while agents run. Never commit data/ or exports/. Test builds never hit the real hub :8931. Throwaway sims
 only, deleted after. Don't touch Arsenal/Dentiza/iPhone Duo/Arc Records sims. OpenAI key only via
 WATCH_BOX_KEY_FILE. Personal project: review on opus xhigh, not Fable.
+
+## State (2026-11-17, fix round)
+- icloud-sync = 0f7fc97 (pushed): P4, P5, rehearsal install.sh options (11befac), fix-round spec
+  `docs/icloud-fixes.md` with lead decisions D1 to D12, `CloudSyncCopy.missing`.
+- Rehearsal on Development passed all six steps of 13 B (evidence ~/Offload/watch-collection/test-evidence/icloud-rehearsal/).
+- P8 review (opus xhigh) findings in ~/Offload/watch-collection/review/icloud-p8/: A ship with test gaps; B, C1, C2 fix first.
+- Fix round running: builder E in this worktree (engine, wiring), U in ~/watch-collection-icloud-u (branch
+  icloud-fix-u: bridge, lock, install.sh, status UI, versions 5.1 / Mac build 2), M in ~/watch-collection-icloud-m
+  (branch icloud-fix-m: merge vectors). All uncommitted until the lead commits.
+
+## Next
+1. Commit E here; commit U and M on their branches; merge both into icloud-sync; xcodegen; full suite.
+2. Re-review on opus xhigh: each P8 reviewer's area gets only its fix diff plus its own findings file.
+3. Re-rehearse create and join on Development (fresh zone: erase the rehearsal document first, or use a new zone).
+4. P9 rollout per plan section 9 and 13 C/D (backups first; fastlane AppStore profile must be regenerated).
+5. Remove ~/watch-collection-icloud-review, -u, -m worktrees after merge.

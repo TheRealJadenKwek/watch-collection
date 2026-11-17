@@ -94,10 +94,11 @@ final class CloudKitStore: CloudStore, @unchecked Sendable {
         } catch {
             throw fail("account", error)
         }
-        // No account, restricted, could not determine, temporarily unavailable: the link sleeps.
-        guard status == .available else {
+        // No account, restricted or temporarily unavailable: the link sleeps. Could not determine: like the
+        // network, quiet until it lasts (docs/icloud-fixes.md D12).
+        if let failure = CloudRecords.accountFailure(status) {
             Self.log.notice("account: not available, status \(status.rawValue)")
-            throw CloudFailure.noAccount
+            throw failure
         }
         do {
             let user = try await container.configuredWith(configuration: Self.configuration(Self.requestTimeout)) {
@@ -168,24 +169,34 @@ final class CloudKitStore: CloudStore, @unchecked Sendable {
         defer { try? FileManager.default.removeItem(at: temp) }
         do {
             try body.write(to: temp, options: .atomic)
-            if creating { try await saveZone() }
             let writtenAt = Date()
             let record = CloudRecords.collectionRecord(
                 body: temp, revision: revision, epoch: epoch, origin: origin, device: device, writtenAt: writtenAt,
                 in: zone, over: systemFields
             )
-            let saved = try await save(record, policy: .ifServerRecordUnchanged, timeout: Self.requestTimeout)
+            // Creating: the record first, and the zone only when it is not there (D6). A zone he erased answers
+            // `userDeletedZone`, which is `.purged`: an erase that lands mid-creation is never undone.
+            let saved = creating
+                ? try await saveMakingZone(record, policy: .ifServerRecordUnchanged, timeout: Self.requestTimeout)
+                : try await save(record, policy: .ifServerRecordUnchanged, timeout: Self.requestTimeout)
             Self.log.notice("write: \(creating ? "created" : "updated", privacy: .public), body \(body.count) bytes")
             return CloudDocument(
                 head: CloudHead(tag: saved.recordChangeTag ?? "", revision: revision, epoch: epoch, format: CloudRecords.format),
                 origin: origin, body: body, systemFields: CloudRecords.systemFields(saved), device: device, writtenAt: writtenAt
             )
         } catch {
-            let failure = fail("write", error)
             // Saving over a version whose record or zone has since gone: the link fetches again and finds no
-            // document, which is how section 8 treats a missing zone.
-            if !creating, CloudRecords.isMissing(error) { throw CloudFailure.changed }
-            throw failure
+            // document, which is how section 8 treats a missing zone. Both it and a record that moved on are
+            // expected answers, not failures.
+            if !creating, CloudRecords.isMissing(error) {
+                Self.log.notice("write: the record or its zone has gone; fetching again")
+                throw CloudFailure.changed
+            }
+            if CloudRecords.codes(error) == [.serverRecordChanged] {
+                Self.log.notice("write: the record moved on; merging again")
+                throw CloudFailure.changed
+            }
+            throw fail("write", error)
         }
     }
 
@@ -230,19 +241,20 @@ final class CloudKitStore: CloudStore, @unchecked Sendable {
         }
     }
 
-    func downloadPhoto(_ name: String, to file: URL) async throws -> Bool {
+    func downloadPhoto(_ name: String, to file: URL, bulk: Bool) async throws -> Bool {
         do {
             guard let id = CloudRecords.photoID(name, in: zone) else { throw CloudFailure.other("unsafe photo name") }
-            let results = try await fetch([id], keys: nil, timeout: Self.photoTimeout)
+            // The phone's background fill never uses a cellular connection (C1 4).
+            let results = try await fetch([id], keys: nil, timeout: Self.photoTimeout, cellular: !bulk)
             switch results[id] {
             case .success(let record)?:
                 guard let photo = CloudRecords.photo(record), photo.name == name, let source = photo.data else {
-                    throw CloudFailure.other("unreadable Photo record")
+                    throw CloudFailure.damagedPhoto("a photo record in iCloud could not be read")
                 }
                 // Copied out of the asset's URL before returning: CloudKit may remove that file at any time.
                 let data = try Data(contentsOf: source)
                 guard data.count == photo.bytes, CloudRecords.sha256(data) == photo.sha256.lowercased() else {
-                    throw CloudFailure.other("photo bytes differ from their record")
+                    throw CloudFailure.damagedPhoto("a photo from iCloud did not match its record")
                 }
                 try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
                 try data.write(to: file, options: .atomic)
@@ -281,9 +293,10 @@ final class CloudKitStore: CloudStore, @unchecked Sendable {
 
     // MARK: Calls
 
-    private static func configuration(_ timeout: TimeInterval) -> CKOperation.Configuration {
+    private static func configuration(_ timeout: TimeInterval, cellular: Bool = true) -> CKOperation.Configuration {
         let configuration = CKOperation.Configuration()
         configuration.qualityOfService = .userInitiated
+        configuration.allowsCellularAccess = cellular
         configuration.timeoutIntervalForRequest = timeout
         // Bounds the whole call too, so a pass never waits on CloudKit's own long retries.
         configuration.timeoutIntervalForResource = timeout
@@ -292,9 +305,10 @@ final class CloudKitStore: CloudStore, @unchecked Sendable {
 
     /// A by-id fetch with one result per id. A partial failure becomes per-id failures, and a missing zone for the
     /// whole call becomes "missing" for every id, so callers read both the same way.
-    private func fetch(_ ids: [CKRecord.ID], keys: [CKRecord.FieldKey]?, timeout: TimeInterval) async throws -> [CKRecord.ID: Result<CKRecord, Error>] {
+    private func fetch(_ ids: [CKRecord.ID], keys: [CKRecord.FieldKey]?, timeout: TimeInterval,
+                       cellular: Bool = true) async throws -> [CKRecord.ID: Result<CKRecord, Error>] {
         do {
-            return try await database.configuredWith(configuration: Self.configuration(timeout)) {
+            return try await database.configuredWith(configuration: Self.configuration(timeout, cellular: cellular)) {
                 try await $0.records(for: ids, desiredKeys: keys)
             }
         } catch {

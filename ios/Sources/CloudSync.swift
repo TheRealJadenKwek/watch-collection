@@ -42,7 +42,12 @@ enum CloudFailure: Error, Equatable, Sendable {
     case retryAfter(TimeInterval)
     case network
     case misconfigured(String) // missing entitlement, bad container, permission failure
-    case photoFileMissing      // assetFileNotFound: the local file under a photo upload is gone; drop its mark
+    case photoFileMissing      // assetFileNotFound: the local file under a photo upload could not be read
+    /// The bytes iCloud handed over for a photo do not match its record (size or sha256), or the record could not be
+    /// read: the Mac retries it, and gives up on it only after `CloudLink.damagedStrikes` over `damagedSpan`.
+    case damagedPhoto(String)
+    /// The call was cancelled (the app left the screen, a background task ran out): quiet, never a failure.
+    case cancelled
     case other(String)
 }
 
@@ -52,17 +57,26 @@ protocol CloudStore: Sendable {
     /// The document's head (nil when there is no document) and every device's status.
     func head() async throws -> (document: CloudHead?, statuses: [String: CloudStatus])
     func document() async throws -> CloudDocument?
-    /// `over: nil` creates the document (and the zone). Throws `.changed` when the server record moved on.
+    /// `over: nil` creates the document: the record is saved first, and the zone only when it is missing (never one
+    /// he erased: that throws `.purged`). Throws `.changed` when the server record moved on.
     func write(body: Data, revision: String, epoch: String, origin: String, device: String, over systemFields: Data?) async throws -> CloudDocument
     func photosPresent(_ names: [String]) async throws -> Set<String>
     /// false = a photo of that name is already there with other bytes.
     func uploadPhoto(_ name: String, file: URL, sha256: String, bytes: Int) async throws -> Bool
-    /// false = not in iCloud.
-    func downloadPhoto(_ name: String, to file: URL) async throws -> Bool
+    /// false = not in iCloud. Throws `.damagedPhoto` when the bytes do not match the record. `bulk` is the phone's
+    /// background fill, which never uses a cellular connection.
+    func downloadPhoto(_ name: String, to file: URL, bulk: Bool) async throws -> Bool
     func writeStatus(_ key: String, _ status: CloudStatus) async throws
     /// Saves the `Collection` zone, which brings back a zone he erased. Only `CloudLink.restartAfterErase` (the
     /// Mac's "Sync through iCloud again") calls it: an erased zone is never made again on the app's own say.
     func prepareZone() async throws
+}
+
+extension CloudStore {
+    /// A fetch a screen or a sync step needs now, over any connection.
+    func downloadPhoto(_ name: String, to file: URL) async throws -> Bool {
+        try await downloadPhoto(name, to: file, bulk: false)
+    }
 }
 
 /// The photo folder as the cloud link sees it. Names are "dir/file".
@@ -143,6 +157,11 @@ struct CloudBook: Codable, Sendable {
     var paused: CloudPause?
     var quotaFullAt: Date?
     var notBefore: Date?
+    /// A document this device is making (docs/icloud-fixes.md D1): its epoch, and exactly the collection it writes.
+    /// Kept on disk before the save, so a save whose answer is lost, or a process that dies after it, still finds
+    /// its base: the next pass that sees this epoch takes `pendingBase` as its base; any other answer drops both.
+    var pendingEpoch: String?
+    var pendingBase: CollectionData?
 
     /// The book's side of the Mac's "Sync through iCloud again", once the zone is saved again: the Mac never
     /// borrows a base, so everything about the old document goes. Only `CloudLink.restartAfterErase` calls it.
@@ -153,7 +172,27 @@ struct CloudBook: Codable, Sendable {
         systemFields = nil
         tag = nil
         revision = nil
+        pendingEpoch = nil
+        pendingBase = nil
     }
+
+    /// When a pass's result is dropped (an edit overtook it), what it learned about waiting still holds: a throttle,
+    /// a full iCloud, an erase. Everything else stays as this book has it.
+    mutating func takeBackOff(from next: CloudBook) {
+        notBefore = next.notBefore
+        quotaFullAt = next.quotaFullAt
+        paused = next.paused
+    }
+}
+
+/// Steps the caller runs in the middle of a pass, before the link writes anything (`CloudSyncSession`).
+struct CloudHooks: Sendable {
+    /// Right before this device's first cloud write of the pass (a photo or the document): the one-time copy of
+    /// `sync.json` (section 9 step 2). false: it could not be made, and nothing is written.
+    var beforeWrite: @Sendable () async -> Bool = { true }
+    /// D1: saves this book (with `pendingEpoch` and `pendingBase`) before the document is created. false: it could
+    /// not be saved, and the document is not created.
+    var persist: @Sendable (CloudBook) async -> Bool = { _ in true }
 }
 
 struct CloudInput: Sendable {
@@ -172,6 +211,12 @@ struct CloudInput: Sendable {
     /// For `status-mac`: when this Mac last finished a hub pass, and the revision it took from it.
     var hubAt: Date? = nil
     var hubRevision: String? = nil
+    /// D5: the phone's switch just made iCloud its link again: this pass merges with no base (union, nothing
+    /// deleted, differing fields ask).
+    var noBase = false
+    /// The hub link's changes still waiting for a choice on this device, counted into its `Status` (C2 7).
+    var hubConflicts = 0
+    var hooks = CloudHooks()
 }
 
 /// One device's link to the cloud document. It knows nothing about `AppStore` or the disk: it is handed the
@@ -206,16 +251,21 @@ actor CloudLink {
 
     /// `cloud-photos.json`. Read it back and save it after each pass and fill.
     var marks: CloudPhotoMarks
-    /// Photos whose download failed in a way a retry will not fix at once (bytes that do not match their record),
-    /// and when. For this launch only; such a photo never holds an install up.
-    var unreadable: [String: Date] = [:]
+    /// The phone's fetches that failed lately other than for want of a network (bytes that do not match their
+    /// record, a server error), and when: not asked again at once. For this launch only; the Mac never uses it.
+    var failedLately: [String: Date] = [:]
     /// Every device's `Status` as the last head fetch returned it (and this device's own, once written).
     private(set) var statuses: [String: CloudStatus] = [:]
     /// The last failure, for `cloud-status.json`; nil once a pass settles.
     private(set) var lastFailure: CloudFailure?
     /// Set by a build problem (missing entitlement, bad container): the link stays off for this launch.
     private(set) var disabled: String?
+    /// The last pass saved the document, or tried to and cannot know whether it landed (C1 8).
+    private(set) var wroteDocument = false
     private var running = false
+    /// The pass's `CloudInput.hooks`, and whether `beforeWrite` has run in it.
+    private var passHooks = CloudHooks()
+    private var writesCleared = false
 
     init(store: CloudStore, files: PhotoFiles, marks: CloudPhotoMarks, role: CloudRole, device: String,
          now: @escaping @Sendable () -> Date, build: String = CloudLink.currentBuild, photoBudget: TimeInterval = 40) {
@@ -248,7 +298,13 @@ actor CloudLink {
         book.notBefore = nil
         book.quotaFullAt = nil
         running = true
-        defer { running = false }
+        wroteDocument = false
+        passHooks = input.hooks
+        writesCleared = false
+        defer {
+            running = false
+            passHooks = CloudHooks()
+        }
         do {
             let outcome = try await run(input, book: &book, deadline: start.addingTimeInterval(photoBudget))
             switch outcome {
@@ -257,10 +313,35 @@ actor CloudLink {
             }
             return (outcome, book)
         } catch {
-            let failure = (error as? CloudFailure) ?? .other(String(describing: error))
+            let failure = Self.failure(error)
             lastFailure = failure
             return (.waiting(settle(failure, book: &book)), book)
         }
+    }
+
+    /// A thrown error as the link reads it. A Swift cancellation is a cancelled call, not a failure.
+    static func failure(_ error: Error) -> CloudFailure {
+        if let failure = error as? CloudFailure { return failure }
+        if error is CancellationError { return .cancelled }
+        return .other(String(describing: error))
+    }
+
+    /// Whether a save that threw this may still have landed, its answer lost: a network failure, a cancelled call, or
+    /// anything unexpected. A refusal (signed out, full, throttled, erased, not set up) never saved anything.
+    static func mayHaveLanded(_ error: Error) -> Bool {
+        switch failure(error) {
+        case .noAccount, .changed, .purged, .quotaFull, .retryAfter, .misconfigured: return false
+        case .network, .photoFileMissing, .damagedPhoto, .cancelled, .other: return true
+        }
+    }
+
+    /// Runs the caller's `beforeWrite` once per pass, before the first photo or document goes up.
+    func clearToWrite() async throws {
+        guard !writesCleared else { return }
+        guard await passHooks.beforeWrite() else {
+            throw CloudFailure.other("the copy made before iCloud sync could not be saved")
+        }
+        writesCleared = true
     }
 
     // MARK: Restart after an erase (sections 7 and 8)
@@ -283,7 +364,7 @@ actor CloudLink {
             guard try await store.account() == book.account else { return (.busy, book) }
             try await store.prepareZone()
         } catch {
-            let failure = (error as? CloudFailure) ?? .other(String(describing: error))
+            let failure = Self.failure(error)
             lastFailure = failure
             return (settle(failure, book: &book), book)
         }
@@ -310,6 +391,7 @@ actor CloudLink {
             guard let head, head.epoch != book.epoch else { return .waiting(.erased) }
             book.paused = nil
         }
+        adoptPending(head, book: &book)
         if let head {
             guard head.format <= CloudRecords.format else { return .waiting(.newerFormat) }
             adoptMarks(epoch: head.epoch)
@@ -366,7 +448,7 @@ actor CloudLink {
 
             // 5. Photos up. The document is not written while any held one is outstanding.
             let push = try await pushPhotos(names, trustMarks: true, deadline: deadline)
-            if changesCloud, !push.finished { return .waiting(.sendingPhotos(done: push.done, of: push.of)) }
+            if changesCloud, let wait = push.wait { return .waiting(wait) }
 
             // 6. Mac: the photos it lacks come down before it installs.
             if role == .mac { try await pullPhotos(names) }
@@ -375,12 +457,17 @@ actor CloudLink {
             var settled = document
             if changesCloud {
                 let body = output.canonicalData
+                try await clearToWrite()
                 do {
                     settled = try await store.write(body: body, revision: Self.sha256(body), epoch: document.head.epoch,
                                                     origin: document.origin, device: device, over: document.systemFields)
                 } catch CloudFailure.changed {
                     continue
+                } catch {
+                    if Self.mayHaveLanded(error) { wroteDocument = true }
+                    throw error
                 }
+                wroteDocument = true
             }
 
             // 9. The book that goes with the installed data.
@@ -405,23 +492,56 @@ actor CloudLink {
         // Marks made for a document that has gone prove nothing about a new one; and none is trusted here.
         if marks.epoch != nil { marks = CloudPhotoMarks(account: marks.account) }
         let push = try await pushPhotos(Self.photoNames(in: installed), trustMarks: false, deadline: deadline)
-        guard push.finished else { return .waiting(.sendingPhotos(done: push.done, of: push.of)) }
+        if let wait = push.wait { return .waiting(wait) }
         let bytes = body.canonicalData
+        // D1: the epoch is chosen here and kept on disk with the body as its base before the save. Whatever happens
+        // to the answer (lost, the process gone, the book not saved), the next pass that sees this epoch knows the
+        // document is this collection.
+        let epoch = UUID().uuidString
+        var pending = book
+        pending.pendingEpoch = epoch
+        pending.pendingBase = installed
+        try await clearToWrite()
+        guard await passHooks.persist(pending) else {
+            return unusable("this device's iCloud book could not be saved")
+        }
+        book = pending
+        marks.epoch = epoch
         let document: CloudDocument
         do {
-            document = try await store.write(body: bytes, revision: Self.sha256(bytes), epoch: UUID().uuidString,
+            document = try await store.write(body: bytes, revision: Self.sha256(bytes), epoch: epoch,
                                              origin: Self.hubOrigin, device: device, over: nil)
         } catch CloudFailure.changed {
             return nil
+        } catch {
+            if Self.mayHaveLanded(error) { wroteDocument = true }
+            throw error
         }
-        marks.epoch = document.head.epoch
+        wroteDocument = true
         record(document, base: installed, in: &book)
         await noteStatus(input, book, conflicts: 0)
         return .installed(installed, wroteCloud: true)
     }
 
+    /// D1: a document this device was making when its last pass ended. If the head shows that epoch, it landed, and
+    /// its body is the base; any other answer (another epoch, no document) means it did not, and normal rules apply.
+    private func adoptPending(_ head: CloudHead?, book: inout CloudBook) {
+        guard let pending = book.pendingEpoch else { return }
+        if head?.epoch == pending, let base = book.pendingBase {
+            book.epoch = pending
+            book.base = base
+            book.tag = nil
+            book.systemFields = nil
+            book.revision = nil
+        }
+        book.pendingEpoch = nil
+        book.pendingBase = nil
+    }
+
     /// The base for the first merge with a document of this epoch (section 6's table).
     private func base(for epoch: String, _ input: CloudInput, _ book: CloudBook) -> CollectionData? {
+        // D5: the first pass after the phone's switch made iCloud its link again merges with none.
+        if input.noBase { return nil }
         if book.epoch == epoch, let base = book.base { return base }
         // The Mac never borrows a base. The phone borrows its hub base only on its very first join; after an epoch
         // change, or with no hub base, it merges with none: union, nothing deleted, differing fields ask.
@@ -445,6 +565,8 @@ actor CloudLink {
         book.base = base
         book.lastSuccess = now()
         book.paused = nil
+        book.pendingEpoch = nil
+        book.pendingBase = nil
     }
 
     /// Marks hold only for the document epoch they were made under.
@@ -484,6 +606,11 @@ actor CloudLink {
             return .failed(reason)
         case .photoFileMissing:
             return .failed("a photo file went missing while it was sent")
+        case let .damagedPhoto(reason):
+            return .failed(reason)
+        case .cancelled:
+            // Cut short (the app left the screen): says nothing about iCloud; the next tick carries on.
+            return .busy
         case let .other(reason):
             return .failed(reason)
         }
@@ -492,8 +619,10 @@ actor CloudLink {
     // MARK: Status (section 2)
 
     /// Writes this device's `Status` when it is due: none yet, a new revision or conflict count, or 5 minutes on.
-    /// Information only: a failure here never fails the pass.
-    private func noteStatus(_ input: CloudInput, _ book: CloudBook, conflicts: Int) async {
+    /// The count is this merge's questions plus the hub link's still waiting here. Information only: a failure here
+    /// never fails the pass.
+    private func noteStatus(_ input: CloudInput, _ book: CloudBook, conflicts merged: Int) async {
+        let conflicts = merged + max(0, input.hubConflicts)
         let key = role.statusKey
         let at = now()
         let revision = book.revision ?? ""
