@@ -88,6 +88,8 @@ final class BoxArtwork {
         var pixels: Int
         /// A sync may have brought photos or tiles that were missing.
         var revision: Date?
+        /// Bumped when the phone's fill brought pictures from iCloud (`AppStore.picturesLanded`).
+        var landed = 0
     }
 
     func load(_ request: Request) async {

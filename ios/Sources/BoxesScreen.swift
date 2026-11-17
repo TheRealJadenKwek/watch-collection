@@ -1586,6 +1586,8 @@ struct BoxesScreen: View {
         let isArmed = armed == chip
         let score = piece.wishlist ? store.scores[piece.itemID]?.total : nil
         let cover = piece.cover
+        // The chip draws the render only when it is on this device; else the cutout (`chipArt`).
+        let drawsRender = cover.map { $0.isRender && !$0.renderPending } ?? false
         let label = VStack(spacing: 3) {
             // A tray chip is small; a grid chip is as wide as its column.
             chipArt(piece, cover: cover, maxPixel: side == nil ? DisplayImageCache.tile : DisplayImageCache.icon)
@@ -1593,7 +1595,7 @@ struct BoxesScreen: View {
                 .aspectRatio(1, contentMode: .fit)
                 .overlay(alignment: .topTrailing) {
                     if let score {
-                        if cover?.isRender == true {
+                        if drawsRender {
                             // On a render the number can land on a strap or a bracelet: it gets its own dark ground,
                             // as a photo's tag does.
                             Text("\(score)")
@@ -1641,10 +1643,10 @@ struct BoxesScreen: View {
     }
 
     /// A chip's picture: the watch's render when it has one on this device, as its card and tile show it; else its
-    /// cutout on the card colour, or the token while that is being made.
+    /// cutout on the card colour, or the token while that is being made. The phone's fill brings renders first.
     @ViewBuilder
     private func chipArt(_ piece: BoxPiece, cover: WatchCover?, maxPixel: Int) -> some View {
-        if let cover, cover.isRender {
+        if let cover, cover.isRender, !cover.renderPending {
             RemoteWatchImage(cover: cover, allowsRemoteFetch: false, maxPixel: maxPixel)
         } else {
             BoxChipArt(piece: piece, cutout: art.cutout(piece)?.result)
@@ -1807,7 +1809,8 @@ struct BoxesScreen: View {
         return BoxArtwork.Request(
             pieces: pieces, tiles: tiles,
             pixels: BoxTileStore.pixelSize(compartmentPoints: compartment, scale: displayScale),
-            revision: store.status.lastSync
+            revision: store.status.lastSync,
+            landed: store.picturesLanded
         )
     }
 

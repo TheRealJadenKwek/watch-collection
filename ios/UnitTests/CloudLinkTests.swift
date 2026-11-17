@@ -1299,6 +1299,52 @@ final class CloudLinkTests: XCTestCase {
         XCTAssertFalse(flag, "the throttled pass wrote nothing")
     }
 
+    /// The wishlist showed stock photos while the phone's fill worked through photos before renders: the fill takes
+    /// each item's cover first (its render, or its first photo when it has none), then the boxes' other tiles, then
+    /// the rest; its first pass takes the pictures alone.
+    func test40TheFillTakesCoversThenTilesThenPhotos() async throws {
+        var data = sample
+        data.watches[0].photos = ["a1.jpg", "a2.jpg"]
+        data.watches[0].boxTiles = ["black": "box-black-0000000a.jpg", "brown": "box-brown-0000000a.jpg"]
+        data.watches[1].photos = ["b1.jpg"]
+        data.wishlist[0].photos = ["c1.jpg", "c2.jpg"]
+        data.wishlist[0].boxTiles = ["black": "box-black-0000000c.jpg", "brown": "box-brown-0000000c.jpg"]
+        data.emptyBoxTiles = ["black": "empty-black-00000000.jpg"]
+        XCTAssertEqual(CloudLink.fillOrder(in: data), [
+            "w1/box-black-0000000a.jpg", "w2/b1.jpg", "wl-i1/box-black-0000000c.jpg",
+            "w1/box-brown-0000000a.jpg", "wl-i1/box-brown-0000000c.jpg", "_box/empty-black-00000000.jpg",
+            "w1/a1.jpg", "w1/a2.jpg", "wl-i1/c1.jpg", "wl-i1/c2.jpg",
+        ])
+        XCTAssertEqual(CloudLink.fillOrder(in: data, picturesOnly: true).count, 6)
+        // A refused render: the photo is the cover, and the tile is still one the boxes draw.
+        var refused = data
+        refused.watches[0].boxCutout = BoxCutout(photo: "a1.jpg", useCutout: true)
+        XCTAssertEqual(Array(CloudLink.fillOrder(in: refused).prefix(3)), ["w1/a1.jpg", "w2/b1.jpg", "wl-i1/box-black-0000000c.jpg"])
+
+        // On real links: the first pass brings the pictures, the second the rest, nothing twice.
+        let store = makeStore()
+        let mac = makeDevice(.mac, store, data)
+        for name in CloudLink.photoNames(in: data) { try mac.files.put(name, bytes(name)) }
+        mac.hubSettledNow = true
+        _ = await mac.pass()
+        let phone = makeDevice(.phone, store, nil)
+        let joined = await phone.pass()
+        let installed = try XCTUnwrap(joined.installedData)
+        let gated = await phone.link.fillPhotos(for: installed, picturesOnly: true, while: { false })
+        XCTAssertEqual(gated, CloudLink.FillResult(fetched: 0, stopped: true), "a gate that says no stops the fill")
+        let first = await phone.link.fillPhotos(for: installed, picturesOnly: true, while: { true })
+        XCTAssertEqual(first, CloudLink.FillResult(fetched: 6, stopped: false))
+        let pictures = await store.downloads
+        XCTAssertEqual(Set(pictures), Set(CloudLink.fillOrder(in: data, picturesOnly: true)))
+        let second = await phone.link.fillPhotos(for: installed, while: { true })
+        XCTAssertEqual(second, CloudLink.FillResult(fetched: 4, stopped: false))
+        let all = await store.downloads
+        XCTAssertEqual(Set(all), Set(CloudLink.photoNames(in: data)))
+        XCTAssertEqual(all.count, CloudLink.photoNames(in: data).count, "nothing fetched twice")
+        let idle = await phone.link.fillPhotos(for: installed, while: { true })
+        XCTAssertEqual(idle, CloudLink.FillResult(fetched: 0, stopped: false), "no work left is not a stop")
+    }
+
     // MARK: Fixtures
 
     private var sample: CollectionData {

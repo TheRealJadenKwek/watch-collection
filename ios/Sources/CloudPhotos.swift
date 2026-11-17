@@ -145,6 +145,38 @@ extension CloudLink {
             .filter { seen.insert($0).inserted }
     }
 
+    /// The phone's fill order: what the screens show first. Each item's cover (its render, or its first photo when
+    /// it has none), then the other rendered tiles the boxes draw, then the remaining photos; each group in
+    /// `photoNames` order. With `picturesOnly`, the first two groups alone.
+    static func fillOrder(in data: CollectionData, picturesOnly: Bool = false) -> [String] {
+        func name(_ asset: PhotoAsset?) -> String? { asset.map { "\($0.directory)/\($0.filename)" } }
+        var covers = Set<String>(), tiles = Set<String>()
+        for watch in data.watches {
+            let cover = WatchCover.choose(itemID: watch.id, wishlist: false, photos: watch.photos, photoFocus: nil,
+                                          boxTiles: watch.boxTiles, cutout: watch.boxCutout) { _ in true }
+            if let cover = name(cover?.asset) { covers.insert(cover) }
+            for file in PhotoStore.tileNames(watch.boxTiles) {
+                if let tile = name(PhotoStore.asset(itemID: watch.id, filename: file, wishlist: false, baseURL: nil)) { tiles.insert(tile) }
+            }
+        }
+        for item in data.wishlist {
+            let cover = WatchCover.choose(itemID: item.id, wishlist: true, photos: item.photos, photoFocus: nil,
+                                          boxTiles: item.boxTiles, cutout: item.boxCutout) { _ in true }
+            if let cover = name(cover?.asset) { covers.insert(cover) }
+            for file in PhotoStore.tileNames(item.boxTiles) {
+                if let tile = name(PhotoStore.asset(itemID: item.id, filename: file, wishlist: true, baseURL: nil)) { tiles.insert(tile) }
+            }
+        }
+        for file in PhotoStore.tileNames(data.emptyBoxTiles) {
+            if let tile = name(PhotoStore.emptyTileAsset(filename: file, baseURL: nil)) { tiles.insert(tile) }
+        }
+        func rank(_ name: String) -> Int { covers.contains(name) ? 0 : tiles.contains(name) ? 1 : 2 }
+        return photoNames(in: data).enumerated()
+            .filter { !picturesOnly || rank($0.element) < 2 }
+            .sorted { (rank($0.element), $0.offset) < (rank($1.element), $1.offset) }
+            .map(\.element)
+    }
+
     // MARK: Up (step 5)
 
     /// Sends every named photo this device holds and iCloud lacks. A photo it does not hold never blocks and is
@@ -277,19 +309,29 @@ extension CloudLink {
         await fillPhotos(for: data, while: { true })
     }
 
-    /// The fill, asking `allowed` (the network is neither expensive nor constrained) before each fetch it starts,
-    /// and stopping when it says no, when the task is cancelled, or at the first failure a retry can fix. Its
-    /// fetches never use a cellular connection (C1 4).
-    func fillPhotos(for data: CollectionData, while allowed: @escaping @Sendable () async -> Bool) async {
-        guard disabled == nil else { return }
+    /// What a fill did: how many files it brought, and whether it stopped short (the gate said no, it was
+    /// cancelled, a failure a retry can fix, or the link is off) rather than running out of work.
+    struct FillResult: Equatable, Sendable {
+        var fetched = 0
+        var stopped = false
+    }
+
+    /// The fill, in `fillOrder` (covers first), asking `allowed` (the network is neither expensive nor constrained)
+    /// before each fetch it starts, and stopping when it says no, when the task is cancelled, or at the first failure
+    /// a retry can fix. Its fetches never use a cellular connection (C1 4). With `picturesOnly`, covers and tiles.
+    @discardableResult
+    func fillPhotos(for data: CollectionData, picturesOnly: Bool = false,
+                    while allowed: @escaping @Sendable () async -> Bool) async -> FillResult {
+        guard disabled == nil else { return FillResult(stopped: true) }
         let start = now()
-        var queue = Self.photoNames(in: data)
+        var queue = Self.fillOrder(in: data, picturesOnly: picturesOnly)
             .filter { files.url($0) != nil && !files.exists($0) && wantsDownload($0, at: start) }[...]
-        guard !queue.isEmpty, await allowed() else { return }
+        guard !queue.isEmpty else { return FillResult() }
+        guard await allowed() else { return FillResult(stopped: true) }
         let scope = (account: marks.account, epoch: marks.epoch)
         let store = store, files = files, now = now
         var results: [Fetched] = []
-        await withTaskGroup(of: Fetched.self) { group in
+        let stoppedShort = await withTaskGroup(of: Fetched.self) { group -> Bool in
             for _ in 0..<Self.fillWidth {
                 guard let name = queue.popFirst() else { break }
                 group.addTask { await Self.fetch(name, store: store, files: files, bulk: true, now: now) }
@@ -307,8 +349,11 @@ extension CloudLink {
                     group.addTask { await Self.fetch(name, store: store, files: files, bulk: true, now: now) }
                 }
             }
+            return stopped || Task.isCancelled
         }
         note(results, scope: scope)
+        let fetched = results.filter { if case .success(true) = $0.result { return true } else { return false } }.count
+        return FillResult(fetched: fetched, stopped: stoppedShort)
     }
 
     /// Phone, before a hub exchange: fetch these photos it lacks now, over any connection, so the exchange never

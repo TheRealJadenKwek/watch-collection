@@ -31,8 +31,39 @@ final class WatchCoverTests: XCTestCase {
         let photo = WatchCover(itemID: "w", wishlist: false, filename: "a.jpg", isRender: false, focus: focus)
         XCTAssertEqual(cover(tiles: nil), photo)
         XCTAssertEqual(cover(tiles: [:]), photo)
-        XCTAssertEqual(cover(tiles: tiles, onDevice: []), photo, "a tile that has not been downloaded yet")
         XCTAssertEqual(cover(tiles: ["brown": "box-brown-22222222.jpg"]), photo, "covers are drawn in one finish only")
+    }
+
+    /// The wishlist showed stock photos on a phone that had not downloaded its renders yet: a render not on this
+    /// device is still the cover (the screen fetches it), with the first photo standing in only if it cannot be had.
+    func testARenderNotDownloadedYetIsStillTheCoverWithThePhotoStandingIn() {
+        let chosen = cover(wishlist: true, tiles: tiles, onDevice: [])
+        XCTAssertEqual(chosen?.isRender, true)
+        XCTAssertEqual(chosen?.asset?.directory, "wl-w")
+        XCTAssertEqual(chosen?.asset?.filename, "box-black-11111111.jpg")
+        XCTAssertEqual(chosen?.fallback, WatchCover(itemID: "w", wishlist: true, filename: "a.jpg", isRender: false, focus: focus))
+        XCTAssertEqual(chosen?.fallback?.asset?.directory, "wl-w")
+        XCTAssertEqual(chosen?.renderPending, true, "a box chip draws its cutout until the render is here")
+        // On the device: nothing stands in, nothing pending.
+        XCTAssertNil(cover(wishlist: true, tiles: tiles)?.fallback)
+        XCTAssertEqual(cover(wishlist: true, tiles: tiles)?.renderPending, false)
+        // No photo to stand in: the render alone, still pending.
+        let bare = cover(photos: [], tiles: tiles, onDevice: [])
+        XCTAssertEqual(bare?.isRender, true)
+        XCTAssertNil(bare?.fallback)
+        XCTAssertEqual(bare?.renderPending, true)
+        // The watch's page: the render's page has no stand-in (the first photo is the next page), and its photos
+        // follow as before.
+        let pages = CoverPages(cover: chosen, photos: ["a.jpg", "b.jpg"])
+        XCTAssertEqual(pages.count, 3)
+        XCTAssertTrue(pages.isRender(0))
+        XCTAssertNil(pages.render?.fallback)
+        XCTAssertEqual(pages.render?.filename, "box-black-11111111.jpg")
+        XCTAssertEqual(pages.photo(1), "a.jpg")
+        // A refused render is never fetched: the photo is the cover.
+        XCTAssertEqual(cover(tiles: tiles, cutout: BoxCutout(photo: "a.jpg", useCutout: true), onDevice: [])?.filename, "a.jpg")
+        // A photo cover has no stand-in.
+        XCTAssertNil(cover(tiles: nil)?.fallback)
     }
 
     func testARefusedRenderFallsBackToThePhoto() {
@@ -44,19 +75,34 @@ final class WatchCoverTests: XCTestCase {
         XCTAssertEqual(cover(tiles: tiles, cutout: BoxCutout(photo: "a.jpg", x: 0.5, y: 0.5, r: 0.3))?.isRender, true)
     }
 
+    /// A render a screen could not have is remembered for a while, so a row scrolling back draws its stand-in at
+    /// once; loading it forgets the miss.
+    func testARenderThatCouldNotBeHadIsRememberedForAWhile() {
+        let key = PhotoKey(directory: "wl-misses", filename: "box-black-33333333.jpg")
+        let now = Date()
+        XCTAssertFalse(RenderMisses.recent(key, at: now))
+        RenderMisses.note(key, at: now)
+        XCTAssertTrue(RenderMisses.recent(key, at: now.addingTimeInterval(60)))
+        XCTAssertFalse(RenderMisses.recent(key, at: now.addingTimeInterval(RenderMisses.span + 1)))
+        RenderMisses.clear(key)
+        XCTAssertFalse(RenderMisses.recent(key, at: now.addingTimeInterval(60)))
+    }
+
     func testNoPhotosAndNoTileIsNoCover() {
         XCTAssertNil(cover(photos: [], tiles: nil))
         XCTAssertEqual(cover(photos: [], tiles: tiles)?.isRender, true, "a render needs no photo")
     }
 
-    /// An owned watch and an archived one are told apart by nothing here: the model's own covers, with no tile
-    /// on this device, are their first photos.
+    /// An owned watch and an archived one are told apart by nothing here: the model's own covers are the render
+    /// (with the first photo standing in while it is not on this device), else the first photo.
     func testOwnedArchivedAndWishlistModelsAllHaveACover() {
         var owned = BoxFixture.watch("field", photos: ["a.jpg"])
         owned.boxTiles = ["black": "box-black-not-on-this-device.jpg"]
         let sold = BoxFixture.watch("sold-one", status: "sold", photos: ["b.jpg"])
         let wanted = BoxFixture.candidate("wanted", photos: ["c.jpg"])
-        XCTAssertEqual(owned.cover, WatchCover(itemID: "field", wishlist: false, filename: "a.jpg", isRender: false, focus: nil))
+        XCTAssertEqual(owned.cover, WatchCover(itemID: "field", wishlist: false, filename: "box-black-not-on-this-device.jpg",
+                                               isRender: true, focus: nil, fallbackPhoto: "a.jpg", renderPending: true))
+        XCTAssertEqual(owned.cover?.fallback, WatchCover(itemID: "field", wishlist: false, filename: "a.jpg", isRender: false, focus: nil))
         XCTAssertEqual(sold.cover?.filename, "b.jpg")
         XCTAssertEqual(wanted.cover, WatchCover(itemID: "wanted", wishlist: true, filename: "c.jpg", isRender: false, focus: nil))
         XCTAssertEqual(BoxPiece(watch: owned).cover, owned.cover)

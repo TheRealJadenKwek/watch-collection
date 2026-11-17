@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// The one picture a watch or a wishlist candidate is shown by, on a card, a tile, a chip, a list row or the top of
-/// its page: its rendered tile (the watch upright on its pillow) when that file is on this device, else its first
-/// photo in its saved framing. Owned, archived and wishlist watches all follow the same rule.
+/// its page: its rendered tile (the watch upright on its pillow) whenever it has one, else its first photo in its
+/// saved framing. A render not on this device yet is fetched by the screen that shows it, like any photo, and the
+/// first photo stands in only if it cannot be had. Owned, archived and wishlist watches all follow the same rule.
 struct WatchCover: Hashable {
     var itemID: String
     var wishlist: Bool
@@ -11,13 +12,21 @@ struct WatchCover: Hashable {
     var isRender: Bool
     /// A photo's saved framing. Nil for a render.
     var focus: PhotoFocus?
+    /// A render whose file is not on this device yet: the photo drawn instead if the render cannot be had (offline,
+    /// or not in iCloud). Nil when the render is here, and for a photo.
+    var fallbackPhoto: String? = nil
+    /// That photo's saved framing.
+    var fallbackFocus: PhotoFocus? = nil
+    /// A render whose file is not on this device yet (with or without a photo to stand in for it).
+    var renderPending = false
 
     /// The finish every cover is drawn in. The black box is the default box, and its near-black leather is the
     /// quieter ground on a white page.
     static let finish = "black"
 
-    /// The render when the item has one in `finish`, its file is on this device and the cutout was not chosen over
-    /// it (the same refusal the box honours); else the first photo; else nothing.
+    /// The render when the item has one in `finish` and the cutout was not chosen over it (the same refusal the box
+    /// honours), carrying the first photo as its stand-in when its file is not on this device yet; else the first
+    /// photo; else nothing.
     static func choose(
         itemID: String,
         wishlist: Bool,
@@ -28,8 +37,16 @@ struct WatchCover: Hashable {
         hasTile: (String) -> Bool
     ) -> WatchCover? {
         let refused = BoxModel.effectiveCutout(cutout, photos: photos)?.useCutout == true
-        if !refused, let file = boxTiles?[finish], hasTile(file) {
-            return WatchCover(itemID: itemID, wishlist: wishlist, filename: file, isRender: true, focus: nil)
+        if !refused, let file = boxTiles?[finish] {
+            var render = WatchCover(itemID: itemID, wishlist: wishlist, filename: file, isRender: true, focus: nil)
+            if !hasTile(file) {
+                render.renderPending = true
+                if let photo = photos.first {
+                    render.fallbackPhoto = photo
+                    render.fallbackFocus = photoFocus?[photo]
+                }
+            }
+            return render
         }
         guard let photo = photos.first else { return nil }
         return WatchCover(itemID: itemID, wishlist: wishlist, filename: photo, isRender: false, focus: photoFocus?[photo])
@@ -52,6 +69,20 @@ struct WatchCover: Hashable {
 
     var asset: PhotoAsset? {
         PhotoStore.asset(itemID: itemID, filename: filename, wishlist: wishlist, baseURL: nil)
+    }
+
+    /// The photo standing in for a render that is not on this device yet.
+    var fallback: WatchCover? {
+        fallbackPhoto.map { WatchCover(itemID: itemID, wishlist: wishlist, filename: $0, isRender: false, focus: fallbackFocus) }
+    }
+
+    /// The render with nothing standing in for it: where the photos follow on the next pages, a stand-in would only
+    /// show the first of them twice.
+    var withoutStandIn: WatchCover {
+        var cover = self
+        cover.fallbackPhoto = nil
+        cover.fallbackFocus = nil
+        return cover
     }
 }
 
@@ -80,7 +111,8 @@ struct CoverPages: Equatable {
     var photos: [String]
 
     init(cover: WatchCover?, photos: [String]) {
-        render = cover?.isRender == true ? cover : nil
+        // A render not here yet is fetched on its page, with the placeholder (not the first photo) while it comes.
+        render = cover?.isRender == true ? cover?.withoutStandIn : nil
         self.photos = photos
     }
 

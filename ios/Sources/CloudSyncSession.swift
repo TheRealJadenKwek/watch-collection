@@ -209,10 +209,13 @@ final class CloudSyncSession {
     }
 
     /// Phone, after an install: fetch what is still missing while `allowed` says the network is neither expensive
-    /// nor constrained, asked before each fetch.
-    func fill(_ data: CollectionData, while allowed: @escaping @Sendable () async -> Bool) async {
-        await link.fillPhotos(for: data, while: allowed)
+    /// nor constrained, asked before each fetch. With `picturesOnly`, the covers and the box tiles alone.
+    @discardableResult
+    func fill(_ data: CollectionData, picturesOnly: Bool = false,
+              while allowed: @escaping @Sendable () async -> Bool) async -> CloudLink.FillResult {
+        let result = await link.fillPhotos(for: data, picturesOnly: picturesOnly, while: allowed)
         files.saveMarks(await link.marks)
+        return result
     }
 
     /// Phone, before a hub exchange: fetch these missing photos from iCloud now (C1 10). A phone on the hub runs no

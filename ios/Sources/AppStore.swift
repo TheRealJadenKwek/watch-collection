@@ -48,6 +48,8 @@ final class SyncStatus: ObservableObject {
 @MainActor
 final class AppStore: ObservableObject {
     @Published private(set) var data: CollectionData?
+    /// Bumped each time the phone's fill has brought pictures from iCloud, so the boxes draw tiles that were missing.
+    @Published private(set) var picturesLanded = 0
     @Published private(set) var scores: [String: WishlistScore] = [:]
     @Published private(set) var suggestions: SuggestionsResponse?
     @Published private(set) var isOffline = false
@@ -690,9 +692,21 @@ final class AppStore: ObservableObject {
               PhotoStore.missingLocalCount(PhotoStore.assets(in: data, baseURL: nil)) > 0 else { return }
         let generation = fillGeneration
         fillTask = Task { [weak self] in
-            await cloud.fill(data, while: { [weak self] in await self?.fillMayGoOn(generation) ?? false })
+            // The pictures the screens show first (covers, then the boxes' tiles), then the rest of the photos, the
+            // second pass only when the first ran out of work. A cover fetches its own render on any network; the
+            // boxes and their chips draw only tiles on this device, so they are told when some land.
+            let pictures = await cloud.fill(data, picturesOnly: true, while: { [weak self] in await self?.fillMayGoOn(generation) ?? false })
+            self?.noteLanded(pictures, generation: generation)
+            if !pictures.stopped, !Task.isCancelled, self?.fillGeneration == generation {
+                let rest = await cloud.fill(data, while: { [weak self] in await self?.fillMayGoOn(generation) ?? false })
+                self?.noteLanded(rest, generation: generation)
+            }
             if self?.fillGeneration == generation { self?.fillTask = nil }
         }
+    }
+
+    private func noteLanded(_ result: CloudLink.FillResult, generation: Int) {
+        if result.fetched > 0, fillGeneration == generation { picturesLanded += 1 }
     }
 
     private func fillMayGoOn(_ generation: Int) -> Bool {

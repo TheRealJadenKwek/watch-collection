@@ -24,7 +24,23 @@ struct RemoteWatchImage: View {
     /// A rendered tile: drawn by `RenderLayout` (the whole watch in any frame) instead of by a focus.
     var render: Bool
     var maxPixel: Int
-    @State private var image: UIImage?
+    /// A cover's first photo standing in for a render that is not on this device yet (`WatchCover.fallback`): drawn
+    /// in its own framing if the render is slow to come (`standInDelay`) or cannot be had, and replaced by the
+    /// render the moment it arrives.
+    var fallbackAsset: PhotoAsset?
+    var fallbackFocus: PhotoFocus?
+    @State private var shown: Shown?
+
+    /// How long a render being fetched may leave the frame on its placeholder before the stand-in photo shows.
+    static let standInDelay: Duration = .milliseconds(900)
+
+    /// What the frame draws: a decoded file, and how to lay it out.
+    private struct Shown {
+        let image: UIImage
+        let key: PhotoKey
+        let isRender: Bool
+        let focus: PhotoFocus?
+    }
 
     init(
         asset: PhotoAsset?,
@@ -32,7 +48,9 @@ struct RemoteWatchImage: View {
         focus: PhotoFocus? = nil,
         fitWholePhoto: Bool = false,
         render: Bool = false,
-        maxPixel: Int = DisplayImageCache.page
+        maxPixel: Int = DisplayImageCache.page,
+        fallbackAsset: PhotoAsset? = nil,
+        fallbackFocus: PhotoFocus? = nil
     ) {
         self.asset = asset
         self.allowsRemoteFetch = allowsRemoteFetch
@@ -40,76 +58,169 @@ struct RemoteWatchImage: View {
         self.fitWholePhoto = fitWholePhoto
         self.render = render
         self.maxPixel = maxPixel
-        // Already decoded? Draw it in this very frame, so scrolling back never flashes a placeholder.
-        _image = State(initialValue: asset.flatMap { DisplayImageCache.image(for: $0.key, maxPixel: maxPixel) })
+        self.fallbackAsset = fallbackAsset
+        self.fallbackFocus = fallbackFocus
+        // Already decoded? Draw it in this very frame, so scrolling back never flashes a placeholder. A render that
+        // could not be had lately draws its stand-in the same way.
+        var initial: Shown?
+        if let asset, let image = DisplayImageCache.image(for: asset.key, maxPixel: maxPixel) {
+            initial = Shown(image: image, key: asset.key, isRender: render, focus: focus)
+        } else if let asset, let fallbackAsset, RenderMisses.recent(asset.key),
+                  let image = DisplayImageCache.image(for: fallbackAsset.key, maxPixel: maxPixel) {
+            initial = Shown(image: image, key: fallbackAsset.key, isRender: false, focus: fallbackFocus)
+        }
+        _shown = State(initialValue: initial)
     }
 
-    /// A watch's or a candidate's cover: its render, or its first photo in its saved framing.
+    /// A watch's or a candidate's cover: its render (fetched if it is not on this device yet, its first photo
+    /// standing in while it is slow or if it cannot be had), or its first photo in its saved framing.
     init(cover: WatchCover?, allowsRemoteFetch: Bool, fitWholePhoto: Bool = false, maxPixel: Int = DisplayImageCache.page) {
+        let fallback = cover?.fallback
         self.init(
             asset: cover?.asset,
             allowsRemoteFetch: allowsRemoteFetch,
             focus: cover?.focus,
             fitWholePhoto: fitWholePhoto,
             render: cover?.isRender == true,
-            maxPixel: maxPixel
+            maxPixel: maxPixel,
+            fallbackAsset: fallback?.asset,
+            fallbackFocus: fallback?.focus
         )
     }
 
     private var loadID: LoadID {
-        LoadID(asset: asset, allowsRemoteFetch: allowsRemoteFetch, maxPixel: maxPixel)
+        LoadID(asset: asset, fallbackAsset: fallbackAsset, allowsRemoteFetch: allowsRemoteFetch, maxPixel: maxPixel)
     }
 
     var body: some View {
         ZStack {
             WatchPlaceholder()
-            if let image {
+            if let shown {
                 Group {
-                    if render {
-                        RenderImage(image: image)
+                    if shown.isRender {
+                        RenderImage(image: shown.image)
                     } else if fitWholePhoto {
-                        Image(uiImage: image).resizable().scaledToFit()
+                        Image(uiImage: shown.image).resizable().scaledToFit()
                     } else {
-                        FocusedImage(image: image, focus: focus)
+                        FocusedImage(image: shown.image, focus: shown.focus)
                     }
                 }
                 .transition(.opacity)
             }
         }
-        .animation(.easeOut(duration: 0.15), value: image != nil)
+        .animation(.easeOut(duration: 0.15), value: shown != nil)
         .clipped()
         // clipped() trims drawing only; without this a zoomed photo steals taps above its frame.
         .contentShape(Rectangle())
         .task(id: loadID) {
-            guard let asset else {
-                image = nil
-                return
-            }
-            let target = maxPixel
-            if let cached = DisplayImageCache.image(for: asset.key, maxPixel: target) {
-                image = cached
-                return
-            }
-            image = nil
-            // A row that scrolls straight past cancels here, before any decoding is spent on it.
-            try? await Task.sleep(for: .milliseconds(25))
-            guard !Task.isCancelled else { return }
-            let allowDownload = allowsRemoteFetch
-            let decoded: UIImage? = await Task.detached(priority: .userInitiated) {
-                if let file = PhotoStore.existingLocalURL(for: asset) {
-                    return DisplayImageCache.decode(file: file, key: asset.key, maxPixel: target)
-                }
-                guard let data = await PhotoStore.shared.load(asset, allowDownload: allowDownload) else { return nil }
-                return DisplayImageCache.decode(data, key: asset.key, maxPixel: target)
-            }.value
-            if !Task.isCancelled { image = decoded }
+            await load()
         }
+    }
+
+    private func load() async {
+        guard let asset else {
+            shown = nil
+            return
+        }
+        let target = maxPixel
+        if let cached = DisplayImageCache.image(for: asset.key, maxPixel: target) {
+            shown = Shown(image: cached, key: asset.key, isRender: render, focus: focus)
+            return
+        }
+        // Another picture of the same watch stays up until this one is ready (a stand-in giving way to its render,
+        // a new cover photo); a different watch's picture goes at once.
+        if shown?.key.directory != asset.directory { shown = nil }
+        // A row that scrolls straight past cancels here, before any decoding is spent on it.
+        try? await Task.sleep(for: .milliseconds(25))
+        guard !Task.isCancelled else { return }
+        let allowDownload = allowsRemoteFetch
+        guard let fallbackAsset else {
+            let decoded = await Self.decoded(asset, maxPixel: target, allowDownload: allowDownload)
+            if !Task.isCancelled, let decoded {
+                shown = Shown(image: decoded, key: asset.key, isRender: render, focus: focus)
+            }
+            return
+        }
+        // A render not on this device: its stand-in shows if the fetch is slow (at once if it failed lately).
+        let quick = RenderMisses.recent(asset.key)
+        let standIn = Task { @MainActor in
+            if !quick { try? await Task.sleep(for: Self.standInDelay) }
+            guard !Task.isCancelled else { return }
+            await showStandIn(fallbackAsset, maxPixel: target, allowDownload: allowDownload)
+        }
+        let decoded = await withTaskCancellationHandler {
+            await Self.decoded(asset, maxPixel: target, allowDownload: allowDownload)
+        } onCancel: {
+            standIn.cancel()
+        }
+        guard !Task.isCancelled else { return }
+        if let decoded {
+            standIn.cancel()
+            RenderMisses.clear(asset.key)
+            shown = Shown(image: decoded, key: asset.key, isRender: render, focus: focus)
+            return
+        }
+        // The render cannot be had: the stand-in now, if it is not up already.
+        if allowDownload { RenderMisses.note(asset.key) }
+        standIn.cancel()
+        if shown?.key != fallbackAsset.key {
+            await showStandIn(fallbackAsset, maxPixel: target, allowDownload: allowDownload)
+        }
+    }
+
+    @MainActor
+    private func showStandIn(_ standIn: PhotoAsset, maxPixel: Int, allowDownload: Bool) async {
+        var decoded = DisplayImageCache.image(for: standIn.key, maxPixel: maxPixel)
+        if decoded == nil {
+            decoded = await Self.decoded(standIn, maxPixel: maxPixel, allowDownload: allowDownload)
+        }
+        guard !Task.isCancelled, let decoded else { return }
+        shown = Shown(image: decoded, key: standIn.key, isRender: false, focus: fallbackFocus)
+    }
+
+    /// The file decoded at `maxPixel`, from this device or else (with `allowDownload`) fetched by `PhotoStore`.
+    private static func decoded(_ asset: PhotoAsset, maxPixel: Int, allowDownload: Bool) async -> UIImage? {
+        await Task.detached(priority: .userInitiated) {
+            if let file = PhotoStore.existingLocalURL(for: asset) {
+                return DisplayImageCache.decode(file: file, key: asset.key, maxPixel: maxPixel)
+            }
+            guard let data = await PhotoStore.shared.load(asset, allowDownload: allowDownload) else { return nil }
+            return DisplayImageCache.decode(data, key: asset.key, maxPixel: maxPixel)
+        }.value
     }
 
     private struct LoadID: Hashable {
         let asset: PhotoAsset?
+        let fallbackAsset: PhotoAsset?
         let allowsRemoteFetch: Bool
         let maxPixel: Int
+    }
+}
+
+/// Renders a screen could not have lately (not in iCloud, or the fetch failed), so a row scrolling back draws its
+/// stand-in photo at once instead of waiting on the render again. Forgotten after `span`, or when the render loads.
+enum RenderMisses {
+    static let span: TimeInterval = 5 * 60
+    private static let lock = NSLock()
+    nonisolated(unsafe) private static var missed: [PhotoKey: Date] = [:]
+
+    static func note(_ key: PhotoKey, at date: Date = Date()) {
+        lock.lock()
+        defer { lock.unlock() }
+        missed[key] = date
+    }
+
+    static func clear(_ key: PhotoKey) {
+        lock.lock()
+        defer { lock.unlock() }
+        missed[key] = nil
+    }
+
+    static func recent(_ key: PhotoKey, at date: Date = Date()) -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let when = missed[key] else { return false }
+        return date.timeIntervalSince(when) < span
     }
 }
 
