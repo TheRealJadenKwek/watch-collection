@@ -1,3 +1,18 @@
+# Watch Collection: resume note (lead, 2026-11-17 12:05 PM CST)
+
+## State now: nothing in flight
+- iCloud polish round 2 shipped: main 449f299 (pushed). TestFlight 5.1 (34) in beta testing 18:01Z. Mac 5.1 (4) in
+  /Applications, upToDate, revision fd26977f, 277/277 photos. Rollback: TestFlight 33; Mac copy
+  ~/Offload/watch-collection/releases/mac-before-v5.1b4-20261117-1148. Worktree removed, branch merged and deleted.
+- Phone still on 5.1 (32) at 16:33Z (has the new watches; renders-first needs 33 or 34 from TestFlight).
+
+## Next (no approvals needed)
+1. When status-iphone shows 5.1 (34) and revision fd26977f (or newer), the phone side is confirmed.
+2. docs/icloud-polish.md items 18 to 21 (18 first: orphan photo files the Mac re-uploads to the hub).
+3. More renders need a raised cap ($0.72 of $9 left): his word on the amount.
+
+---
+
 # Watch Collection: resume note (lead, 2026-11-17 9:25 AM CST, account switch checkpoint)
 
 ## State now: nothing in flight
