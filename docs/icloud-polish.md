@@ -16,3 +16,8 @@ Evidence: ~/Offload/watch-collection/test-evidence/icloud-p4/phone-joined.png, m
    (status-mac.at goes stale). Review it in P8; the fallback is a bridge without NSApplication.
 5. Rehearsal and any debug run must pass `-WCHub` explicitly: with no saved address the Mac app falls back to the real
    hub http://127.0.0.1:8931 (Theme.swift:16).
+6. Rehearsal finding: each bridge process does a full hub exchange and rewrites the Mac's `sync.json` every tick
+   though only `lastSuccess` changed. Skip the rewrite (and the hub POST if the hub fast path allows) when nothing
+   but `lastSuccess` moved. Low priority; local disk churn only.
+7. Rehearsal: `tools/bridge/install.sh` gained `--label` and `--watch` (uncommitted until the fix round; commit it).
+Rehearsal evidence: ~/Offload/watch-collection/test-evidence/icloud-rehearsal/ (all six of 13 B pass).
