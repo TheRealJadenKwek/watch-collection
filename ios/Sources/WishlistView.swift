@@ -565,6 +565,22 @@ private struct CandidateGrid<Card: View>: View {
     /// How many cards are built yet. Built in one go, the cards stalled the window for over a second (36 of them)
     /// when the page was first made, so the first rows come at once and the rest a row at a time.
     @State private var built = 4
+    /// Whether the cards past the first screen have started coming (after `firstWait`, once per page).
+    @State private var started = false
+    /// Cards come only while the wishlist is the section on screen, so opening the app on another section, or a
+    /// sync while the wishlist is hidden, builds none of them.
+    @Environment(\.sectionIsActive) private var sectionIsActive
+    /// Cards built straight away, more than the first screen shows under the top pick: whole rows for one, two,
+    /// three or six columns.
+    static var firstScreen: Int { 6 }
+    /// How long the page waits, once its first screen is built, before the cards below it start: the window
+    /// opening, or the first switch to the wishlist, draws its first frames with only those cards to update.
+    static var firstWait: Duration { .milliseconds(500) }
+
+    private struct BuildID: Hashable {
+        let count: Int
+        let active: Bool
+    }
     #endif
 
     var body: some View {
@@ -576,9 +592,14 @@ private struct CandidateGrid<Card: View>: View {
         // with every card built took most of a frame.
         .geometryGroup()
         // Cards not built yet come a row at a time, also when a sync or a restore brings many at once after the page
-        // was made. A count that changes restarts this from where it got to.
-        .task(id: items.count) {
+        // was made. A count that changes restarts this from where it got to; leaving the section pauses it.
+        .task(id: BuildID(count: items.count, active: sectionIsActive)) {
+            guard sectionIsActive else { return }
             while built < items.count {
+                if !started, built >= Self.firstScreen {
+                    guard (try? await Task.sleep(for: Self.firstWait)) != nil else { return }
+                    started = true
+                }
                 // A frame or so between rows, so each row is its own short update.
                 guard (try? await Task.sleep(for: .milliseconds(16))) != nil else { return }
                 built += 2
