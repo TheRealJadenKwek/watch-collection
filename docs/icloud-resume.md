@@ -1,4 +1,25 @@
-# Watch Collection: resume note (lead, 2026-11-17 6:03 PM CST, account switch checkpoint)
+# Watch Collection: resume note (lead, 2026-11-17 6:35 PM CST)
+
+## State now: nothing in flight, nothing running
+- Mac 5.1 (6) shipped: main 1dd8a8b (pushed), in /Applications, cloud-status upToDate 00:33Z, 349 photos, none
+  missing. Mac-only change, so no TestFlight build (35 stays current). Rollback: Mac copy
+  ~/Offload/watch-collection/releases/mac-backup-5.1-5-20261117-1833.app.
+- The change: wishlist cards are built only while the wishlist is the section on screen; the first 6 at once, the
+  rest a row at a time from 0.5 s after the page first shows. Review (reviewer, opus xhigh): no bugs.
+- Measured (load 40 to 90, noisy): opening on Collection 1.2 to 1.4 s of main-thread gaps in 10 s, same as before the
+  scrolling release (it was 2.2 to 2.4 s in 5.1 (5)). Opening on the Wishlist still about 1 s more than before the
+  scrolling release; that is the one-time cost of building every card, which is what makes scrolling 120 Hz
+  (0.5 to 1.5 ms/s vs 230 to 360 before). Instruments shows no visible hitches during it; only input in the first
+  ~2 s is slowed. The first switch to the wishlist now pays that cost instead of the launch.
+- Ruled out as causes: per-card Menu, ViewThatFits, photo fade-in, geometryGroup, explicitAlignment, staging speed.
+- Throwaway hub on 8957 stopped. Worktree ~/watch-collection-perf (branch perf/first-open, merged) can be removed.
+
+## Next (no approvals needed)
+1. If the wishlist open cost matters: cards are heavy for SwiftUI's display list (about 30 ms each on the main
+   thread); a lighter card, or building rows only when the Mac is idle, would be the next step.
+2. Never put a test window in front of Jaden during a meeting; GUI runs launch with `open -g`.
+
+## Earlier (6:03 PM checkpoint, superseded)
 
 ## State now: investigation of the Mac first-open stall, nothing shipped since 5:20 PM
 - Shipped state unchanged: main d8caa11, Mac 5.1 (5) installed, TestFlight 5.1 (35). Rollbacks as in the 5:20 section.
