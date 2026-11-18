@@ -14,7 +14,9 @@
 - Ruled out as causes: per-card Menu, ViewThatFits, photo fade-in, geometryGroup, explicitAlignment, staging speed.
 - Throwaway hub on 8957 stopped. Worktree ~/watch-collection-perf (branch perf/first-open, merged) can be removed.
 
-## Next (no approvals needed)
+## Next
+0. PACE LIMIT until Sunday Nov 22 (Jaden, 6:35 PM via the Account Switching chat: budget goes to Dentiza, Metallic,
+   Elite and Wellbytes first). Start nothing below on your own; work only when Jaden messages this chat.
 1. If the wishlist open cost matters: cards are heavy for SwiftUI's display list (about 30 ms each on the main
    thread); a lighter card, or building rows only when the Mac is idle, would be the next step.
 2. Never put a test window in front of Jaden during a meeting; GUI runs launch with `open -g`.
