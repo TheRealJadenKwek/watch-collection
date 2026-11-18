@@ -1,3 +1,35 @@
+# Watch Collection: resume note (lead, 2026-11-17 6:03 PM CST, account switch checkpoint)
+
+## State now: investigation of the Mac first-open stall, nothing shipped since 5:20 PM
+- Shipped state unchanged: main d8caa11, Mac 5.1 (5) installed, TestFlight 5.1 (35). Rollbacks as in the 5:20 section.
+- Worktree ~/watch-collection-perf has UNCOMMITTED experiment code only: `ExpSwitch` / `ExpGeometryGroup` at the end of
+  ios/Sources/WishlistView.swift, `ExpSwitch` uses in CandidateGrid, WishlistCard (WCExpNoVTF, WCExpNoMenu) and
+  ios/Sources/Components.swift RemoteWatchImage (WCExpNoFade), plus `explicitAlignment` overrides in AdaptiveCardGrid.
+  None of it ships. Committed copy of WishlistView.swift: scratchpad perf/committed.WishlistView.swift, or
+  `git -C ~/watch-collection-perf checkout -- ios/Sources` to drop it all.
+- Findings so far (10 s after a background launch, load 30 to 50 on 6 P-cores):
+  - Bench gaps: before 0.5 to 0.66 s, current 2.0 to 2.3 s. Only 4 cards ever built: 1.2 s. So the cost scales with cards.
+  - Not it: geometryGroup, slower staging, explicitAlignment, the per-card Menu, ViewThatFits (all measured, no change).
+  - Animation Hitches trace: no visible hitches and no commit over 13 ms; the main thread is Running (not blocked)
+    about 4.2 s in one stretch from 0.9 to 4.9 s, mostly SwiftUI display-list updates in NSHostingView.layout
+    (CA::Layer::insert_sublayer, AG updates) and AdaptiveCardGrid.sizeThatFits. Theory: every photo arriving fades in
+    (0.15 s animation per card), and each animation frame redraws the whole non-lazy page.
+- Last run (may have finished): ~/Offload/watch-collection/derived/perf/hitch-run.sh for before, exp, nofade,
+  nofade-all; results in ~/Offload/watch-collection/test-evidence/perf-wishlist/launch-hitch/<name>/ (app.log has the
+  PERF launch line; `python3 tools/thread-state.py <dir>/ts.xml` gives main-thread Running time).
+
+## Next (no approvals needed)
+1. Read those four results. If no-fade brings main Running and the gaps near before, the fix is: on the Mac, no fade
+   for a card photo that arrives during the first build (or no fade at all in the wishlist grid). Else try a layout
+   cache in AdaptiveCardGrid, or building off-screen cards only after the first scroll.
+2. Then restore the committed WishlistView.swift and Components.swift, apply only the real fix, build, check scrolling
+   with exp.sh (keep about 0.5 ms/s), look A/B, review (reviewer, opus xhigh), ship TestFlight 36 and Mac 5.1 (6)
+   (bump ios/project.yml), say what shipped and how to roll back.
+3. Stop the throwaway hub on 8957 when done (scratchpad perf/hub.pid, or the process listening on 8957).
+4. GUI runs only with `open -g`, never during a meeting.
+
+---
+
 # Watch Collection: resume note (lead, 2026-11-17 5:20 PM CST)
 
 ## State now: nothing in flight, nothing running
