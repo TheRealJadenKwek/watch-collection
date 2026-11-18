@@ -14,8 +14,9 @@
     about 4.2 s in one stretch from 0.9 to 4.9 s, mostly SwiftUI display-list updates in NSHostingView.layout
     (CA::Layer::insert_sublayer, AG updates) and AdaptiveCardGrid.sizeThatFits. Theory: every photo arriving fades in
     (0.15 s animation per card), and each animation frame redraws the whole non-lazy page.
-- Last run (may have finished): ~/Offload/watch-collection/derived/perf/hitch-run.sh for before, exp, nofade,
-  nofade-all; results in ~/Offload/watch-collection/test-evidence/perf-wishlist/launch-hitch/<name>/ (app.log has the
+- Last run DID NOT RUN (relative app paths; `open -a` needs absolute ones). Rerun with absolute paths:
+  ~/Offload/watch-collection/derived/perf/hitch-run.sh <name> <absolute .app> [args] for before (derived before/),
+  exp, nofade (-WCExpNoFade YES), nofade-all (also -WCExpAllAtOnce YES; exp build already has both); results in ~/Offload/watch-collection/test-evidence/perf-wishlist/launch-hitch/<name>/ (app.log has the
   PERF launch line; `python3 tools/thread-state.py <dir>/ts.xml` gives main-thread Running time).
 
 ## Next (no approvals needed)
