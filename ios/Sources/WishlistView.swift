@@ -189,7 +189,7 @@ struct WishlistScreen: View {
                 WishlistDetailScreen(store: store, item: item)
             }
             .sheet(item: $viewingItem) { item in
-                WishlistPhotoViewer(store: store, item: item)
+                WishlistPhotoViewer(store: store, opened: item)
             }
             .sheet(isPresented: $addingItem) {
                 WishlistDetailScreen(store: store, item: .newDraft(brand: prefilledBrand), isNew: true)
@@ -710,10 +710,9 @@ struct WishlistCard: View {
                         .clipped()
                 }
                 .buttonStyle(.plain)
-                .disabled(!item.hasPictures)
+                .disabled(cover == nil)
                 .help("View larger")
-                .accessibilityLabel(item.name)
-                .accessibilityHint("Shows the pictures larger")
+                .accessibilityLabel("Pictures of \(item.name)")
                 VStack(alignment: .leading, spacing: 5) {
                     Text(item.name)
                         .font(AtelierType.cardTitle)
@@ -974,7 +973,7 @@ struct TopPickView: View {
             .buttonStyle(.plain)
             .disabled(!item.hasPictures)
             .help("View larger")
-            .accessibilityHint("Shows the pictures larger")
+            .accessibilityLabel("Pictures of \(item.name)")
     }
 
     @ViewBuilder
