@@ -16,7 +16,7 @@
 1. Walk the iPhone viewer in a simulator (test hub, not :8931; not the Arsenal/Dentiza/iPhone Duo/Arc Records sims),
    then TestFlight 36.
 
-## Earlier (2026-11-18 6:35 PM)
+## Earlier (2026-11-17 6:35 PM)
 
 ## State now: nothing in flight, nothing running
 - Mac 5.1 (6) shipped: main 1dd8a8b (pushed), in /Applications, cloud-status upToDate 00:33Z, 349 photos, none
