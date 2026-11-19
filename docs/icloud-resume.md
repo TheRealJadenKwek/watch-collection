@@ -1,4 +1,4 @@
-# Watch Collection: resume note (lead, 2026-11-19 11:55 AM CST)
+# Watch Collection: resume note (lead, 2026-11-19 12:03 PM CST)
 
 ## State now: nothing in flight, nothing running
 - Wishlist photo viewer shipped on the Mac: main a54129b (pushed), Mac 5.1 (7) in /Applications, cloud-status
@@ -7,14 +7,15 @@
   Rollback: ~/Offload/watch-collection/releases/mac-backup-5.1-6-20261119-1153.app.
 - Review (reviewer, opus xhigh): ship; its fixes are in (live copy and close on delete, phone decode size, iPhone dots,
   sheet size, VoiceOver label). Mac walk done in the test app; scroll bench unchanged (0.5 to 6 ms/s).
-- iPhone: compiles, NOT walked and NOT on TestFlight (35 is current). Next TestFlight carries it after a simulator walk.
+- iPhone: TestFlight 36 (5.1, built from a54129b) uploaded and VALID 12:03 PM. Walked first on an iPhone 17 Pro sim
+  against the throwaway hub: top pick and a regular card both open the viewer, swipe pages, dots show on dark and
+  light photos, Done closes. Rollback: TestFlight 35. Test sim shut down, hub on 8957 stopped.
 - Launching test apps from ~/Offload (now a symlink to the SSD) intermittently fails with LaunchServices -10810;
   copies in the scratchpad launch fine.
 
 ## Next
 0. PACE LIMIT until Sunday Nov 22: work only when Jaden messages this chat.
-1. Walk the iPhone viewer in a simulator (test hub, not :8931; not the Arsenal/Dentiza/iPhone Duo/Arc Records sims),
-   then TestFlight 36.
+1. Nothing queued. Worktree ~/watch-collection-perf (branch wishlist-photo-viewer, merged) can be removed.
 
 ## Earlier (2026-11-17 6:35 PM)
 
