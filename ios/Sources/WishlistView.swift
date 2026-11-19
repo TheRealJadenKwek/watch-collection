@@ -7,6 +7,8 @@ struct WishlistScreen: View {
     @ObservedObject var store: AppStore
     let showSettings: () -> Void
     @State private var editingItem: WishlistItem?
+    /// The candidate whose pictures are open large (`WishlistPhotoViewer`).
+    @State private var viewingItem: WishlistItem?
     @State private var addingItem = false
     @State private var boughtItem: WishlistItem?
     @State private var radarBrand = ""
@@ -121,7 +123,8 @@ struct WishlistScreen: View {
                                             item: top,
                                             score: store.scores[top.id],
                                             edit: { editingItem = top },
-                                            bought: { boughtItem = top }
+                                            bought: { boughtItem = top },
+                                            viewPhotos: { viewingItem = top }
                                         )
                                         .id("wishlist-\(top.id)")
                                         .padding(.bottom, WatchTheme.sectionGap - WatchTheme.gridGap)
@@ -133,6 +136,7 @@ struct WishlistScreen: View {
                                             item: item,
                                             score: store.scores[item.id],
                                             edit: { editingItem = item },
+                                            viewPhotos: { viewingItem = item },
                                             pass: { Task { await store.passWishlist(id: item.id) } },
                                             bought: { boughtItem = item },
                                             findImage: { findImage(item.id) },
@@ -183,6 +187,9 @@ struct WishlistScreen: View {
             #endif
             .sheet(item: $editingItem) { item in
                 WishlistDetailScreen(store: store, item: item)
+            }
+            .sheet(item: $viewingItem) { item in
+                WishlistPhotoViewer(store: store, item: item)
             }
             .sheet(isPresented: $addingItem) {
                 WishlistDetailScreen(store: store, item: .newDraft(brand: prefilledBrand), isNew: true)
@@ -272,7 +279,8 @@ struct WishlistScreen: View {
                         item: top,
                         score: store.scores[top.id],
                         edit: { editingItem = top },
-                        bought: { boughtItem = top }
+                        bought: { boughtItem = top },
+                        viewPhotos: { viewingItem = top }
                     )
                     .id("wishlist-\(top.id)")
                     .cardColumn(0, of: count)
@@ -283,6 +291,7 @@ struct WishlistScreen: View {
                         item: item,
                         score: store.scores[item.id],
                         edit: { editingItem = item },
+                        viewPhotos: { viewingItem = item },
                         pass: { Task { await store.passWishlist(id: item.id) } },
                         bought: { boughtItem = item },
                         findImage: { findImage(item.id) },
@@ -665,6 +674,8 @@ struct WishlistCard: View {
     let item: WishlistItem
     let score: WishlistScore?
     let edit: () -> Void
+    /// Opens the candidate's pictures large.
+    let viewPhotos: () -> Void
     let pass: () -> Void
     let bought: () -> Void
     let findImage: () -> Void
@@ -693,9 +704,16 @@ struct WishlistCard: View {
             HStack(alignment: .top, spacing: 14) {
                 // The render where there is one (a little larger than a photo thumbnail is decoded, so the dial stays
                 // sharp), else the photo.
-                RemoteWatchImage(cover: cover, allowsRemoteFetch: !store.isOffline, maxPixel: cover?.isRender == true ? DisplayImageCache.thumb : DisplayImageCache.icon)
-                    .frame(width: 80, height: 120)
-                    .clipped()
+                Button(action: viewPhotos) {
+                    RemoteWatchImage(cover: cover, allowsRemoteFetch: !store.isOffline, maxPixel: cover?.isRender == true ? DisplayImageCache.thumb : DisplayImageCache.icon)
+                        .frame(width: 80, height: 120)
+                        .clipped()
+                }
+                .buttonStyle(.plain)
+                .disabled(!item.hasPictures)
+                .help("View larger")
+                .accessibilityLabel(item.name)
+                .accessibilityHint("Shows the pictures larger")
                 VStack(alignment: .leading, spacing: 5) {
                     Text(item.name)
                         .font(AtelierType.cardTitle)
@@ -911,6 +929,8 @@ struct TopPickView: View {
     let score: WishlistScore?
     let edit: () -> Void
     let bought: () -> Void
+    /// Opens the candidate's pictures large.
+    let viewPhotos: () -> Void
     @Environment(\.duo) private var duo
 
     private var highlights: [String] {
@@ -939,7 +959,7 @@ struct TopPickView: View {
     }
 
     private var photo: some View {
-            Button(action: edit) {
+            Button(action: viewPhotos) {
                 FramedPhoto(store: store, cover: item.cover, aspect: PhotoShape.plate, maxPixel: DisplayImageCache.page)
                 .overlay(alignment: .topLeading) {
                     PhotoTag(text: "Top Pick").padding(14)
@@ -952,6 +972,9 @@ struct TopPickView: View {
                 }
             }
             .buttonStyle(.plain)
+            .disabled(!item.hasPictures)
+            .help("View larger")
+            .accessibilityHint("Shows the pictures larger")
     }
 
     @ViewBuilder
