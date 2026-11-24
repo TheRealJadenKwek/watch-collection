@@ -1,6 +1,16 @@
-# Watch Collection: resume note (lead, 2026-11-19 12:03 PM CST)
+# Watch Collection: resume note (lead, 2026-11-23 10:35 PM EST)
 
 ## State now: nothing in flight, nothing running
+- Jaden 11-23: "why is my wishlist ... empty". Nothing was lost (37 candidates on the hub, the Mac and the phone, all
+  on one revision). Spotlight had opened a Nov 17 test build (bundle id ...mac.icloudcheck, 2 sample items) from
+  ~/Offload/watch-collection/derived/icloud. Quit it, opened /Applications (5.1 (7), upToDate, 37 shown, $983,376).
+- Spotlight had 67 "Watch Collection" copies. Deleted the 53 test/derived builds (rebuildable), zipped the 14 release
+  backups in place (`<folder>/Watch Collection.app.zip`; unzip to roll back), unregistered all from LaunchServices.
+  Spotlight now lists only /Applications. The mac-backup-5.1-*.app rollback copies keep their own names, untouched.
+- From now on: test builds use a -derivedDataPath ending in `.noindex` (Spotlight skips it, checked) and the test .app
+  is deleted after the run. Project memory: feedback_test_builds_out_of_spotlight.
+
+## Earlier (2026-11-19 12:03 PM CST)
 - Wishlist photo viewer shipped on the Mac: main a54129b (pushed), Mac 5.1 (7) in /Applications, cloud-status
   upToDate 17:53Z, 349 photos, none missing. Clicking a card's picture or the top pick's photo opens the render and
   every photo whole (arrows / arrow keys). The top pick's photo no longer opens the edit form (Details does).
