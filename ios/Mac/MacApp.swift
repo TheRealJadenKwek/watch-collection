@@ -28,6 +28,7 @@ enum Entry {
 }
 
 struct WatchCollectionMacApp: App {
+    @NSApplicationDelegateAdaptor(MacAppDelegate.self) private var appDelegate
     /// The store waits on the same hold before it reads anything (`AppStore.start`, `restore`).
     @StateObject private var store = AppStore(library: Entry.library)
     @Environment(\.scenePhase) private var scenePhase
@@ -50,7 +51,9 @@ struct WatchCollectionMacApp: App {
                     // on the same hold itself; this wait is for the spinner.
                     _ = await Entry.library.whenReady()
                     libraryOpen = true
-                    await store.start()
+                    // Not tied to the window: the app outlives it now, so closing it during the first sync must not
+                    // cut the start short (the store would count as started and never finish it).
+                    await Task { await store.start() }.value
                 }
                 .onChange(of: scenePhase, initial: true) { _, phase in store.sceneChanged(phase) }
                 #if WC_PERF_BENCH
@@ -59,6 +62,9 @@ struct WatchCollectionMacApp: App {
                 #endif
         }
         .defaultSize(width: 1360, height: 880)
+        // The window starts the store, so it opens at every launch, even after a Quit from the menu bar icon while
+        // it was closed (state restoration would otherwise launch the app with no window and nothing syncing).
+        .defaultLaunchBehavior(.presented)
         .commands {
             CommandGroup(after: .toolbar) {
                 Button("Sync Now") { Task { await store.refresh() } }
@@ -70,6 +76,43 @@ struct WatchCollectionMacApp: App {
             SettingsView(store: store)
                 .frame(width: 560, height: 680)
         }
+
+        MenuBarExtra("Watch Collection", systemImage: "watch.analog") {
+            MenuBarMenu(status: store.status, store: store)
+        }
+    }
+}
+
+/// Closing the window no longer quits (Jaden 11-26: "dont make it quit i still want to see it in the menu bar"). The
+/// app stays in the menu bar and the Dock, still syncing every 15 s (`AppStore.sceneChanged`), and keeps the library
+/// lock, so the bridge LaunchAgent steps aside just as it does while the window is open.
+final class MacAppDelegate: NSObject, NSApplicationDelegate {
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
+}
+
+/// The menu bar icon's menu: bring the window back, see and run the sync, or quit.
+private struct MenuBarMenu: View {
+    @ObservedObject var status: SyncStatus
+    let store: AppStore
+    @Environment(\.openWindow) private var openWindow
+
+    var body: some View {
+        Button("Open Watch Collection") {
+            openWindow(id: "main")
+            NSApp.activate()
+        }
+        Divider()
+        let line = MacSyncLine.evaluate(hubMessage: status.message, conflicts: status.conflicts.count,
+                                        cloud: status.cloud, now: .now)
+        Text(line.headline)
+        if let lastSync = status.lastSync {
+            Text("Synced \(lastSync.formatted(.relative(presentation: .named)))")
+        }
+        Button("Sync Now") { Task { await store.refresh() } }
+            .disabled(status.isSyncing)
+        Divider()
+        Button("Quit Watch Collection") { NSApp.terminate(nil) }
+            .keyboardShortcut("q")
     }
 }
 
