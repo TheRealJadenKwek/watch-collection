@@ -1,6 +1,19 @@
-# Watch Collection: resume note (lead, 2026-11-23 10:35 PM EST)
+# Watch Collection: resume note (lead, 2026-11-26 12:25 PM EST)
 
 ## State now: nothing in flight, nothing running
+- 11-26: Mac 5.1 (8) SHIPPED (main 476c58b, pushed; in /Applications, cloud-status upToDate 17:23Z, 356 photos). Jaden:
+  "when i close watch collection app, dont make it quit i still want to see it in the menu bar". Closing the window
+  keeps the app running (it still holds the sync lock and syncs every 15 s, so bridge ticks keep stepping aside); a
+  MenuBarExtra (watch.analog) has Open, the sync line, Last synced <clock time>, Sync Now, Quit. The window opens at
+  every launch (.defaultLaunchBehavior(.presented), Settings never restored), App Nap is held off for the app's life.
+  Review (reviewer, opus xhigh): ship; its fixes are in. Mac only, no TestFlight (36 stays current). A new Mac build now
+  needs Quit from the menu bar icon (or osascript quit by bundle id) before it is replaced. Rollback:
+  ~/Offload/watch-collection/releases/mac-backup-5.1-7-20261126.zip.
+- 11-26: recorded two reps from Wealthsimple (15510 rep CA$679.26 BTC, iced 15400 rep CA$1,535.04 via Tai, both Nov 25)
+  and rearranged the boxes (black full: steel, divers, reps, Casios; brown: Zenith, Pierre Paulin, Hamilton, Timex
+  in the middle 2x2). Backups in ~/Offload/watch-collection/backups/pre-reps-20261126/.
+
+## Earlier (2026-11-23 10:35 PM EST)
 - Jaden 11-23: "why is my wishlist ... empty". Nothing was lost (37 candidates on the hub, the Mac and the phone, all
   on one revision). Spotlight had opened a Nov 17 test build (bundle id ...mac.icloudcheck, 2 sample items) from
   ~/Offload/watch-collection/derived/icloud. Quit it, opened /Applications (5.1 (7), upToDate, 37 shown, $983,376).
