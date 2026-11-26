@@ -76,6 +76,8 @@ struct WatchCollectionMacApp: App {
             SettingsView(store: store)
                 .frame(width: 560, height: 680)
         }
+        // A launch that restored only Settings would skip the main window, and with it the store's start.
+        .restorationBehavior(.disabled)
 
         MenuBarExtra("Watch Collection", systemImage: "watch.analog") {
             MenuBarMenu(status: store.status, store: store)
@@ -87,6 +89,14 @@ struct WatchCollectionMacApp: App {
 /// app stays in the menu bar and the Dock, still syncing every 15 s (`AppStore.sceneChanged`), and keeps the library
 /// lock, so the bridge LaunchAgent steps aside just as it does while the window is open.
 final class MacAppDelegate: NSObject, NSApplicationDelegate {
+    /// Held for the app's life: with the window closed the app is what syncs, and App Nap would stretch its timer.
+    private var activity: NSObjectProtocol?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        activity = ProcessInfo.processInfo.beginActivity(options: .userInitiatedAllowingIdleSystemSleep,
+                                                         reason: "Keeps the collection syncing while the window is closed")
+    }
+
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 }
 
@@ -106,7 +116,9 @@ private struct MenuBarMenu: View {
                                         cloud: status.cloud, now: .now)
         Text(line.headline)
         if let lastSync = status.lastSync {
-            Text("Synced \(lastSync.formatted(.relative(presentation: .named)))")
+            // A clock time, not "2 minutes ago": the menu is only redrawn when the status changes, so a relative
+            // time could go stale (with automatic sync off, nothing changes for hours).
+            Text("Last synced \(lastSync.formatted(Calendar.current.isDateInToday(lastSync) ? .dateTime.hour().minute() : .dateTime.month().day().hour().minute()))")
         }
         Button("Sync Now") { Task { await store.refresh() } }
             .disabled(status.isSyncing)
